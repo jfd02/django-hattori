@@ -1,0 +1,108 @@
+import contextlib
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+import pytest
+from django.http import FileResponse, HttpResponse
+
+from hattori import HattoriAPI
+from hattori.testing import TestClient
+
+api = HattoriAPI()
+
+client = TestClient(api)
+
+# TODO: check if you add  operation to the same path - it should raise a ConfigError that this path already exist
+# make sure to check how this will work with versioning
+# and also check what will happen if you add same path in different routers
+#  api.add_router("", router1)
+#  api.add_router("", router2)
+# and both routers have same path defined
+
+
+@api.get("")
+def emptypath(request) -> str:
+    return "/"
+
+
+@api.get("/get")
+def get(request) -> str:
+    return f"this is {request.method}"
+
+
+@api.post("/post")
+def post(request) -> str:
+    return f"this is {request.method}"
+
+
+@api.put("/put")
+def put(request) -> str:
+    return f"this is {request.method}"
+
+
+@api.patch("/patch")
+def patch(request) -> str:
+    return f"this is {request.method}"
+
+
+@api.delete("/delete")
+def delete(request) -> str:
+    return f"this is {request.method}"
+
+
+@api.api_operation(["GET", "POST"], "/multi")
+def multiple(request) -> str:
+    return f"this is {request.method}"
+
+
+@api.get("/html")
+def html(request) -> str:
+    return HttpResponse("html")
+
+
+@api.get("/file")
+def file_response(request) -> str:
+    tmp = NamedTemporaryFile(delete=False)
+    try:
+        p = Path(tmp.name)
+        p.write_bytes(b"this is a file")
+        return FileResponse(Path(tmp.name).open("rb"))
+    finally:
+        with contextlib.suppress(PermissionError):
+            Path(tmp.name).unlink()
+
+
+@pytest.mark.parametrize(
+    "method,path,expected_status,expected_data,expected_streaming",
+    [
+        ("get", "/", 200, "/", False),
+        ("get", "/get", 200, "this is GET", False),
+        ("post", "/post", 200, "this is POST", False),
+        ("put", "/put", 200, "this is PUT", False),
+        ("patch", "/patch", 200, "this is PATCH", False),
+        ("delete", "/delete", 200, "this is DELETE", False),
+        ("get", "/multi", 200, "this is GET", False),
+        ("post", "/multi", 200, "this is POST", False),
+        ("patch", "/multi", 405, b"Method not allowed", False),
+        ("get", "/html", 200, b"html", False),
+        ("get", "/file", 200, b"this is a file", True),
+    ],
+)
+def test_method(method, path, expected_status, expected_data, expected_streaming):
+    func = getattr(client, method)
+    response = func(path)
+    assert response.status_code == expected_status
+    assert response.streaming == expected_streaming
+    try:
+        data = response.json()
+    except Exception:
+        data = response.content
+    assert data == expected_data
+
+
+def test_validates():
+    # Registry check was removed - routers are now independent templates
+    # that can be reused across multiple APIs without conflicts
+    # This test now just verifies that creating an API and accessing urls works
+    api2 = HattoriAPI(urls_namespace="test-validates-api")
+    _ = api2.urls  # Should not raise

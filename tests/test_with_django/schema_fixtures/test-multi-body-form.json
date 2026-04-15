@@ -1,0 +1,92 @@
+{
+  "post": {
+    "operationId": "multi_param_api_test_multi_body_form",
+    "summary": "Test Multi Body Form",
+    "parameters": [],
+    "responses": {
+      "200": {
+        "description": "OK",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResponseData"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Unprocessable Content",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "requestBody": {
+      "content": {
+        "multipart/form-data": {
+          "schema": {
+            "title": "MultiPartBodyParams",
+            "type": "object",
+            "properties": {
+              "s": {
+                "default": "a-str",
+                "title": "S",
+                "type": "string"
+              },
+              "foo": {
+                "title": "Foo",
+                "type": "integer"
+              },
+              "bar": {
+                "default": "11bar",
+                "title": "Bar",
+                "type": "string"
+              },
+              "foo2": {
+                "default": 22,
+                "description": "Foo2 Desc",
+                "title": "Foo2 Title",
+                "type": "integer"
+              },
+              "bar2": {
+                "title": "Bar2",
+                "type": "string"
+              },
+              "foo3": {
+                "description": "Foo3 Desc",
+                "title": "Foo3 Title",
+                "type": "integer"
+              },
+              "bar3": {
+                "default": "33bar",
+                "title": "Bar3",
+                "type": "string"
+              },
+              "i": {
+                "title": "I",
+                "type": "integer"
+              },
+              "data": {
+                "$ref": "#/components/schemas/TestData4",
+                "description": "Data4 Desc",
+                "title": "Data4 Title"
+              }
+            },
+            "required": [
+              "foo",
+              "bar2",
+              "foo3",
+              "i",
+              "data"
+            ]
+          }
+        }
+      },
+      "required": true
+    }
+  }
+}

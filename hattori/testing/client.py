@@ -1,0 +1,242 @@
+import inspect
+from typing import Any, Callable
+from unittest.mock import Mock
+from urllib.parse import urljoin
+
+from django.http import QueryDict, StreamingHttpResponse
+from django.http.request import HttpHeaders, HttpRequest
+
+from hattori import HattoriAPI, Router
+from hattori.responses import JsonResponse as HttpResponse
+from hattori.responses import json_dumps, json_loads
+
+
+def build_absolute_uri(location: str | None = None) -> str:
+    base = "http://testlocation/"
+
+    if location:
+        base = urljoin(base, location)
+
+    return base
+
+
+# TODO: this should be changed
+# maybe add here urlconf object and add urls from here
+class HattoriClientBase:
+    __test__ = False  # <- skip pytest
+
+    def __init__(
+        self,
+        router_or_app: HattoriAPI | Router,
+        headers: dict[str, str] | None = None,
+        COOKIES: dict[str, str] | None = None,
+    ) -> None:
+        self.headers = headers or {}
+        self.cookies = COOKIES or {}
+        self.router_or_app = router_or_app
+
+    def get(
+        self, path: str, data: dict | None = None, **request_params: Any
+    ) -> "HattoriTestResponse":
+        return self.request("GET", path, data, **request_params)
+
+    def post(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> "HattoriTestResponse":
+        return self.request("POST", path, data, json, **request_params)
+
+    def patch(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> "HattoriTestResponse":
+        return self.request("PATCH", path, data, json, **request_params)
+
+    def put(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> "HattoriTestResponse":
+        return self.request("PUT", path, data, json, **request_params)
+
+    def delete(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> "HattoriTestResponse":
+        return self.request("DELETE", path, data, json, **request_params)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> "HattoriTestResponse":
+        if json is not None:
+            request_params["body"] = json_dumps(json)
+        if data is None:
+            data = {}
+        if self.headers or request_params.get("headers"):
+            request_params["headers"] = {
+                **self.headers,
+                **request_params.get("headers", {}),
+            }
+        if self.cookies or request_params.get("COOKIES"):
+            request_params["COOKIES"] = {
+                **self.cookies,
+                **request_params.get("COOKIES", {}),
+            }
+        func, request, kwargs = self._resolve(method, path, data, request_params)
+        return self._call(func, request, kwargs)  # type: ignore
+
+    @property
+    def urls(self) -> list:
+        if not hasattr(self, "_urls_cache"):
+            self._urls_cache: list
+            if isinstance(self.router_or_app, HattoriAPI):
+                self._urls_cache = self.router_or_app.urls[0]
+            else:
+                # Create temporary API without mutating router
+                # Unique namespace prevents registry conflicts
+                api = HattoriAPI(urls_namespace=f"test-{id(self)}")
+                api.add_router("", self.router_or_app)
+                self._urls_cache = api.urls[0]
+        return self._urls_cache
+
+    def _resolve(
+        self, method: str, path: str, data: dict, request_params: Any
+    ) -> tuple[Callable, Mock, dict]:
+        url_path = path.split("?")[0].lstrip("/")
+        for url in self.urls:
+            match = url.resolve(url_path)
+            if match:
+                request = self._build_request(method, path, data, request_params)
+                return match.func, request, match.kwargs
+        raise Exception(f'Cannot resolve "{path}"')
+
+    def _build_request(
+        self, method: str, path: str, data: dict, request_params: Any
+    ) -> Mock:
+        request = Mock(spec=HttpRequest)
+        request.method = method
+        request.path = path
+        request.body = ""
+        request.COOKIES = {}
+        request._dont_enforce_csrf_checks = True
+        request.is_secure.return_value = False
+        request.build_absolute_uri = build_absolute_uri
+
+        request.auth = None
+        request.user = Mock()
+        if "user" not in request_params:
+            request.user.is_authenticated = False
+            request.user.is_staff = False
+            request.user.is_superuser = False
+
+        request.META = request_params.pop("META", {"REMOTE_ADDR": "127.0.0.1"})
+        request.FILES = request_params.pop("FILES", {})
+
+        request.META.update({
+            f"HTTP_{k.replace("-", "_")}": v
+            for k, v in request_params.pop("headers", {}).items()
+        })
+
+        request.headers = HttpHeaders(request.META)
+
+        if isinstance(data, QueryDict):
+            request.POST = data
+        else:
+            request.POST = QueryDict(mutable=True)
+
+            if isinstance(data, (str, bytes)):
+                request_params["body"] = data
+            elif data:
+                for k, v in data.items():
+                    request.POST[k] = v
+
+        if "?" in path:
+            request.GET = QueryDict(path.split("?")[1])
+        else:
+            query_params = request_params.pop("query_params", None)
+            if query_params:
+                query_dict = QueryDict(mutable=True)
+                for k, v in query_params.items():
+                    if isinstance(v, list):
+                        for item in v:
+                            query_dict.appendlist(k, item)
+                    else:
+                        query_dict[k] = v
+                request.GET = query_dict
+            else:
+                request.GET = QueryDict()
+
+        for k, v in request_params.items():
+            setattr(request, k, v)
+        return request
+
+
+class TestClient(HattoriClientBase):
+    def _call(self, func: Callable, request: Mock, kwargs: dict) -> "HattoriTestResponse":
+        return HattoriTestResponse(func(request, **kwargs))
+
+
+class TestAsyncClient(HattoriClientBase):
+    async def _call(
+        self, func: Callable, request: Mock, kwargs: dict
+    ) -> "HattoriTestResponse":
+        http_response = await func(request, **kwargs)
+        if http_response.streaming and inspect.isasyncgen(
+            http_response.streaming_content
+        ):
+            # Async streaming: consume async iterator into bytes
+            chunks = []
+            async for chunk in http_response.streaming_content:
+                chunks.append(
+                    chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+                )
+            # Replace with sync content for HattoriTestResponse
+            http_response.streaming_content = iter(chunks)
+        return HattoriTestResponse(http_response)
+
+
+class HattoriTestResponse:
+    def __init__(self, http_response: HttpResponse | StreamingHttpResponse):
+        self._response = http_response
+        self.status_code = http_response.status_code
+        self.streaming = http_response.streaming
+        if self.streaming:
+            assert isinstance(http_response, StreamingHttpResponse)
+            self.content = b"".join(
+                chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+                for chunk in http_response.streaming_content  # type: ignore[union-attr]
+            )
+        else:
+            self.content = http_response.content
+        self._data = None
+
+    def json(self) -> Any:
+        return json_loads(self.content)
+
+    @property
+    def data(self) -> Any:
+        if self._data is None:  # Recomputes if json() is None but cheap then
+            self._data = self.json()
+        return self._data
+
+    def __getitem__(self, key: str) -> Any:
+        return self._response[key]
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(self._response, attr)
