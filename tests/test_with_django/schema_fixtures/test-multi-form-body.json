@@ -1,0 +1,69 @@
+{
+  "post": {
+    "operationId": "multi_param_api_test_multi_form_body",
+    "summary": "Test Multi Form Body",
+    "parameters": [],
+    "responses": {
+      "200": {
+        "description": "OK",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResponseData"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Unprocessable Content",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "requestBody": {
+      "content": {
+        "multipart/form-data": {
+          "schema": {
+            "title": "MultiPartBodyParams",
+            "type": "object",
+            "properties": {
+              "i": {
+                "title": "I",
+                "type": "integer"
+              },
+              "foo4": {
+                "default": 44,
+                "description": "Foo4 Desc",
+                "title": "Foo4 Title",
+                "type": "integer"
+              },
+              "bar4": {
+                "default": "44bar",
+                "title": "Bar4",
+                "type": "string"
+              },
+              "s": {
+                "default": "a-str",
+                "title": "S",
+                "type": "string"
+              },
+              "nested-data": {
+                "$ref": "#/components/schemas/TestData"
+              }
+            },
+            "required": [
+              "i",
+              "nested-data"
+            ]
+          }
+        }
+      },
+      "required": true
+    }
+  }
+}

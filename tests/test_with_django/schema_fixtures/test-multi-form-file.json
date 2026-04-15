@@ -1,0 +1,103 @@
+{
+  "post": {
+    "operationId": "multi_param_api_test_multi_form_file",
+    "summary": "Test Multi Form File",
+    "parameters": [],
+    "responses": {
+      "200": {
+        "description": "OK",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResponseData"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Unprocessable Content",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "requestBody": {
+      "content": {
+        "multipart/form-data": {
+          "schema": {
+            "properties": {
+              "file": {
+                "format": "binary",
+                "title": "File",
+                "type": "string"
+              },
+              "i": {
+                "title": "I",
+                "type": "integer"
+              },
+              "s": {
+                "default": "a-str",
+                "title": "S",
+                "type": "string"
+              },
+              "foo4": {
+                "default": 44,
+                "description": "Foo4 Desc",
+                "title": "Foo4 Title",
+                "type": "integer"
+              },
+              "bar4": {
+                "default": "44bar",
+                "title": "Bar4",
+                "type": "string"
+              },
+              "foo": {
+                "title": "Foo",
+                "type": "integer"
+              },
+              "bar": {
+                "default": "11bar",
+                "title": "Bar",
+                "type": "string"
+              },
+              "foo2": {
+                "default": 22,
+                "description": "Foo2 Desc",
+                "title": "Foo2 Title",
+                "type": "integer"
+              },
+              "bar2": {
+                "title": "Bar2",
+                "type": "string"
+              },
+              "foo3": {
+                "description": "Foo3 Desc",
+                "title": "Foo3 Title",
+                "type": "integer"
+              },
+              "bar3": {
+                "default": "33bar",
+                "title": "Bar3",
+                "type": "string"
+              }
+            },
+            "required": [
+              "file",
+              "i",
+              "foo",
+              "bar2",
+              "foo3"
+            ],
+            "title": "MultiPartBodyParams",
+            "type": "object"
+          }
+        }
+      },
+      "required": true
+    }
+  }
+}

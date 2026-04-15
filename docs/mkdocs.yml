@@ -1,0 +1,109 @@
+site_name: Django Hattori
+site_description: Django Hattori - Django REST framework with high performance, easy to learn, fast to code.
+site_url: https://github.com/jfd02/django-hattori
+repo_name: jfd02/django-hattori
+repo_url: https://github.com/jfd02/django-hattori
+edit_uri: ""
+extra:
+  analytics:
+    provider: google
+    property: G-0E3XZ663ZR
+extra_css:
+  - extra.css
+extra_javascript: []
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      primary: green
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)" 
+      scheme: slate
+      primary: green
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  logo: img/docs-logo.png
+  favicon: img/favicon.svg
+  font:
+    text: Inter
+    code: Roboto Mono
+  language: en
+  features:
+    - navigation.expand
+    - navigation.instant
+    - search.highlight
+    - search.suggest
+  icon:
+    repo: fontawesome/brands/github-alt
+nav:
+  - Intro: index.md
+  - motivation.md
+  - Tutorial:
+      - "First Steps": tutorial/index.md
+      - "Parsing Input": tutorial/step2.md
+      - "Handling Responses": tutorial/step3.md
+  - How-to Guides:
+      - Parsing input:
+          - guides/input/operations.md
+          - guides/input/path-params.md
+          - guides/input/query-params.md
+          - guides/input/body.md
+          - guides/input/form-params.md
+          - guides/input/file-params.md
+          - guides/input/request-parsers.md
+          - guides/input/filtering.md
+      - Handling responses:
+          - Defining a Schema: guides/response/index.md
+          - guides/response/temporal_response.md
+          - guides/response/config-pydantic.md
+          - guides/response/response-renderers.md
+      - Schemas: guides/schema.md
+      - Splitting your API with Routers: guides/routers.md
+      - guides/decorators.md
+      - guides/authentication.md
+      - guides/testing.md
+      - guides/api-docs.md
+      - guides/errors.md
+      - guides/urls.md
+      - guides/async-support.md
+      - guides/versioning.md
+  - Reference:
+      - HattoriAPI class: reference/api.md
+      - reference/csrf.md
+      - reference/operations-parameters.md
+      - reference/management-commands.md
+      - reference/settings.md
+      - releases.md
+  - help.md
+markdown_extensions:
+  - markdown_include.include:
+      base_path: docs
+  - markdown.extensions.codehilite:
+      guess_lang: false
+  # Uncomment these 2 lines during development to more easily add highlights
+  #- pymdownx.highlight:
+  #    linenums: true
+  - abbr
+  - codehilite
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          setup_commands:
+            - from django.conf import settings
+            - settings.configure()

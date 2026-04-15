@@ -1,0 +1,64 @@
+{
+  "post": {
+    "operationId": "multi_param_api_test_multi_body",
+    "summary": "Test Multi Body",
+    "parameters": [],
+    "responses": {
+      "200": {
+        "description": "OK",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResponseData"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Unprocessable Content",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "properties": {
+              "i": {
+                "title": "I",
+                "type": "integer"
+              },
+              "s": {
+                "default": "a-str",
+                "title": "S",
+                "type": "string"
+              },
+              "data": {
+                "$ref": "#/components/schemas/TestData4",
+                "description": "Data4 Desc",
+                "title": "Data4 Title"
+              },
+              "nested-data": {
+                "$ref": "#/components/schemas/TestData"
+              }
+            },
+            "required": [
+              "i",
+              "data",
+              "nested-data"
+            ],
+            "title": "BodyParams",
+            "type": "object"
+          }
+        }
+      },
+      "required": true
+    }
+  }
+}
