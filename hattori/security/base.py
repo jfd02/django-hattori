@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, get_args, get_origin
+from typing import Any, Callable, Union, get_args, get_origin
 
 from django.http import HttpRequest
 from typing_extensions import get_type_hints
@@ -55,7 +55,7 @@ class AuthBase(ABC):
 
         self.is_async = False
         if hasattr(self, "authenticate"):  # pragma: no branch
-            self.is_async = is_async_callable(self.authenticate)
+            self.is_async = is_async_callable(getattr(self, "authenticate"))
 
         self.auth_responses: dict[int, Any] = _parse_auth_responses(self)
 
@@ -102,6 +102,10 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
             schema = resolve_api_return_schema(arm)
         except ValueError as e:
             raise ConfigError(str(e)) from e
-        responses[code] = schema
+        existing = responses.get(code)
+        if existing is None or existing is schema:
+            responses[code] = schema
+        else:
+            responses[code] = Union[existing, schema]
 
     return responses

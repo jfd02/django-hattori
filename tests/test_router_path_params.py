@@ -31,7 +31,7 @@ def get_item_metadata_3(
     return item_id
 
 
-@router_without_path_type.get("/")
+@router_without_path_type.get("/alt")
 def get_item_metadata_4(
     request, item_id: str = Path(None)
 ) -> str:

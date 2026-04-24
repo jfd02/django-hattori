@@ -1,19 +1,15 @@
 import itertools
 import re
-from http.client import responses as _stdlib_responses
-
-# Override phrases updated in RFC 9110 so output is consistent across Python versions.
-responses = {**_stdlib_responses, 422: "Unprocessable Content"}
 from collections.abc import Generator
+from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any
 
 from django.utils.termcolors import make_style
 from pydantic.json_schema import JsonSchemaMode
 
-
 from hattori.errors import ValidationErrorResponse
 from hattori.operation import Operation
-from hattori.params.models import TModel, TModels
+from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
 from hattori.utils import normalize_path
 
@@ -21,6 +17,9 @@ if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
 
 REF_TEMPLATE: str = "#/components/schemas/{model}"
+
+# Override phrases updated in RFC 9110 so output is consistent across Python versions.
+responses = {**_stdlib_responses, 422: "Unprocessable Content"}
 
 BODY_CONTENT_TYPES: dict[str, str] = {
     "body": "application/json",
@@ -159,7 +158,7 @@ class OpenAPISchema(dict):
                 result.extend(self._extract_parameters(model))
         return result
 
-    def _extract_parameters(self, model: TModel) -> list[dict[str, Any]]:
+    def _extract_parameters(self, model: Any) -> list[dict[str, Any]]:
         result = []
         csv_fields = set(getattr(model, "__hattori_csv_fields__", []))
 
@@ -210,7 +209,7 @@ class OpenAPISchema(dict):
 
         return result
 
-    def _flatten_schema(self, model: TModel) -> dict[str, Any]:
+    def _flatten_schema(self, model: Any) -> dict[str, Any]:
         params = self._extract_parameters(model)
         flattened = {
             "title": model.__name__,  # type: ignore
@@ -224,10 +223,11 @@ class OpenAPISchema(dict):
 
     def _create_schema_from_model(
         self,
-        model: TModel,
+        model: Any,
         by_alias: bool = True,
         remove_level: bool = True,
         mode: JsonSchemaMode = "validation",
+        ref_name_suffix: str = "",
     ) -> tuple[dict[str, Any], bool]:
         if hasattr(model, "__hattori_flatten_map__"):
             schema = self._flatten_schema(model)
@@ -241,7 +241,10 @@ class OpenAPISchema(dict):
 
         # move Schemas from definitions
         if schema.get("$defs"):
-            self.add_schema_definitions(schema.pop("$defs"))
+            ref_renames = self.add_schema_definitions(
+                schema.pop("$defs"), ref_name_suffix=ref_name_suffix
+            )
+            self.rename_schema_refs(schema, ref_renames)
 
         if remove_level and len(schema["properties"]) == 1:
             name, details = list(schema["properties"].items())[0]
@@ -309,8 +312,12 @@ class OpenAPISchema(dict):
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
                 # ::TODO:: test this: by_alias == True
+                ref_name_suffix = "_by_alias" if operation.by_alias else ""
                 schema = self._create_schema_from_model(
-                    model, by_alias=operation.by_alias, mode="serialization"
+                    model,
+                    by_alias=operation.by_alias,
+                    mode="serialization",
+                    ref_name_suffix=ref_name_suffix,
                 )[0]
                 if operation.stream_format is not None:
                     details[status]["content"] = (
@@ -344,11 +351,12 @@ class OpenAPISchema(dict):
             return None
         result = []
         for auth in operation.auth_callbacks:
-            if hasattr(auth, "openapi_security_schema"):
+            security_schema = getattr(auth, "openapi_security_schema", None)
+            if security_schema is not None:
                 scopes: list[dict[str, Any]] = []  # TODO: scopes
                 name = auth.__class__.__name__
                 result.append({name: scopes})  # TODO: check if unique
-                self.securitySchemes[name] = auth.openapi_security_schema
+                self.securitySchemes[name] = security_schema
         return result
 
     def get_components(self) -> dict[str, Any]:
@@ -357,13 +365,42 @@ class OpenAPISchema(dict):
             result["securitySchemes"] = self.securitySchemes
         return result
 
-    def add_schema_definitions(self, definitions: dict) -> None:
+    def rename_schema_refs(self, value: Any, ref_renames: dict[str, str]) -> None:
+        if isinstance(value, dict):
+            ref = value.get("$ref")
+            if isinstance(ref, str):
+                name = ref.rsplit("/", 1)[-1]
+                if name in ref_renames:
+                    value["$ref"] = REF_TEMPLATE.format(model=ref_renames[name])
+            for item in value.values():
+                self.rename_schema_refs(item, ref_renames)
+        elif isinstance(value, list):
+            for item in value:
+                self.rename_schema_refs(item, ref_renames)
+
+    def add_schema_definitions(
+        self, definitions: dict, ref_name_suffix: str = ""
+    ) -> dict[str, str]:
         # TODO: check if schema["definitions"] are unique
         # if not - workaround (maybe use pydantic.schema.schema(models)) to process list of models
         # assert set(definitions.keys()) - set(self.schemas.keys()) == set()
-        # ::TODO:: this is broken in interesting ways for by_alias,
-        #     because same schema (name) can have different values
-        self.schemas.update(definitions)
+        ref_renames: dict[str, str] = {}
+        for name, schema in definitions.items():
+            existing_schema = self.schemas.get(name)
+            if existing_schema is None or existing_schema == schema:
+                self.schemas[name] = schema
+                continue
+
+            new_name = f"{name}{ref_name_suffix}" if ref_name_suffix else f"{name}_2"
+            index = 2
+            while new_name in self.schemas and self.schemas[new_name] != schema:
+                index += 1
+                new_name = f"{name}{ref_name_suffix}_{index}"
+
+            self.schemas[new_name] = schema
+            ref_renames[name] = new_name
+
+        return ref_renames
 
 
 def flatten_properties(

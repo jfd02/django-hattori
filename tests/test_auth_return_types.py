@@ -6,6 +6,7 @@ is never called. The OpenAPI spec picks up each APIReturn variant automatically.
 """
 
 from hattori import ApiError, HattoriAPI, Schema
+from hattori.responses import APIReturn
 from hattori.security import HttpBearer
 from hattori.testing import TestClient
 
@@ -101,3 +102,45 @@ def test_openapi_picks_up_auth_return_types():
     assert 200 in responses
     assert 401 in responses
     assert 403 in responses
+
+
+def test_auth_responses_with_same_status_are_unionized():
+    class ErrorA(Schema):
+        a: str
+
+    class ErrorB(Schema):
+        b: str
+
+    class BadA(APIReturn[ErrorA]):
+        code = 401
+
+    class BadB(APIReturn[ErrorB]):
+        code = 401
+
+    class SameStatusBearer(HttpBearer):
+        def authenticate(self, request, token: str) -> User | BadA | BadB:
+            if token == "a":
+                return BadA(ErrorA(a="bad-a"))
+            if token == "b":
+                return BadB(ErrorB(b="bad-b"))
+            return User(username="alice")
+
+    same_status_api = HattoriAPI(urls_namespace="same-status-auth-responses")
+
+    @same_status_api.get("/same-status", auth=SameStatusBearer())
+    def same_status(request) -> Profile:
+        user: User = request.auth
+        return Profile(username=user.username)
+
+    same_status_client = TestClient(same_status_api)
+    response_a = same_status_client.get(
+        "/same-status", headers={"Authorization": "Bearer a"}
+    )
+    response_b = same_status_client.get(
+        "/same-status", headers={"Authorization": "Bearer b"}
+    )
+
+    assert response_a.status_code == 401
+    assert response_a.json() == {"a": "bad-a"}
+    assert response_b.status_code == 401
+    assert response_b.json() == {"b": "bad-b"}

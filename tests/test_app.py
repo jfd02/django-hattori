@@ -6,6 +6,7 @@ import pytest
 from django.http import FileResponse, HttpResponse
 
 from hattori import HattoriAPI
+from hattori.errors import ConfigError
 from hattori.testing import TestClient
 
 api = HattoriAPI()
@@ -106,3 +107,17 @@ def test_validates():
     # This test now just verifies that creating an API and accessing urls works
     api2 = HattoriAPI(urls_namespace="test-validates-api")
     _ = api2.urls  # Should not raise
+
+
+def test_duplicate_method_on_same_path_raises_config_error():
+    duplicate_api = HattoriAPI(urls_namespace="duplicate-method")
+
+    @duplicate_api.get("/duplicate")
+    def first(request) -> str:
+        return "first"
+
+    with pytest.raises(ConfigError):
+
+        @duplicate_api.get("/duplicate")
+        def second(request) -> str:
+            return "second"

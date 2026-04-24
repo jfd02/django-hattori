@@ -23,7 +23,7 @@ from hattori.openapi.docs import DocsBase, Swagger
 from hattori.openapi.schema import OpenAPISchema
 from hattori.openapi.urls import get_openapi_urls, get_root_url
 from hattori.renderers import BaseRenderer, JSONRenderer
-from hattori.router import BoundRouter, Router, RouterMount
+from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
 from hattori.types import TCallable
 
 if TYPE_CHECKING:
@@ -112,6 +112,15 @@ class HattoriAPI:
         self.default_router = default_router or Router()
         self.add_router("", self.default_router)
 
+    def _default_api_operation(
+        self, methods: list[str], path: str, options: _OperationOptions
+    ) -> Callable[[TCallable], TCallable]:
+        return self.default_router.api_operation(
+            methods,
+            path,
+            **options.with_default_auth(self.auth).as_kwargs(),
+        )
+
     def get(
         self,
         path: str,
@@ -134,21 +143,24 @@ class HattoriAPI:
         `GET` operation. See <a href="../operations-parameters">operations
         parameters</a> reference.
         """
-        return self.default_router.get(
+        return self._default_api_operation(
+            ["GET"],
             path,
-            auth=self.auth if auth is NOT_SET else auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def post(
@@ -173,21 +185,24 @@ class HattoriAPI:
         `POST` operation. See <a href="../operations-parameters">operations
         parameters</a> reference.
         """
-        return self.default_router.post(
+        return self._default_api_operation(
+            ["POST"],
             path,
-            auth=self.auth if auth is NOT_SET else auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def delete(
@@ -212,21 +227,24 @@ class HattoriAPI:
         `DELETE` operation. See <a href="../operations-parameters">operations
         parameters</a> reference.
         """
-        return self.default_router.delete(
+        return self._default_api_operation(
+            ["DELETE"],
             path,
-            auth=self.auth if auth is NOT_SET else auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def patch(
@@ -251,21 +269,24 @@ class HattoriAPI:
         `PATCH` operation. See <a href="../operations-parameters">operations
         parameters</a> reference.
         """
-        return self.default_router.patch(
+        return self._default_api_operation(
+            ["PATCH"],
             path,
-            auth=self.auth if auth is NOT_SET else auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def put(
@@ -290,21 +311,24 @@ class HattoriAPI:
         `PUT` operation. See <a href="../operations-parameters">operations
         parameters</a> reference.
         """
-        return self.default_router.put(
+        return self._default_api_operation(
+            ["PUT"],
             path,
-            auth=self.auth if auth is NOT_SET else auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def api_operation(
@@ -326,22 +350,24 @@ class HattoriAPI:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self.default_router.api_operation(
+        return self._default_api_operation(
             methods,
             path,
-            auth=self.auth if auth is NOT_SET else auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def add_decorator(

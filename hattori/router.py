@@ -1,6 +1,6 @@
 import collections.abc
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -46,6 +46,45 @@ class RouterMount:
     # Inherited auth/tags from parent routers (for nested router inheritance)
     inherited_auth: Any = NOT_SET
     inherited_tags: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class _OperationOptions:
+    auth: Any = NOT_SET
+    operation_id: str | None = None
+    summary: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    deprecated: bool | None = None
+    by_alias: bool | None = None
+    exclude_unset: bool | None = None
+    exclude_defaults: bool | None = None
+    exclude_none: bool | None = None
+    url_name: str | None = None
+    include_in_schema: bool = True
+    openapi_extra: dict[str, Any] | None = None
+
+    def with_default_auth(self, auth: Any) -> "_OperationOptions":
+        if self.auth is not NOT_SET:
+            return self
+        return replace(self, auth=auth)
+
+    def as_kwargs(self) -> dict[str, Any]:
+        return {
+            "auth": self.auth,
+            "operation_id": self.operation_id,
+            "summary": self.summary,
+            "description": self.description,
+            "tags": self.tags,
+            "deprecated": self.deprecated,
+            "by_alias": self.by_alias,
+            "exclude_unset": self.exclude_unset,
+            "exclude_defaults": self.exclude_defaults,
+            "exclude_none": self.exclude_none,
+            "url_name": self.url_name,
+            "include_in_schema": self.include_in_schema,
+            "openapi_extra": self.openapi_extra,
+        }
 
 
 class BoundRouter:
@@ -194,6 +233,11 @@ class Router:
                 "Routers become frozen when api.urls is accessed."
             )
 
+    def _api_operation_from_options(
+        self, methods: list[str], path: str, options: _OperationOptions
+    ) -> Callable[[TCallable], TCallable]:
+        return self.api_operation(methods, path, **options.as_kwargs())
+
     def get(
         self,
         path: str,
@@ -212,22 +256,24 @@ class Router:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self.api_operation(
+        return self._api_operation_from_options(
             ["GET"],
             path,
-            auth=auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def post(
@@ -248,22 +294,24 @@ class Router:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self.api_operation(
+        return self._api_operation_from_options(
             ["POST"],
             path,
-            auth=auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def delete(
@@ -284,22 +332,24 @@ class Router:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self.api_operation(
+        return self._api_operation_from_options(
             ["DELETE"],
             path,
-            auth=auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def patch(
@@ -320,22 +370,24 @@ class Router:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self.api_operation(
+        return self._api_operation_from_options(
             ["PATCH"],
             path,
-            auth=auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def put(
@@ -356,22 +408,24 @@ class Router:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self.api_operation(
+        return self._api_operation_from_options(
             ["PUT"],
             path,
-            auth=auth,
-            operation_id=operation_id,
-            summary=summary,
-            description=description,
-            tags=tags,
-            deprecated=deprecated,
-            by_alias=by_alias,
-            exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults,
-            exclude_none=exclude_none,
-            url_name=url_name,
-            include_in_schema=include_in_schema,
-            openapi_extra=openapi_extra,
+            _OperationOptions(
+                auth,
+                operation_id,
+                summary,
+                description,
+                tags,
+                deprecated,
+                by_alias,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                url_name,
+                include_in_schema,
+                openapi_extra,
+            ),
         )
 
     def api_operation(
@@ -393,25 +447,24 @@ class Router:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
+        options = _OperationOptions(
+            auth,
+            operation_id,
+            summary,
+            description,
+            tags,
+            deprecated,
+            by_alias,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            url_name,
+            include_in_schema,
+            openapi_extra,
+        )
+
         def decorator(view_func: TCallable) -> TCallable:
-            self.add_api_operation(
-                path,
-                methods,
-                view_func,
-                auth=auth,
-                operation_id=operation_id,
-                summary=summary,
-                description=description,
-                tags=tags,
-                deprecated=deprecated,
-                by_alias=by_alias,
-                exclude_unset=exclude_unset,
-                exclude_defaults=exclude_defaults,
-                exclude_none=exclude_none,
-                url_name=url_name,
-                include_in_schema=include_in_schema,
-                openapi_extra=openapi_extra,
-            )
+            self.add_api_operation(path, methods, view_func, **options.as_kwargs())
             return view_func
 
         return decorator

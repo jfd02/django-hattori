@@ -1185,6 +1185,37 @@ def test_by_alias_uses_serialization_alias_model():
     }
 
 
+def test_same_response_model_with_and_without_alias_get_distinct_schema_refs():
+    api = HattoriAPI()
+
+    class AliasedPerson(Schema):
+        uuid: str = Field(..., serialization_alias="id")
+
+    @api.get("/plain-person")
+    def plain_person(request) -> AliasedPerson:
+        return {"uuid": "abc"}
+
+    @api.get("/aliased-person", by_alias=True)
+    def aliased_person(request) -> AliasedPerson:
+        return {"uuid": "abc"}
+
+    schema = api.get_openapi_schema()
+    plain_ref = schema["paths"]["/api/plain-person"]["get"]["responses"][200][
+        "content"
+    ]["application/json"]["schema"]["$ref"]
+    aliased_ref = schema["paths"]["/api/aliased-person"]["get"]["responses"][200][
+        "content"
+    ]["application/json"]["schema"]["$ref"]
+
+    assert plain_ref != aliased_ref
+    assert schema["components"]["schemas"][plain_ref.rsplit("/", 1)[-1]][
+        "properties"
+    ] == {"uuid": {"title": "Uuid", "type": "string"}}
+    assert schema["components"]["schemas"][aliased_ref.rsplit("/", 1)[-1]][
+        "properties"
+    ] == {"id": {"title": "Id", "type": "string"}}
+
+
 def test_422_auto_documented():
     api = HattoriAPI()
 

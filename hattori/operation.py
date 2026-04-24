@@ -12,6 +12,7 @@ from typing import (
 
 import pydantic
 from asgiref.sync import async_to_sync, sync_to_async
+from django.db import connections, transaction
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -368,11 +369,52 @@ class Operation:
                 return self._stream_response(request, result, temporal_response)
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
-            if isinstance(e, TypeError) and "required positional argument" in str(e):
-                msg = "Did you fail to use functools.wraps() in a decorator?"
-                msg = f"{e.args[0]}: {msg}" if e.args else msg
-                e.args = (msg,) + e.args[1:]
-            return self.api.on_exception(request, e)
+            self._add_wraps_hint(e)
+            response = self.api.on_exception(request, e)
+            self._rollback_atomic_requests()
+            return response
+
+    def _add_wraps_hint(self, exc: Exception) -> None:
+        if isinstance(exc, TypeError) and "required positional argument" in str(exc):
+            msg = "Did you fail to use functools.wraps() in a decorator?"
+            msg = f"{exc.args[0]}: {msg}" if exc.args else msg
+            exc.args = (msg,) + exc.args[1:]
+
+    def _rollback_atomic_requests(self) -> None:
+        for db in connections.all():
+            if db.settings_dict.get("ATOMIC_REQUESTS") and db.in_atomic_block:
+                transaction.set_rollback(True, using=db.alias)
+
+    def _dump_model(self, model: BaseModel, ctx: dict[str, Any]) -> dict[str, Any]:
+        return model.model_dump(
+            context=ctx,
+            by_alias=self.by_alias,
+            exclude_unset=self.exclude_unset,
+            exclude_defaults=self.exclude_defaults,
+            exclude_none=self.exclude_none,
+        )
+
+    def _copy_temporal_response(
+        self, temporal_response: HttpResponse, response: StreamingHttpResponse
+    ) -> None:
+        for key, value in temporal_response.items():
+            if key.lower() != "content-type":
+                response[key] = value
+        for cookie_name, cookie in temporal_response.cookies.items():
+            response.cookies[cookie_name] = cookie
+
+    def _create_streaming_response(
+        self, content: Any, temporal_response: HttpResponse
+    ) -> StreamingHttpResponse:
+        assert self.stream_format is not None
+        response = StreamingHttpResponse(
+            content,
+            content_type=self.stream_format.media_type,
+            status=temporal_response.status_code,
+        )
+        for key, value in self.stream_format.response_headers().items():
+            response[key] = value
+        return response
 
     def _validate_stream_item(
         self, item: Any, request: HttpRequest, ctx: dict[str, Any]
@@ -383,13 +425,7 @@ class Operation:
             {"response": item}, context=ctx
         )
 
-        result = validated.model_dump(
-            context=ctx,
-            by_alias=self.by_alias,
-            exclude_unset=self.exclude_unset,
-            exclude_defaults=self.exclude_defaults,
-            exclude_none=self.exclude_none,
-        )["response"]
+        result = self._dump_model(validated, ctx)["response"]
         return _serialize_item(result)
 
     def _stream_response(
@@ -409,20 +445,9 @@ class Operation:
                 data = self._validate_stream_item(item, request, ctx)
                 yield fmt.format_chunk(data)
             # Copy headers/cookies after generator completes (user may set them inside)
-            for key, value in temporal_response.items():
-                if key.lower() != "content-type":
-                    response[key] = value
-            for cookie_name, cookie in temporal_response.cookies.items():
-                response.cookies[cookie_name] = cookie
+            self._copy_temporal_response(temporal_response, response)
 
-        response = StreamingHttpResponse(
-            content_iter(),
-            content_type=fmt.media_type,
-            status=temporal_response.status_code,
-        )
-        # Add format-specific headers
-        for key, value in fmt.response_headers().items():
-            response[key] = value
+        response = self._create_streaming_response(content_iter(), temporal_response)
         return response
 
     def _set_auth(
@@ -534,13 +559,7 @@ class Operation:
             and isinstance(result, BaseModel)
             and isinstance(result, resp_type)
         ):
-            result = cast(BaseModel, result).model_dump(
-                by_alias=self.by_alias,
-                exclude_unset=self.exclude_unset,
-                exclude_defaults=self.exclude_defaults,
-                exclude_none=self.exclude_none,
-                context=ctx,
-            )
+            result = self._dump_model(cast(BaseModel, result), ctx)
             return self.api.create_response(
                 request, result, temporal_response=temporal_response
             )
@@ -549,13 +568,7 @@ class Operation:
             {"response": result}, context=ctx
         )
 
-        result = validated_object.model_dump(
-            by_alias=self.by_alias,
-            exclude_unset=self.exclude_unset,
-            exclude_defaults=self.exclude_defaults,
-            exclude_none=self.exclude_none,
-            context=ctx,
-        )["response"]
+        result = self._dump_model(validated_object, ctx)["response"]
         return self.api.create_response(
             request, result, temporal_response=temporal_response
         )
@@ -609,11 +622,10 @@ class AsyncOperation(Operation):
             result = await self.view_func(request, **values)
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
-            if isinstance(e, TypeError) and "required positional argument" in str(e):
-                msg = "Did you fail to use functools.wraps() in a decorator?"
-                msg = f"{e.args[0]}: {msg}" if e.args else msg
-                e.args = (msg,) + e.args[1:]
-            return self.api.on_exception(request, e)
+            self._add_wraps_hint(e)
+            response = self.api.on_exception(request, e)
+            self._rollback_atomic_requests()
+            return response
 
     async def _async_stream_response(
         self,
@@ -632,19 +644,9 @@ class AsyncOperation(Operation):
                 data = self._validate_stream_item(item, request, ctx)
                 yield fmt.format_chunk(data)
             # Copy headers/cookies after generator completes
-            for key, value in temporal_response.items():
-                if key.lower() != "content-type":
-                    response[key] = value
-            for cookie_name, cookie in temporal_response.cookies.items():
-                response.cookies[cookie_name] = cookie
+            self._copy_temporal_response(temporal_response, response)
 
-        response = StreamingHttpResponse(
-            content_iter(),
-            content_type=fmt.media_type,
-            status=temporal_response.status_code,
-        )
-        for key, value in fmt.response_headers().items():
-            response[key] = value
+        response = self._create_streaming_response(content_iter(), temporal_response)
         return response
 
     async def _run_checks(  # type: ignore
@@ -719,6 +721,12 @@ class PathView:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Operation:
+        duplicate_methods = set(methods) & self._method_map.keys()
+        if duplicate_methods:
+            raise ConfigError(
+                f"Duplicate method(s) {sorted(duplicate_methods)} for path '{path}'"
+            )
+
         if url_name:
             self.url_name = url_name
 
