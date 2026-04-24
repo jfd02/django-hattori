@@ -1,6 +1,6 @@
 {
   "post": {
-    "operationId": "multi_param_api_test_multi_header",
+    "operationId": "test_multi_header",
     "summary": "Test Multi Header",
     "parameters": [
       {

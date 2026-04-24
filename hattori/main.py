@@ -585,9 +585,7 @@ class HattoriAPI:
         return get_schema(api=self, path_prefix=path_prefix)
 
     def get_openapi_operation_id(self, operation: "Operation") -> str:
-        name = operation.view_func.__name__
-        module = operation.view_func.__module__
-        return (module + "_" + name).replace(".", "_")
+        return operation.view_func.__name__
 
     def get_operation_url_name(self, operation: "Operation", router: Router) -> str:
         """

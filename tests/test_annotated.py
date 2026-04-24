@@ -120,7 +120,7 @@ def test_openapi_schema():
     assert schema == {
         "/api/multi/{p}": {
             "post": {
-                "operationId": "test_annotated_multi_op",
+                "operationId": "multi_op",
                 "summary": "Multi Op",
                 "parameters": [
                     {
@@ -190,7 +190,7 @@ def test_openapi_schema():
         },
         "/api/query_list": {
             "post": {
-                "operationId": "test_annotated_query_list",
+                "operationId": "query_list",
                 "summary": "Query List",
                 "parameters": [
                     {
@@ -223,7 +223,7 @@ def test_openapi_schema():
         },
         "/api/headers": {
             "post": {
-                "operationId": "test_annotated_headers",
+                "operationId": "headers",
                 "summary": "Headers",
                 "parameters": [
                     {
@@ -254,7 +254,7 @@ def test_openapi_schema():
         },
         "/api/body": {
             "post": {
-                "operationId": "test_annotated_body_op",
+                "operationId": "body_op",
                 "summary": "Body Op",
                 "parameters": [],
                 "responses": {
