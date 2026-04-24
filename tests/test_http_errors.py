@@ -194,8 +194,8 @@ def test_openapi_multiple_same_status_errors_are_discriminated_union():
     body_409 = schema["paths"]["/api/conflicts/{n}"]["get"]["responses"][409][
         "content"
     ]["application/json"]["schema"]
-    one_of = body_409.get("anyOf") or body_409.get("oneOf")
-    assert one_of is not None
+    assert "anyOf" not in body_409
+    one_of = body_409["oneOf"]
     ref_names = {item["$ref"].rsplit("/", 1)[-1] for item in one_of}
     assert ref_names == {"BareConflict", "WrappedConflict"}
 
@@ -204,3 +204,10 @@ def test_openapi_multiple_same_status_errors_are_discriminated_union():
         for name in ref_names
     }
     assert codes == {"bare_x", "bare_y"}
+    assert body_409["discriminator"] == {
+        "propertyName": "code",
+        "mapping": {
+            "bare_x": "#/components/schemas/BareConflict",
+            "bare_y": "#/components/schemas/WrappedConflict",
+        },
+    }

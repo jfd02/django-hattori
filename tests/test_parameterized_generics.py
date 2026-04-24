@@ -147,9 +147,16 @@ class TestDuplicateStatusCodesCombined:
         sync_post = schema["paths"]["/api/sync"]["post"]
         resp_409 = sync_post["responses"][409]
         content_schema = resp_409["content"]["application/json"]["schema"]
-        assert "anyOf" in content_schema or "oneOf" in content_schema
-        variants = content_schema.get("anyOf") or content_schema.get("oneOf")
+        assert "anyOf" not in content_schema
+        variants = content_schema["oneOf"]
         assert len(variants) == 2
+        assert content_schema["discriminator"] == {
+            "propertyName": "code",
+            "mapping": {
+                "account_belongs_to_another": "#/components/schemas/ErrorResponse_account_belongs_to_another",
+                "likely_duplicate": "#/components/schemas/ErrorResponse_likely_duplicate",
+            },
+        }
 
     def test_both_409_variants_in_components(self):
         schema = api.get_openapi_schema()

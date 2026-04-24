@@ -232,7 +232,7 @@ Hattori ships typed response classes for the common status codes. Use these dire
 
 ### Errors (semantic `HTTPError` bases)
 
-Subclass parameterized on a service enum member; the wire `code` is derived from `member.value`. The base class supplies the HTTP status, and OpenAPI emits a per-subclass error schema whose `code` field is `Literal[member.value]`.
+Subclass parameterized on a service enum member; the wire `code` is derived from `member.value`. The base class supplies the HTTP status, and OpenAPI emits a per-subclass error schema whose `code` field is `Literal[member.value]`. Multiple errors with the same HTTP status are emitted as a `oneOf` discriminated by `code`.
 
 | Base | Status |
 |---|---|

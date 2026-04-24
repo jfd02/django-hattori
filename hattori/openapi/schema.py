@@ -319,6 +319,7 @@ class OpenAPISchema(dict):
                     mode="serialization",
                     ref_name_suffix=ref_name_suffix,
                 )[0]
+                self._prefer_one_of_for_const_property_union(schema, "code")
                 if operation.stream_format is not None:
                     details[status]["content"] = (
                         operation.stream_format.openapi_content_schema(schema)
@@ -364,6 +365,66 @@ class OpenAPISchema(dict):
         if self.securitySchemes:
             result["securitySchemes"] = self.securitySchemes
         return result
+
+    def _prefer_one_of_for_const_property_union(
+        self, schema: dict[str, Any], property_name: str
+    ) -> None:
+        """Rewrite unambiguous response unions from anyOf to oneOf.
+
+        Pydantic emits plain ``anyOf`` for Python unions. For error responses
+        where every branch has a unique constant ``code`` value, those branches
+        are mutually exclusive and OpenAPI should expose that stronger contract.
+        """
+        variants = schema.get("anyOf")
+        if not isinstance(variants, list) or "oneOf" in schema:
+            return
+
+        mapping: dict[str, str] = {}
+        for variant in variants:
+            if not isinstance(variant, dict):
+                return
+            ref = variant.get("$ref")
+            if not isinstance(ref, str):
+                return
+            name = ref.rsplit("/", 1)[-1]
+            value = self._schema_const_property_value(
+                self.schemas.get(name), property_name
+            )
+            if value is None or value in mapping:
+                return
+            mapping[value] = ref
+
+        schema["oneOf"] = schema.pop("anyOf")
+        schema["discriminator"] = {
+            "propertyName": property_name,
+            "mapping": mapping,
+        }
+
+    def _schema_const_property_value(
+        self, schema: Any, property_name: str
+    ) -> str | None:
+        if not isinstance(schema, dict):
+            return None
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return None
+        prop_schema = properties.get(property_name)
+        if not isinstance(prop_schema, dict):
+            return None
+
+        const_value = prop_schema.get("const")
+        if isinstance(const_value, str):
+            return const_value
+
+        enum_value = prop_schema.get("enum")
+        if (
+            isinstance(enum_value, list)
+            and len(enum_value) == 1
+            and isinstance(enum_value[0], str)
+        ):
+            return enum_value[0]
+
+        return None
 
     def rename_schema_refs(self, value: Any, ref_renames: dict[str, str]) -> None:
         if isinstance(value, dict):
