@@ -26,11 +26,13 @@ member's value.
 """
 
 from enum import Enum
-from typing import Any, ClassVar, Generic, get_args, get_origin
+from typing import Any, ClassVar, Generic, Literal, get_args, get_origin
 
+from pydantic import create_model
 from typing_extensions import TypeVar
 
 from hattori.errors import ApiError, ErrorBody
+from hattori.responses import APIReturn
 
 __all__ = [
     "HTTPError",
@@ -88,8 +90,10 @@ class HTTPError(ApiError, Generic[EnumT]):
     ``.value``.
     """
 
-    # Pin the response body to ErrorBody so the framework's MRO-walking schema
+    # Pin the abstract bases to ErrorBody so the framework's MRO-walking schema
     # resolver doesn't mistake our `Literal[E.X]` parameter for a body type.
+    # Concrete subclasses replace this with a generated ErrorBody subclass whose
+    # `code` field is narrowed to the bound enum member value.
     __hattori_response_body__ = ErrorBody
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -97,6 +101,22 @@ class HTTPError(ApiError, Generic[EnumT]):
         member = _resolve_enum_member(cls)
         if member is not None:
             cls.error_code = member.value
+            cls.__hattori_response_body__ = create_model(
+                cls.__name__,
+                __base__=ErrorBody,
+                __module__=cls.__module__,
+                code=(Literal[member.value], ...),
+            )
+
+    def __init__(self, message: str | None = None) -> None:
+        body_type = self.__hattori_response_body__
+        APIReturn.__init__(
+            self,
+            body_type(
+                code=self.error_code,
+                message=message if message is not None else self.message,
+            ),
+        )
 
 
 class BadRequest(HTTPError[EnumT]):

@@ -112,12 +112,14 @@ def test_openapi_includes_each_status():
     assert {200, 400, 404, 409}.issubset(codes)
 
 
-def test_openapi_response_body_uses_errorbody_shape():
+def test_openapi_response_body_uses_literal_error_code_schema():
     schema = api.get_openapi_schema()
     responses = schema["paths"]["/api/users/{id}"]["get"]["responses"]
     body_409 = responses[409]["content"]["application/json"]["schema"]
-    # ErrorBody is {code: str, message: str}
-    assert "$ref" in body_409 or set(body_409.get("properties", {}).keys()) >= {"code", "message"}
+    ref = body_409["$ref"].rsplit("/", 1)[-1]
+    body_schema = schema["components"]["schemas"][ref]
+    assert body_schema["properties"]["code"]["const"] == "duplicate_name"
+    assert body_schema["properties"]["message"]["type"] == "string"
 
 
 def test_subclass_can_be_further_specialized():
@@ -175,3 +177,30 @@ def test_bare_form_works_end_to_end():
     r = c.get("/bare/0")
     assert r.status_code == 409
     assert r.json() == {"code": "bare_x", "message": "bare X"}
+
+
+def test_openapi_multiple_same_status_errors_are_discriminated_union():
+    api2 = HattoriAPI()
+
+    @api2.get("/conflicts/{n}")
+    def view(request, n: int) -> UserOut | BareConflict | WrappedConflict:
+        if n == 0:
+            return BareConflict()
+        if n == 1:
+            return WrappedConflict()
+        return UserOut(id=n, name="x")
+
+    schema = api2.get_openapi_schema()
+    body_409 = schema["paths"]["/api/conflicts/{n}"]["get"]["responses"][409][
+        "content"
+    ]["application/json"]["schema"]
+    one_of = body_409.get("anyOf") or body_409.get("oneOf")
+    assert one_of is not None
+    ref_names = {item["$ref"].rsplit("/", 1)[-1] for item in one_of}
+    assert ref_names == {"BareConflict", "WrappedConflict"}
+
+    codes = {
+        schema["components"]["schemas"][name]["properties"]["code"]["const"]
+        for name in ref_names
+    }
+    assert codes == {"bare_x", "bare_y"}
