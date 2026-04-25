@@ -50,6 +50,24 @@ def test_openapi_extra():
     }
 
 
+def test_openapi_extra_deep_merges_into_responses():
+    api = HattoriAPI()
+
+    @api.get(
+        "/x",
+        openapi_extra={
+            "responses": {"500": {"description": "Server error"}},
+        },
+    )
+    def x(request) -> str:
+        return "ok"
+
+    schema = api.get_openapi_schema()
+    responses = schema["paths"]["/api/x"]["get"]["responses"]
+    assert 200 in responses
+    assert responses["500"] == {"description": "Server error"}
+
+
 def test_router_openapi_extra_extends():
     """
     Test for #1505.

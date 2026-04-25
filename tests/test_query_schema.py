@@ -276,3 +276,27 @@ def test_nested_optional_query_schema():
     resp = client.get("/nested?label=test")
     assert resp.status_code == 200
     assert resp.json()["label"] == "test"
+
+
+def test_nested_model_field_with_default_flattens_into_params():
+    """Nested model fields with a default value wrap in ``allOf`` in the
+    hattori-generated schema; flatten_properties must still project their
+    properties out as individual query parameters."""
+
+    class Inner(Schema):
+        x: int = 0
+        y: str = "default"
+
+    class Outer(Schema):
+        inner: Inner = Inner()
+        label: str = "x"
+
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/nested-default")
+    def view(request, f: Outer = Query(...)) -> None:
+        return None
+
+    schema = temp_api.get_openapi_schema()
+    params = schema["paths"]["/api/nested-default"]["get"]["parameters"]
+    assert {p["name"] for p in params} == {"x", "y", "label"}

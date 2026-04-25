@@ -387,8 +387,46 @@ def test_schema():
         "SessionAuthSuperUser": {"in": "cookie", "name": "sessionid", "type": "apiKey"},
         "SessionAuthIsStaff": {"in": "cookie", "name": "sessionid", "type": "apiKey"},
     }
-    # TODO: Samename for schema check
     # TODO: check operation security attributes
+
+
+def test_security_scheme_name_collision_disambiguates():
+    from hattori.security import APIKeyHeader
+
+    class HeaderA(APIKeyHeader):
+        param_name = "X-A"
+
+        def authenticate(self, request, key):
+            return key
+
+    class HeaderB(APIKeyHeader):
+        param_name = "X-B"
+
+        def authenticate(self, request, key):
+            return key
+
+    HeaderA.__name__ = "ApiKey"
+    HeaderB.__name__ = "ApiKey"
+
+    api = HattoriAPI()
+
+    @api.get("/a", auth=HeaderA())
+    def view_a(request) -> str:
+        return ""
+
+    @api.get("/b", auth=HeaderB())
+    def view_b(request) -> str:
+        return ""
+
+    schema = api.get_openapi_schema()
+    schemes = schema["components"]["securitySchemes"]
+    assert set(schemes) == {"ApiKey", "ApiKey_2"}
+    assert {schemes["ApiKey"]["name"], schemes["ApiKey_2"]["name"]} == {"X-A", "X-B"}
+
+    used_a = set(schema["paths"]["/api/a"]["get"]["security"][0])
+    used_b = set(schema["paths"]["/api/b"]["get"]["security"][0])
+    assert used_a != used_b
+    assert used_a | used_b == {"ApiKey", "ApiKey_2"}
 
 
 def test_invalid_setup():

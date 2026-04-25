@@ -19,9 +19,11 @@ from hattori import (
     P,
     PathEx,
     Query,
+    Router,
     Schema,
     UploadedFile,
 )
+from hattori.errors import ConfigError
 from hattori.openapi.urls import get_openapi_urls
 from hattori.renderers import JSONRenderer
 
@@ -990,7 +992,7 @@ def test_get_openapi_urls():
         get_openapi_urls(api)
 
 
-def test_unique_operation_ids(capsys):
+def test_unique_operation_ids():
     api = HattoriAPI()
 
     @api.get("/1")
@@ -1001,9 +1003,42 @@ def test_unique_operation_ids(capsys):
     def same_name(request) -> None:  # noqa: F811
         pass
 
-    api.get_openapi_schema()
-    captured = capsys.readouterr()
-    assert '"same_name" is already used ' in captured.out
+    with pytest.raises(ConfigError, match='Duplicate operation_id "same_name"'):
+        api.get_openapi_schema()
+
+
+def test_operation_id_includes_router_prefix():
+    api = HattoriAPI()
+
+    @api.get("/list")
+    def list(request) -> None:
+        pass
+
+    users = Router()
+
+    @users.get("/")
+    def list(request) -> None:  # noqa: F811
+        pass
+
+    orders = Router()
+
+    @orders.post("/{id}/items")
+    def list(request, id: int) -> None:  # noqa: F811
+        pass
+
+    api.add_router("/users", users)
+    api.add_router("/orders/{id}/sub", orders)
+
+    schema = api.get_openapi_schema()
+    op_ids = {
+        path: next(iter(methods.values()))["operationId"]
+        for path, methods in schema["paths"].items()
+    }
+    assert op_ids == {
+        "/api/list": "list",
+        "/api/users/": "users_list",
+        "/api/orders/{id}/sub/{id}/items": "orders_sub_list",
+    }
 
 
 def test_docs_decorator():
@@ -1214,6 +1249,48 @@ def test_same_response_model_with_and_without_alias_get_distinct_schema_refs():
     assert schema["components"]["schemas"][aliased_ref.rsplit("/", 1)[-1]][
         "properties"
     ] == {"id": {"title": "Id", "type": "string"}}
+
+
+def test_nested_models_with_and_without_alias_keep_inner_refs_consistent():
+    api = HattoriAPI()
+
+    class Inner(Schema):
+        inner_id: str = Field(..., serialization_alias="iid")
+
+    class Outer(Schema):
+        outer_id: str = Field(..., serialization_alias="oid")
+        inner: Inner
+
+    @api.get("/plain")
+    def plain(request) -> Outer:
+        return {"outer_id": "o", "inner": {"inner_id": "i"}}
+
+    @api.get("/aliased", by_alias=True)
+    def aliased(request) -> Outer:
+        return {"outer_id": "o", "inner": {"inner_id": "i"}}
+
+    schemas = api.get_openapi_schema()["components"]["schemas"]
+    plain_outer_ref = api.get_openapi_schema()["paths"]["/api/plain"]["get"][
+        "responses"
+    ][200]["content"]["application/json"]["schema"]["$ref"]
+    aliased_outer_ref = api.get_openapi_schema()["paths"]["/api/aliased"]["get"][
+        "responses"
+    ][200]["content"]["application/json"]["schema"]["$ref"]
+
+    plain_outer = schemas[plain_outer_ref.rsplit("/", 1)[-1]]
+    aliased_outer = schemas[aliased_outer_ref.rsplit("/", 1)[-1]]
+
+    plain_inner = schemas[
+        plain_outer["properties"]["inner"]["$ref"].rsplit("/", 1)[-1]
+    ]
+    aliased_inner = schemas[
+        aliased_outer["properties"]["inner"]["$ref"].rsplit("/", 1)[-1]
+    ]
+
+    assert "inner_id" in plain_inner["properties"]
+    assert "iid" in aliased_inner["properties"]
+    assert "outer_id" in plain_outer["properties"]
+    assert "oid" in aliased_outer["properties"]
 
 
 def test_422_auto_documented():

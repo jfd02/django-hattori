@@ -1,4 +1,5 @@
 import collections.abc
+import re
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -584,8 +585,15 @@ class HattoriAPI:
             path_prefix = self.get_root_path(path_params or {})
         return get_schema(api=self, path_prefix=path_prefix)
 
-    def get_openapi_operation_id(self, operation: "Operation") -> str:
-        return operation.view_func.__name__
+    def get_openapi_operation_id(
+        self, operation: "Operation", router: BoundRouter
+    ) -> str:
+        name = operation.view_func.__name__
+        prefix = re.sub(r"\{[^}]+\}", "", router.prefix or "")
+        prefix = re.sub(r"/+", "/", prefix).strip("/")
+        if prefix:
+            return f"{prefix.replace('/', '_')}_{name}"
+        return name
 
     def get_operation_url_name(self, operation: "Operation", router: Router) -> str:
         """
