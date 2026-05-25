@@ -47,10 +47,38 @@ __all__ = [
     "UnprocessableEntity",
     "TooManyRequests",
     "InternalServerError",
+    "set_default_error_body",
+    "get_default_error_body",
 ]
 
 
 EnumT = TypeVar("EnumT", bound=Enum)
+
+
+_default_error_body: type[ErrorBody] = ErrorBody
+
+
+def set_default_error_body(body: type[ErrorBody]) -> None:
+    """Set the project-wide default body shape for :class:`HTTPError` subclasses.
+
+    Used as the final fallback when a subclass (and none of its parents) declares
+    its own body via the ``body=`` class kwarg. Call once at startup, e.g. from
+    an ``AppConfig.ready()`` hook.
+    """
+    global _default_error_body
+    _default_error_body = body
+
+
+def get_default_error_body() -> type[ErrorBody]:
+    return _default_error_body
+
+
+def _resolve_body_base(cls: type) -> type[ErrorBody]:
+    for klass in cls.__mro__:
+        base = klass.__dict__.get("__hattori_response_body_base__")
+        if base is not None:
+            return base
+    return _default_error_body
 
 
 def _resolve_enum_member(cls: type) -> Enum | None:
@@ -96,25 +124,30 @@ class HTTPError(ApiError, Generic[EnumT]):
     # `code` field is narrowed to the bound enum member value.
     __hattori_response_body__ = ErrorBody
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(
+        cls, *, body: type[ErrorBody] | None = None, **kwargs: Any
+    ) -> None:
         super().__init_subclass__(**kwargs)
+        if body is not None:
+            cls.__hattori_response_body_base__ = body
         member = _resolve_enum_member(cls)
         if member is not None:
             cls.error_code = member.value
             cls.__hattori_response_body__ = create_model(
                 cls.__name__,
-                __base__=ErrorBody,
+                __base__=_resolve_body_base(cls),
                 __module__=cls.__module__,
                 code=(Literal[member.value], ...),
             )
 
-    def __init__(self, message: str | None = None) -> None:
+    def __init__(self, message: str | None = None, **body_fields: Any) -> None:
         body_type = self.__hattori_response_body__
         APIReturn.__init__(
             self,
             body_type(
                 code=self.error_code,
                 message=message if message is not None else self.message,
+                **body_fields,
             ),
         )
 

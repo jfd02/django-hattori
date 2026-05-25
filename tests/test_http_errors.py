@@ -3,9 +3,12 @@
 from enum import Enum
 from typing import Literal
 
+import pytest
+
 from hattori import (
     BadRequest,
     Conflict,
+    ErrorBody,
     Forbidden,
     Gone,
     HattoriAPI,
@@ -18,6 +21,8 @@ from hattori import (
     TooManyRequests,
     Unauthorized,
     UnprocessableEntity,
+    get_default_error_body,
+    set_default_error_body,
 )
 from hattori.testing import TestClient
 
@@ -211,3 +216,141 @@ def test_openapi_multiple_same_status_errors_are_discriminated_union():
             "bare_y": "#/components/schemas/WrappedConflict",
         },
     }
+
+
+# --- Custom body shape (per-subclass, inherited, and module-level default) ---
+
+
+class _RetryE(Enum):
+    TOO_MANY = "too_many"
+    BUSY = "busy"
+
+
+class RetryBody(ErrorBody):
+    retry_after: int
+
+
+class TooManyRetries(TooManyRequests[Literal[_RetryE.TOO_MANY]], body=RetryBody):
+    message = "Slow down"
+
+
+def test_custom_body_extra_field_serialized():
+    api2 = HattoriAPI()
+
+    @api2.get("/retry")
+    def view(request) -> UserOut | TooManyRetries:
+        return TooManyRetries(retry_after=30)
+
+    r = TestClient(api2).get("/retry")
+    assert r.status_code == 429
+    assert r.json() == {
+        "code": "too_many",
+        "message": "Slow down",
+        "retry_after": 30,
+    }
+
+
+def test_custom_body_runtime_message_override():
+    api2 = HattoriAPI()
+
+    @api2.get("/retry")
+    def view(request) -> UserOut | TooManyRetries:
+        return TooManyRetries("custom", retry_after=5)
+
+    r = TestClient(api2).get("/retry")
+    assert r.json() == {"code": "too_many", "message": "custom", "retry_after": 5}
+
+
+def test_custom_body_openapi_includes_extra_fields():
+    api2 = HattoriAPI()
+
+    @api2.get("/retry")
+    def view(request) -> UserOut | TooManyRetries:
+        return TooManyRetries(retry_after=1)
+
+    schema = api2.get_openapi_schema()
+    body_429 = schema["paths"]["/api/retry"]["get"]["responses"][429]["content"][
+        "application/json"
+    ]["schema"]
+    ref = body_429["$ref"].rsplit("/", 1)[-1]
+    body_schema = schema["components"]["schemas"][ref]
+    assert body_schema["properties"]["code"]["const"] == "too_many"
+    assert body_schema["properties"]["retry_after"]["type"] == "integer"
+    assert "retry_after" in body_schema["required"]
+
+
+def test_body_inherited_from_intermediate_base():
+    """Setting body= on an intermediate generic base propagates to leaf classes
+    without them having to repeat it."""
+
+    from typing import TypeVar
+
+    E = TypeVar("E", bound=Enum)
+
+    class AppBadRequest(BadRequest[E], body=RetryBody):
+        pass
+
+    class _LeafE(Enum):
+        X = "leaf_x"
+
+    class Leaf(AppBadRequest[Literal[_LeafE.X]]):
+        message = "leaf"
+
+    instance = Leaf(retry_after=7)
+    assert instance.value.model_dump() == {
+        "code": "leaf_x",
+        "message": "leaf",
+        "retry_after": 7,
+    }
+
+
+def test_module_level_default_body_used_as_fallback():
+    class DefaultBody(ErrorBody):
+        request_id: str
+
+    original = get_default_error_body()
+    set_default_error_body(DefaultBody)
+    try:
+
+        class _DefE(Enum):
+            FOO = "foo"
+
+        class UsesDefault(BadRequest[Literal[_DefE.FOO]]):
+            message = "foo!"
+
+        instance = UsesDefault(request_id="abc-123")
+        assert instance.value.model_dump() == {
+            "code": "foo",
+            "message": "foo!",
+            "request_id": "abc-123",
+        }
+    finally:
+        set_default_error_body(original)
+
+
+def test_explicit_body_overrides_module_default():
+    class DefaultBody(ErrorBody):
+        request_id: str
+
+    original = get_default_error_body()
+    set_default_error_body(DefaultBody)
+    try:
+
+        class _OvrE(Enum):
+            BAR = "bar"
+
+        class Explicit(BadRequest[Literal[_OvrE.BAR]], body=RetryBody):
+            message = "bar!"
+
+        # request_id is NOT required; retry_after IS.
+        with pytest.raises(Exception):
+            Explicit()  # missing retry_after
+        instance = Explicit(retry_after=1)
+        assert "request_id" not in instance.value.model_dump()
+        assert instance.value.model_dump() == {
+            "code": "bar",
+            "message": "bar!",
+            "retry_after": 1,
+        }
+    finally:
+        set_default_error_body(original)
