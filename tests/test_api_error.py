@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from hattori import APIReturn, ApiError, ErrorBody, HattoriAPI, Schema
+from hattori import ApiError, APIReturn, ErrorBody, HattoriAPI, Schema
 from hattori.testing import TestClient
 
 
@@ -24,7 +24,7 @@ class UserNotFound(ApiError):
 
 class PaymentFailed(ApiError):
     code = 402
-    error_code = "payment_failed"   # no static message - must pass at call site
+    error_code = "payment_failed"  # no static message - must pass at call site
 
 
 api = HattoriAPI()
@@ -33,7 +33,7 @@ api = HattoriAPI()
 @api.get("/users/{id}")
 def get_user(request, id: int) -> UserOut | UserNotFound:
     if id == 0:
-        return UserNotFound()           # static message from ClassVar
+        return UserNotFound()  # static message from ClassVar
     if id == -1:
         return UserNotFound("runtime override message")
     return UserOut(id=id, name="alice")
@@ -64,7 +64,10 @@ def test_apierror_runtime_override():
 def test_apierror_dynamic_message():
     r = client.get("/pay/500")
     assert r.status_code == 402
-    assert r.json() == {"code": "payment_failed", "message": "Insufficient balance for $500"}
+    assert r.json() == {
+        "code": "payment_failed",
+        "message": "Insufficient balance for $500",
+    }
 
 
 def test_apierror_happy_path():
@@ -84,6 +87,7 @@ def test_apierror_shows_in_openapi():
 
 class RFC7807Problem(BaseModel):
     """Totally different error body shape. Nothing like ErrorBody."""
+
     type: str
     title: str
     status: int
@@ -92,6 +96,7 @@ class RFC7807Problem(BaseModel):
 
 class ProblemDetail(APIReturn[RFC7807Problem]):
     """User-defined base for a completely different error convention."""
+
     code: ClassVar[int]
     problem_type: ClassVar[str]
     title: ClassVar[str]
@@ -168,9 +173,7 @@ def test_custom_and_shipped_coexist():
     mixed = HattoriAPI()
 
     @mixed.get("/mixed/{id}")
-    def mixed_view(
-        request, id: int
-    ) -> UserOut | UserNotFound | ResourceGone:
+    def mixed_view(request, id: int) -> UserOut | UserNotFound | ResourceGone:
         if id == 0:
             return UserNotFound()
         if id == -1:
@@ -194,4 +197,7 @@ def test_custom_and_shipped_coexist():
 def test_errorbody_shape_is_exported_and_usable_directly():
     """Users should be able to reach ErrorBody for their own APIReturn
     subclasses without going through ApiError."""
-    assert ErrorBody(code="x", message="y").model_dump() == {"code": "x", "message": "y"}
+    assert ErrorBody(code="x", message="y").model_dump() == {
+        "code": "x",
+        "message": "y",
+    }

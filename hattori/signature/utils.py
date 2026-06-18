@@ -1,6 +1,7 @@
 import inspect
 import re
-from typing import Any, Callable, ForwardRef
+from collections.abc import Callable
+from typing import Any, ForwardRef
 
 from django.urls import register_converter
 from django.urls.converters import UUIDConverter

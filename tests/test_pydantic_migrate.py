@@ -1,5 +1,3 @@
-from typing import Optional
-
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -8,14 +6,14 @@ from hattori import Schema
 
 class OptModel(BaseModel):
     a: int = None
-    b: Optional[int]
-    c: Optional[int] = None
+    b: int | None
+    c: int | None = None
 
 
 class OptSchema(Schema):
     a: int = None
-    b: Optional[int]
-    c: Optional[int] = None
+    b: int | None
+    c: int | None = None
 
 
 def test_optional_pydantic_model():

@@ -1,5 +1,3 @@
-from typing import Any, Optional
-
 import pytest
 from pydantic import Field
 
@@ -8,9 +6,9 @@ from hattori.testing import TestClient
 
 
 class SomeResponse(Schema):
-    field1: Optional[int] = 1
-    field2: Optional[str] = "default value"
-    field3: Optional[int] = Field(None, alias="aliased")
+    field1: int | None = 1
+    field2: str | None = "default value"
+    field3: int | None = Field(None, alias="aliased")
 
 
 @pytest.mark.parametrize(

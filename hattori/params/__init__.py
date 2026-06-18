@@ -1,7 +1,6 @@
 import re
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
-
-from typing_extensions import Annotated
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
 from hattori.params import functions as param_functions
 
@@ -49,13 +48,13 @@ if TYPE_CHECKING:  # pragma: nocover
     Query = Annotated[T, param_functions.Query()]
     # mypy does not like to extend already annotated params
     # with extra annotation (so need to cheat with these XXX-Ex types):
-    from typing_extensions import Annotated as BodyEx
-    from typing_extensions import Annotated as CookieEx
-    from typing_extensions import Annotated as FileEx
-    from typing_extensions import Annotated as FormEx
-    from typing_extensions import Annotated as HeaderEx
-    from typing_extensions import Annotated as PathEx
-    from typing_extensions import Annotated as QueryEx
+    from typing import Annotated as BodyEx
+    from typing import Annotated as CookieEx
+    from typing import Annotated as FileEx
+    from typing import Annotated as FormEx
+    from typing import Annotated as HeaderEx
+    from typing import Annotated as PathEx
+    from typing import Annotated as QueryEx
 else:
     Body = ParamShortcut(param_functions.Body)
     Cookie = ParamShortcut(param_functions.Cookie)

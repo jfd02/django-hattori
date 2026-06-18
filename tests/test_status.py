@@ -65,9 +65,7 @@ def status_ellipsis(request, code: int) -> UserOut | ServerError:
 
 
 @api.get("/status_code_groups")
-def status_code_groups(
-    request, code: int
-) -> UserOut | Created | Redirect:
+def status_code_groups(request, code: int) -> UserOut | Created | Redirect:
     if code == 200:
         return {"id": 1, "name": "John"}
     if code == 201:
@@ -183,7 +181,7 @@ class _ValidateTracker:
 
     def __exit__(self, *exc):
         if "model_validate" in Schema.__dict__:
-            delattr(Schema, "model_validate")
+            del Schema.model_validate
 
 
 class TestSkipRevalidation:

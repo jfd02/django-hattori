@@ -1,5 +1,3 @@
-from typing import Union
-
 import pytest
 from pydantic import ValidationError
 
@@ -84,7 +82,7 @@ def check_list_model(request) -> list[UserModel]:
 
 
 @api.get("/check_union")
-def check_union(request, q: int) -> Union[int, UserModel] | BadRequestErr:
+def check_union(request, q: int) -> int | UserModel | BadRequestErr:
     if q == 0:
         return 1
     if q == 1:

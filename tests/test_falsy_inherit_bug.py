@@ -12,7 +12,6 @@ This same bug exists in operation.py _set_auth:
   When auth=[]: True and [] -> [], then [] or [[]] -> [[]]
 """
 
-
 from hattori import HattoriAPI, Router, Schema
 from hattori.constants import NOT_SET
 from hattori.operation import Operation
@@ -46,9 +45,9 @@ def test_set_auth_empty_list():
     op = object.__new__(Operation)
     op.auth_callbacks = []
     op._set_auth([])
-    assert (
-        op.auth_callbacks == []
-    ), f"Expected empty auth_callbacks but got {op.auth_callbacks!r}"
+    assert op.auth_callbacks == [], (
+        f"Expected empty auth_callbacks but got {op.auth_callbacks!r}"
+    )
 
 
 def test_set_auth_single_callable():

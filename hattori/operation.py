@@ -1,13 +1,14 @@
 import collections.abc
 import inspect
+from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Union,
     cast,
     get_args,
     get_origin,
+    get_type_hints,
 )
 
 import pydantic
@@ -21,7 +22,6 @@ from django.http import (
 )
 from django.http.response import HttpResponseBase
 from pydantic import BaseModel
-from typing_extensions import get_type_hints
 
 from hattori.compatibility.files import FIX_MIDDLEWARE_PATH, need_to_fix_request_files
 from hattori.compatibility.util import UNION_TYPES
@@ -35,13 +35,16 @@ from hattori.params.models import TModels
 from hattori.responses import APIReturn, resolve_api_return_schema
 from hattori.schema import Schema
 from hattori.signature import ViewSignature
-from hattori.streaming import StreamFormat, _StreamAlias, _serialize_item
+from hattori.streaming import StreamFormat, _serialize_item, _StreamAlias
 from hattori.utils import is_async_callable
 
 if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
 
 __all__ = ["Operation", "PathView"]
+
+# Sentinel marking that a streamed generator produced no items at all.
+_NO_FIRST_ITEM = object()
 
 
 class _ParsedAnnotation:
@@ -62,7 +65,7 @@ def _resolve_type_alias(tp: Any) -> Any:
         type_params = origin.__type_params__
         resolved = origin.__value__
         if type_params and args:
-            mapping = dict(zip(type_params, args))
+            mapping = dict(zip(type_params, args, strict=False))
             resolved = _substitute_typevars(resolved, mapping)
         return resolved
     return tp
@@ -147,7 +150,8 @@ def _parse_return_annotation(view_func: Callable) -> _ParsedAnnotation:
         if len(types) == 1:
             parsed.response_models[status_code] = types[0]
         else:
-            parsed.response_models[status_code] = Union[tuple(types)]
+            # Dynamic n-ary union from a runtime list; `|` has no variadic form.
+            parsed.response_models[status_code] = Union[tuple(types)]  # noqa: UP007
 
     return parsed
 
@@ -156,7 +160,11 @@ def _parse_api_return_arm(arm: Any, view_func: Callable) -> tuple[int, Any]:
     # Generic alias such as Created[UserOut]: status from origin's `code`,
     # body schema from the type argument.
     origin = get_origin(arm)
-    if origin is not None and isinstance(origin, type) and issubclass(origin, APIReturn):
+    if (
+        origin is not None
+        and isinstance(origin, type)
+        and issubclass(origin, APIReturn)
+    ):
         code = getattr(origin, "code", None)
         if not isinstance(code, int):
             raise ConfigError(
@@ -294,7 +302,7 @@ class Operation:
             for callback in callbacks:
                 callback(self)
 
-    def clone(self) -> "Operation":
+    def clone(self) -> Operation:
         """
         Create a fresh copy of this operation for binding to an API.
 
@@ -438,16 +446,29 @@ class Operation:
         assert self.stream_format is not None
         fmt = self.stream_format
 
-        ctx = {"request": request, "response_status": 200}
+        # Prime the generator up to its first yield (running the view body up to
+        # that point) so any headers/cookies/status it sets before streaming are
+        # captured now. WSGI flushes the status line and headers *before* iterating
+        # the body, so they must be copied onto the response before it is returned —
+        # copying them when the generator finishes is too late to reach the client.
+        # Headers set mid-stream cannot be honored; this is documented behavior.
+        try:
+            first_item = next(generator)
+        except StopIteration:
+            first_item = _NO_FIRST_ITEM
+
+        # Built after priming so a status set before the first yield is reflected.
+        ctx = {"request": request, "response_status": temporal_response.status_code}
 
         def content_iter() -> Any:
+            if first_item is _NO_FIRST_ITEM:
+                return
+            yield fmt.format_chunk(self._validate_stream_item(first_item, request, ctx))
             for item in generator:
-                data = self._validate_stream_item(item, request, ctx)
-                yield fmt.format_chunk(data)
-            # Copy headers/cookies after generator completes (user may set them inside)
-            self._copy_temporal_response(temporal_response, response)
+                yield fmt.format_chunk(self._validate_stream_item(item, request, ctx))
 
         response = self._create_streaming_response(content_iter(), temporal_response)
+        self._copy_temporal_response(temporal_response, response)
         return response
 
     def _set_auth(
@@ -455,7 +476,9 @@ class Operation:
     ) -> None:
         if auth is not None and auth is not NOT_SET:
             self.auth_callbacks = (
-                auth if isinstance(auth, collections.abc.Sequence) else [auth]
+                auth
+                if isinstance(auth, collections.abc.Sequence)
+                else [cast("Callable[..., Any]", auth)]
             )
 
     def _run_checks(
@@ -484,7 +507,7 @@ class Operation:
             try:
                 result = callback(request)
                 if inspect.iscoroutine(result):
-                    result = async_to_sync(lambda: result)()
+                    result = async_to_sync(lambda res=result: res)()
             except Exception as exc:
                 return self.api.on_exception(request, exc)
 
@@ -559,7 +582,7 @@ class Operation:
             and isinstance(result, BaseModel)
             and isinstance(result, resp_type)
         ):
-            result = self._dump_model(cast(BaseModel, result), ctx)
+            result = self._dump_model(result, ctx)
             return self.api.create_response(
                 request, result, temporal_response=temporal_response
             )
@@ -637,16 +660,28 @@ class AsyncOperation(Operation):
         assert self.stream_format is not None
         fmt = self.stream_format
 
-        ctx = {"request": request, "response_status": 200}
+        # Prime the generator up to its first yield so headers/cookies/status the
+        # view sets before streaming are captured now. ASGI flushes the response
+        # start (status + headers) before iterating the body, so they must be copied
+        # onto the response before it is returned. Headers set mid-stream cannot be
+        # honored; this is documented behavior.
+        try:
+            first_item = await anext(generator)
+        except StopAsyncIteration:
+            first_item = _NO_FIRST_ITEM
+
+        # Built after priming so a status set before the first yield is reflected.
+        ctx = {"request": request, "response_status": temporal_response.status_code}
 
         async def content_iter() -> Any:
+            if first_item is _NO_FIRST_ITEM:
+                return
+            yield fmt.format_chunk(self._validate_stream_item(first_item, request, ctx))
             async for item in generator:
-                data = self._validate_stream_item(item, request, ctx)
-                yield fmt.format_chunk(data)
-            # Copy headers/cookies after generator completes
-            self._copy_temporal_response(temporal_response, response)
+                yield fmt.format_chunk(self._validate_stream_item(item, request, ctx))
 
         response = self._create_streaming_response(content_iter(), temporal_response)
+        self._copy_temporal_response(temporal_response, response)
         return response
 
     async def _run_checks(  # type: ignore
@@ -761,7 +796,7 @@ class PathView:
 
         return operation
 
-    def clone(self) -> "PathView":
+    def clone(self) -> PathView:
         """
         Create a fresh copy of this PathView with cloned operations.
 
@@ -822,7 +857,7 @@ class PathView:
         return await sync_to_async(operation.run)(request, *a, **kw)
 
     def _find_operation(self, request: HttpRequest) -> Operation | None:
-        return self._method_map.get(request.method)
+        return self._method_map.get(request.method or "")
 
     def _not_allowed(self) -> HttpResponse:
         return HttpResponseNotAllowed(

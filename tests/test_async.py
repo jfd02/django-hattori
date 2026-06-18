@@ -25,9 +25,7 @@ async def test_asyncio_operations():
                 return key
 
     @api.get("/async", auth=KeyQuery())
-    async def async_view(
-        request, payload: int
-    ) -> AsyncResult:
+    async def async_view(request, payload: int) -> AsyncResult:
         await asyncio.sleep(0)
         return {"is_async": True}
 

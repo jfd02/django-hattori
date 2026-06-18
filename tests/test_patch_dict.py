@@ -1,4 +1,3 @@
-
 import pytest
 
 from hattori import Field, HattoriAPI, Schema
@@ -40,6 +39,23 @@ def patch_constrained(
     return {"payload": payload}
 
 
+class NullableNoDefaultSchema(Schema):
+    name: str
+    # nullable but with no default -> still a *required* field in pydantic v2
+    note: str | None
+
+
+nullable_api = HattoriAPI()
+nullable_client = TestClient(nullable_api)
+
+
+@nullable_api.patch("/patch-nullable")
+def patch_nullable(
+    request, payload: PatchDict[NullableNoDefaultSchema]
+) -> PatchPayloadResult:
+    return {"payload": payload}
+
+
 class SomeSchema(Schema):
     name: str
     age: int
@@ -57,9 +73,7 @@ def patch(request, payload: PatchDict[SomeSchema]) -> PatchPayloadTypeResult:
 
 
 @api.patch("/patch-inherited")
-def patch_inherited(
-    request, payload: PatchDict[OtherSchema]
-) -> PatchPayloadTypeResult:
+def patch_inherited(request, payload: PatchDict[OtherSchema]) -> PatchPayloadTypeResult:
     return {"payload": payload, "type": str(type(payload))}
 
 
@@ -162,6 +176,24 @@ def test_patch_preserves_ge():
 
     response = constrained_client.patch("/patch-constrained", json={"price": -1})
     assert response.status_code == 422
+
+
+def test_patch_nullable_without_default_is_optional():
+    """A nullable field with no default must still be optional in PatchDict."""
+    # Omitting the nullable-without-default field must not be a validation error.
+    response = nullable_client.patch("/patch-nullable", json={})
+    assert response.status_code == 200
+    assert response.json() == {"payload": {}}
+
+    # Explicitly setting it to null still works.
+    response = nullable_client.patch("/patch-nullable", json={"note": None})
+    assert response.status_code == 200
+    assert response.json() == {"payload": {"note": None}}
+
+    # And setting a value works too.
+    response = nullable_client.patch("/patch-nullable", json={"note": "hi"})
+    assert response.status_code == 200
+    assert response.json() == {"payload": {"note": "hi"}}
 
 
 def test_patch_constrained_partial_update():

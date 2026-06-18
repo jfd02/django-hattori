@@ -1,7 +1,6 @@
 """Test that Union types containing both generic types and pydantic models
 are correctly classified as Body params, not Query params."""
 
-
 from hattori import HattoriAPI, Schema
 from hattori.testing import TestClient
 
@@ -19,9 +18,7 @@ api = HattoriAPI()
 
 
 @api.post("/union-dict-model")
-def union_endpoint(
-    request, payload: dict[str, int] | ItemSchema
-) -> UnionResponse:
+def union_endpoint(request, payload: dict[str, int] | ItemSchema) -> UnionResponse:
     """Dict is generic but not a collection — only is_pydantic_model catches this."""
     if isinstance(payload, dict):
         return {"type": "dict", "data": payload}

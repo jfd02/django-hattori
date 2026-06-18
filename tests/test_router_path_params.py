@@ -1,4 +1,3 @@
-
 import pytest
 
 from hattori import HattoriAPI, Path, Router
@@ -11,30 +10,22 @@ router_with_multiple = Router()
 
 
 @router_with_path_type.get("/metadata")
-def get_item_metadata(
-    request, item_id: int = Path(None)
-) -> int:
+def get_item_metadata(request, item_id: int = Path(None)) -> int:
     return item_id
 
 
 @router_without_path_type.get("/")
-def get_item_metadata_2(
-    request, item_id: str = Path(None)
-) -> str:
+def get_item_metadata_2(request, item_id: str = Path(None)) -> str:
     return item_id
 
 
 @router_without_path_type.get("/metadata")
-def get_item_metadata_3(
-    request, item_id: str = Path(None)
-) -> str:
+def get_item_metadata_3(request, item_id: str = Path(None)) -> str:
     return item_id
 
 
 @router_without_path_type.get("/alt")
-def get_item_metadata_4(
-    request, item_id: str = Path(None)
-) -> str:
+def get_item_metadata_4(request, item_id: str = Path(None)) -> str:
     return item_id
 
 

@@ -20,11 +20,11 @@ ABS_TPL_PATH = Path(__file__).parent.parent / "templates/hattori/"
 class DocsBase(ABC):
     @abstractmethod
     def render_page(
-        self, request: HttpRequest, api: "HattoriAPI", **kwargs: Any
+        self, request: HttpRequest, api: HattoriAPI, **kwargs: Any
     ) -> HttpResponse:
         pass  # pragma: no cover
 
-    def get_openapi_url(self, api: "HattoriAPI", path_params: dict[str, Any]) -> str:
+    def get_openapi_url(self, api: HattoriAPI, path_params: dict[str, Any]) -> str:
         return reverse(f"{api.urls_namespace}:openapi-json", kwargs=path_params)
 
 
@@ -43,7 +43,7 @@ class Swagger(DocsBase):
             self.settings.update(settings)
 
     def render_page(
-        self, request: HttpRequest, api: "HattoriAPI", **kwargs: Any
+        self, request: HttpRequest, api: HattoriAPI, **kwargs: Any
     ) -> HttpResponse:
         self.settings["url"] = self.get_openapi_url(api, kwargs)
         context = {
@@ -66,7 +66,7 @@ class Redoc(DocsBase):
             self.settings.update(settings)
 
     def render_page(
-        self, request: HttpRequest, api: "HattoriAPI", **kwargs: Any
+        self, request: HttpRequest, api: HattoriAPI, **kwargs: Any
     ) -> HttpResponse:
         context = {
             "redoc_settings": json.dumps(self.settings, indent=1),
@@ -101,7 +101,7 @@ def _render_cdn_template(
     return HttpResponse(html)
 
 
-def _csrf_needed(api: "HattoriAPI") -> bool:
+def _csrf_needed(api: HattoriAPI) -> bool:
     """
     Check if any of the API's auth handlers require CSRF protection.
     """

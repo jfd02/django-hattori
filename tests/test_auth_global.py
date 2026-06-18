@@ -1,4 +1,3 @@
-
 from hattori import HattoriAPI, Router, Schema
 from hattori.security import APIKeyQuery
 from hattori.testing import TestClient

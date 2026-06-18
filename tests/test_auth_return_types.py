@@ -36,7 +36,7 @@ class AccountLocked(ApiError):
 class TypedBearer(HttpBearer):
     def authenticate(
         self, request, token: str
-    ) -> "User | BadToken | ExpiredToken | AccountLocked":
+    ) -> User | BadToken | ExpiredToken | AccountLocked:
         if token == "bad":
             return BadToken()
         if token == "expired":
@@ -45,7 +45,9 @@ class TypedBearer(HttpBearer):
             return AccountLocked()
         if token == "ok":
             return User(username="alice")
-        return None  # try-next-callback semantics; no callback → 401 AuthenticationError
+        return (
+            None  # try-next-callback semantics; no callback → 401 AuthenticationError
+        )
 
 
 api = HattoriAPI()

@@ -4,7 +4,6 @@ import uuid
 import pytest
 from pydantic import BaseModel
 
-
 from hattori import HattoriAPI
 from hattori.constants import NOT_SET
 from hattori.signature.details import is_pydantic_model

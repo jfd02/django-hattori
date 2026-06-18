@@ -1,4 +1,3 @@
-
 import pytest
 
 from hattori import HattoriAPI, Query

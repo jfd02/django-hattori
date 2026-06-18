@@ -9,7 +9,6 @@ These tests verify that:
 5. Operation.clone() copies all attributes
 """
 
-
 import pytest
 
 from hattori import HattoriAPI, Router, Schema
@@ -179,10 +178,14 @@ class TestNestedRouterMountIsolation:
             return {"auth": request.auth}
 
         parent_one = Router()
-        parent_one.add_router("/child", child, auth=QueryAuth("one"), url_name_prefix="one")
+        parent_one.add_router(
+            "/child", child, auth=QueryAuth("one"), url_name_prefix="one"
+        )
 
         parent_two = Router()
-        parent_two.add_router("/child", child, auth=QueryAuth("two"), url_name_prefix="two")
+        parent_two.add_router(
+            "/child", child, auth=QueryAuth("two"), url_name_prefix="two"
+        )
 
         api = HattoriAPI(urls_namespace="nested-auth-isolation")
         api.add_router("/one", parent_one)
@@ -247,6 +250,7 @@ class TestNestedRouterMountIsolation:
 
         with pytest.raises(ConfigError, match="Duplicate URL name 'shared'"):
             _ = api.urls
+
 
 class TestFreezeBehavior:
     """Test that routers are frozen after URLs are generated."""
@@ -407,7 +411,7 @@ class TestOperationClone:
         assert cloned.url_name == pv.url_name
 
         # Operations should be cloned, not same instances
-        for orig_op, clone_op in zip(pv.operations, cloned.operations):
+        for orig_op, clone_op in zip(pv.operations, cloned.operations, strict=False):
             assert orig_op is not clone_op
             assert clone_op.path == orig_op.path
             assert clone_op.methods == orig_op.methods
@@ -633,9 +637,9 @@ class TestCloneCompleteness:
 
         # Verify all known attributes exist on both original and clone
         for attr in KNOWN_ATTRIBUTES:
-            assert hasattr(
-                op, attr
-            ), f"KNOWN_ATTRIBUTES lists '{attr}' but Operation doesn't have it"
+            assert hasattr(op, attr), (
+                f"KNOWN_ATTRIBUTES lists '{attr}' but Operation doesn't have it"
+            )
             assert hasattr(cloned, attr), f"clone() doesn't set attribute: {attr}"
 
 

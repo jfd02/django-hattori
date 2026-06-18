@@ -1,10 +1,10 @@
 import collections.abc
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
 )
 
 from django.urls import URLPattern
@@ -35,7 +35,7 @@ class RouterMount:
     or multiple mount points within the same API.
     """
 
-    template: "Router"
+    template: Router
     prefix: str
     url_name_prefix: str | None = None
     auth: Any = NOT_SET
@@ -64,7 +64,7 @@ class _OperationOptions:
     include_in_schema: bool = True
     openapi_extra: dict[str, Any] | None = None
 
-    def with_default_auth(self, auth: Any) -> "_OperationOptions":
+    def with_default_auth(self, auth: Any) -> _OperationOptions:
         if self.auth is not NOT_SET:
             return self
         return replace(self, auth=auth)
@@ -95,7 +95,7 @@ class BoundRouter:
     creates a new BoundRouter instance, ensuring complete isolation between mounts.
     """
 
-    def __init__(self, mount: RouterMount, api: "HattoriAPI") -> None:
+    def __init__(self, mount: RouterMount, api: HattoriAPI) -> None:
         self.mount = mount
         self.template = mount.template
         self.api = api
@@ -156,8 +156,8 @@ class BoundRouter:
                         operation._set_auth(self.api.auth)
 
                 # Apply tags inheritance
-                if operation.tags is None and self.tags is not None:  # type: ignore[has-type]
-                    operation.tags = self.tags  # type: ignore[has-type]
+                if operation.tags is None and self.tags is not None:
+                    operation.tags = self.tags
 
                 # Apply decorators (fresh application - no tracking needed)
                 for decorator, mode in effective_decorators:
@@ -214,9 +214,7 @@ class Router:
         self.exclude_none = exclude_none
 
         self.path_operations: dict[str, PathView] = {}
-        self._routers: list[
-            tuple[str, Router, Any, list[str] | None, str | None]
-        ] = []
+        self._routers: list[tuple[str, Router, Any, list[str] | None, str | None]] = []
         self._decorators: list[tuple[Callable, DecoratorMode]] = []
 
     def _freeze(self) -> None:
@@ -534,7 +532,7 @@ class Router:
         return None
 
     def urls_paths(
-        self, prefix: str, api: "HattoriAPI | None" = None
+        self, prefix: str, api: HattoriAPI | None = None
     ) -> collections.abc.Iterator[URLPattern]:
         """
         Generate URL patterns for this router.
@@ -567,7 +565,7 @@ class Router:
     def add_router(
         self,
         prefix: str,
-        router: "Router | str",
+        router: Router | str,
         *,
         auth: Any = NOT_SET,
         tags: list[str] | None = None,

@@ -53,9 +53,9 @@ def listview1(
     form: list[int] = Form(...),
 ) -> QueryFormResponse:
     return {
-            "query": query,
-            "form": form,
-        }
+        "query": query,
+        "form": form,
+    }
 
 
 @router.post("/list2")
@@ -65,24 +65,24 @@ def listview2(
     query: list[int] = Query(...),
 ) -> QueryBodyResponse:
     return {
-            "query": query,
-            "body": body,
-        }
+        "query": query,
+        "body": body,
+    }
 
 
 @router.post("/list3")
 def listview3(request, body: list[BodyModel]) -> BodyModelListResponse:
     return {
-            "body": body,
-        }
+        "body": body,
+    }
 
 
 @router.post("/list-default")
 def listviewdefault(request, body: list[int] = [1]) -> BodyIntListResponse:  # noqa: B006
     # By default List[anything] is treated for body
     return {
-            "body": body,
-        }
+        "body": body,
+    }
 
 
 class Filters(Schema):
@@ -101,8 +101,8 @@ def listview4(
     filters: Filters = Query(...),
 ) -> FiltersResponse:
     return {
-            "filters": filters,
-        }
+        "filters": filters,
+    }
 
 
 class ConListSchema(Schema):
@@ -120,9 +120,9 @@ def listview5(
     a_query: Data = Query(...),
 ) -> QueryBodyResponse:
     return {
-            "query": a_query.data.query,
-            "body": body,
-        }
+        "query": a_query.data.query,
+        "body": body,
+    }
 
 
 @router.post("/list6")

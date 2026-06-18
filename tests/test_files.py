@@ -1,4 +1,3 @@
-
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.datastructures import MultiValueDict
@@ -39,16 +38,12 @@ def file_no_marker(request, file: UploadedFile) -> FileNameDataResponse:
 
 
 @api.post("/file3")
-def file_no_marker2(
-    request, file: UploadedFile = None
-) -> FileDataResponse:
+def file_no_marker2(request, file: UploadedFile = None) -> FileDataResponse:
     return {"data": file and file.read().decode() or None}
 
 
 @api.post("/file4")
-def file_no_marker4(
-    request, files: list[UploadedFile]
-) -> FileResultResponse:
+def file_no_marker4(request, files: list[UploadedFile]) -> FileResultResponse:
     return {"result": [f.read().decode() for f in files]}
 
 
@@ -167,7 +162,5 @@ def test_files_fix_middleware():
     with pytest.raises(ConfigError):
 
         @api.patch("/file1")
-        def patch_with_file(
-            request, file: UploadedFile
-        ) -> FileNameResponse:
+        def patch_with_file(request, file: UploadedFile) -> FileNameResponse:
             return {"name": file.name}

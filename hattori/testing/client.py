@@ -1,5 +1,6 @@
 import inspect
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import Mock
 from urllib.parse import urljoin
 
@@ -37,7 +38,7 @@ class HattoriClientBase:
 
     def get(
         self, path: str, data: dict | None = None, **request_params: Any
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         return self.request("GET", path, data, **request_params)
 
     def post(
@@ -46,7 +47,7 @@ class HattoriClientBase:
         data: dict | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         return self.request("POST", path, data, json, **request_params)
 
     def patch(
@@ -55,7 +56,7 @@ class HattoriClientBase:
         data: dict | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         return self.request("PATCH", path, data, json, **request_params)
 
     def put(
@@ -64,7 +65,7 @@ class HattoriClientBase:
         data: dict | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         return self.request("PUT", path, data, json, **request_params)
 
     def delete(
@@ -73,7 +74,7 @@ class HattoriClientBase:
         data: dict | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         return self.request("DELETE", path, data, json, **request_params)
 
     def request(
@@ -83,7 +84,7 @@ class HattoriClientBase:
         data: dict | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         if json is not None:
             request_params["body"] = json_dumps(json)
         if data is None:
@@ -149,7 +150,7 @@ class HattoriClientBase:
         request.FILES = request_params.pop("FILES", {})
 
         request.META.update({
-            f"HTTP_{k.replace("-", "_")}": v
+            f"HTTP_{k.replace('-', '_')}": v
             for k, v in request_params.pop("headers", {}).items()
         })
 
@@ -188,14 +189,14 @@ class HattoriClientBase:
 
 
 class TestClient(HattoriClientBase):
-    def _call(self, func: Callable, request: Mock, kwargs: dict) -> "HattoriTestResponse":
+    def _call(self, func: Callable, request: Mock, kwargs: dict) -> HattoriTestResponse:
         return HattoriTestResponse(func(request, **kwargs))
 
 
 class TestAsyncClient(HattoriClientBase):
     async def _call(
         self, func: Callable, request: Mock, kwargs: dict
-    ) -> "HattoriTestResponse":
+    ) -> HattoriTestResponse:
         http_response = await func(request, **kwargs)
         if http_response.streaming and inspect.isasyncgen(
             http_response.streaming_content

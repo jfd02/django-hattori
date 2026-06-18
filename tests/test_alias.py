@@ -1,4 +1,3 @@
-
 from hattori import Field, HattoriAPI, Schema
 
 

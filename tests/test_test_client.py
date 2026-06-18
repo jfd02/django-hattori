@@ -5,7 +5,6 @@ from unittest import mock
 import pytest
 from django.utils import timezone
 
-
 from hattori import Router
 from hattori.schema import Schema
 from hattori.testing import TestClient

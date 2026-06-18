@@ -1,9 +1,9 @@
 import collections.abc
 import re
+from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     TypeVar,
 )
 
@@ -33,8 +33,8 @@ if TYPE_CHECKING:
 __all__ = ["HattoriAPI"]
 
 _E = TypeVar("_E", bound=Exception)
-Exc = _E | type[_E]
-ExcHandler = Callable[[HttpRequest, Exc[_E]], HttpResponse]
+type Exc[E: Exception] = E | type[E]
+type ExcHandler[E: Exception] = Callable[[HttpRequest, Exc[E]], HttpResponse]
 
 
 class HattoriAPI:
@@ -49,7 +49,7 @@ class HattoriAPI:
         version: str = "1.0.0",
         description: str = "",
         openapi_url: str | None = "/openapi.json",
-        docs: DocsBase = Swagger(),
+        docs: DocsBase | None = None,
         docs_url: str | None = "/docs",
         docs_decorator: Callable[[TCallable], TCallable] | None = None,
         servers: list[dict[str, Any]] | None = None,
@@ -79,7 +79,7 @@ class HattoriAPI:
         self.version = version
         self.description = description
         self.openapi_url = openapi_url
-        self.docs = docs
+        self.docs = docs or Swagger()
         self.docs_url = docs_url
         self.docs_decorator = docs_decorator
         self.servers = servers or []
@@ -90,7 +90,7 @@ class HattoriAPI:
         )
         self.openapi_extra = openapi_extra or {}
 
-        self._exception_handlers: dict[Exc, ExcHandler] = {}
+        self._exception_handlers: dict[type[Exception], ExcHandler[Any]] = {}
         self.set_default_exception_handlers()
 
         self.auth: collections.abc.Sequence[Callable] | NOT_SET_TYPE | None
@@ -586,7 +586,7 @@ class HattoriAPI:
         return get_schema(api=self, path_prefix=path_prefix)
 
     def get_openapi_operation_id(
-        self, operation: "Operation", router: BoundRouter
+        self, operation: Operation, router: BoundRouter
     ) -> str:
         name = operation.view_func.__name__
         prefix = re.sub(r"\{[^}]+\}", "", router.prefix or "")
@@ -595,7 +595,7 @@ class HattoriAPI:
             return f"{prefix.replace('/', '_')}_{name}"
         return name
 
-    def get_operation_url_name(self, operation: "Operation", router: Router) -> str:
+    def get_operation_url_name(self, operation: Operation, router: Router) -> str:
         """
         Get the default URL name to use for an operation if it wasn't
         explicitly provided.

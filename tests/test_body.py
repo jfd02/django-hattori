@@ -13,16 +13,12 @@ api = HattoriAPI()
 
 
 @api.post("/task")
-def create_task(
-    request, start: int = Body(...), end: int = Body(...)
-) -> list[int]:
+def create_task(request, start: int = Body(...), end: int = Body(...)) -> list[int]:
     return [start, end]
 
 
 @api.post("/task2")
-def create_task2(
-    request, start: int = Body(2), end: int = Form(1)
-) -> list[int]:
+def create_task2(request, start: int = Body(2), end: int = Form(1)) -> list[int]:
     return [start, end]
 
 

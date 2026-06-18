@@ -1,7 +1,6 @@
-from typing import Union
+from typing import Annotated, Literal
 
 from pydantic import Field
-from typing_extensions import Annotated, Literal
 
 from hattori import HattoriAPI, Schema
 from hattori.testing import TestClient
@@ -23,26 +22,22 @@ class ExampleResult(Schema):
 
 
 # Annotated union with discriminator
-UnionDiscriminator = Annotated[Union[Example1, Example2], Field(discriminator="label")]
+UnionDiscriminator = Annotated[Example1 | Example2, Field(discriminator="label")]
 
 # Regular union without annotation
-RegularUnion = Union[Example1, Example2]
+RegularUnion = Example1 | Example2
 
 
 api = HattoriAPI()
 
 
 @api.post("/descr-union")
-def create_example(
-    request, payload: UnionDiscriminator
-) -> ExampleResult:
+def create_example(request, payload: UnionDiscriminator) -> ExampleResult:
     return {"data": payload.model_dump(), "type": payload.__class__.__name__}
 
 
 @api.post("/regular-union")
-def create_example_regular(
-    request, payload: RegularUnion
-) -> ExampleResult:
+def create_example_regular(request, payload: RegularUnion) -> ExampleResult:
     return {"data": payload.model_dump(), "type": payload.__class__.__name__}
 
 

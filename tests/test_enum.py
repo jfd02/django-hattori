@@ -57,9 +57,7 @@ def enum_optional(
 
 
 @api.get("/optional2")
-def enum_optional2(
-    request, extra: ExtraEnum | None = None
-) -> ExtraResponse:
+def enum_optional2(request, extra: ExtraEnum | None = None) -> ExtraResponse:
     return {"extra": extra}
 
 

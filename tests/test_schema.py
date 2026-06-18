@@ -1,7 +1,7 @@
 """Schema is a thin BaseModel wrapper. No ORM coercion, no resolvers,
 no dotted aliases. These tests pin that contract."""
 
-from typing import Literal, Union
+from typing import Literal
 
 import pytest
 from pydantic_core import ValidationError
@@ -50,7 +50,7 @@ def test_schema_validates_assignment_and_reassigns_the_value():
 
 @pytest.mark.parametrize("validate_assignment", [False, None])
 def test_schema_skips_validation_when_validate_assignment_False(
-    validate_assignment: Union[bool, None],
+    validate_assignment: bool | None,
 ):
     class ValidateAssignmentSchema(Schema):
         str_var: str

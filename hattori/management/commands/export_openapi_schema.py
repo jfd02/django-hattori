@@ -88,8 +88,7 @@ class Command(BaseCommand):
         result = orjson.dumps(schema, default=json_default, option=opt)
 
         if options["output"]:
-            with Path(options["output"]).open("wb") as f:
-                f.write(result)
+            Path(options["output"]).write_bytes(result)
         else:
             self.stdout.write(result.decode())
 

@@ -1,4 +1,3 @@
-
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from hattori import File, Form, HattoriAPI, Schema, UploadedFile

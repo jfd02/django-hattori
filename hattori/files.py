@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from django.core.files.uploadedfile import UploadedFile as DjangoUploadedFile
 from pydantic_core import core_schema

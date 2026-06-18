@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 __all__ = ["get_openapi_urls", "get_root_url"]
 
 
-def get_openapi_urls(api: "HattoriAPI") -> list[Any]:
+def get_openapi_urls(api: HattoriAPI) -> list[Any]:
     result = []
 
     if api.openapi_url:
@@ -22,9 +22,9 @@ def get_openapi_urls(api: "HattoriAPI") -> list[Any]:
             path(api.openapi_url.lstrip("/"), view, name="openapi-json"),
         )
 
-        assert (
-            api.openapi_url != api.docs_url
-        ), "Please use different urls for openapi_url and docs_url"
+        assert api.openapi_url != api.docs_url, (
+            "Please use different urls for openapi_url and docs_url"
+        )
 
         if api.docs_url:
             view = partial(openapi_view, api=api)
@@ -37,5 +37,5 @@ def get_openapi_urls(api: "HattoriAPI") -> list[Any]:
     return result
 
 
-def get_root_url(api: "HattoriAPI") -> Any:
+def get_root_url(api: HattoriAPI) -> Any:
     return path("", partial(default_home, api=api), name="api-root")

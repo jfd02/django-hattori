@@ -1,12 +1,34 @@
 """Django Hattori - Fast Django REST framework"""
 
-__version__ = "1.5.3"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("django-hattori")
+except PackageNotFoundError:  # pragma: no cover
+    __version__ = "0.0.0"
 
 
 from pydantic import Field
 
+from hattori.errors import ApiError, ErrorBody
 from hattori.files import UploadedFile
 from hattori.filter_schema import FilterConfigDict, FilterLookup, FilterSchema
+from hattori.http_errors import (
+    BadRequest,
+    Conflict,
+    Forbidden,
+    Gone,
+    HTTPError,
+    InternalServerError,
+    MethodNotAllowed,
+    NotFound,
+    PayloadTooLarge,
+    TooManyRequests,
+    Unauthorized,
+    UnprocessableEntity,
+    get_default_error_body,
+    set_default_error_body,
+)
 from hattori.main import HattoriAPI
 from hattori.openapi.docs import Redoc, Swagger
 from hattori.params import (
@@ -27,23 +49,6 @@ from hattori.params import (
     QueryEx,
 )
 from hattori.patch_dict import PatchDict
-from hattori.errors import ApiError, ErrorBody
-from hattori.http_errors import (
-    BadRequest,
-    Conflict,
-    Forbidden,
-    get_default_error_body,
-    Gone,
-    HTTPError,
-    InternalServerError,
-    MethodNotAllowed,
-    NotFound,
-    PayloadTooLarge,
-    set_default_error_body,
-    TooManyRequests,
-    Unauthorized,
-    UnprocessableEntity,
-)
 from hattori.responses import Accepted, APIReturn, Created, NoContent
 from hattori.router import Router
 from hattori.schema import Schema

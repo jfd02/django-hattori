@@ -1,13 +1,11 @@
-from typing import Union
+from typing import Annotated
 from unittest.mock import Mock
 from uuid import uuid4
 
 import pydantic
 import pytest
 from django.contrib.admin.views.decorators import staff_member_required
-from django.db import models
 from django.test import Client, override_settings
-from typing_extensions import Annotated
 
 from hattori import (
     APIReturn,
@@ -96,16 +94,12 @@ def method_alias(request, data: Payload) -> Response:
 
 
 @api.post("/test_list")
-def method_list_response(
-    request, data: list[Payload]
-) -> list[Response]:
+def method_list_response(request, data: list[Payload]) -> list[Response]:
     return []
 
 
 @api.post("/test-body")
-def method_body(
-    request, i: int = Body(...), f: float = Body(...)
-) -> Response:
+def method_body(request, i: int = Body(...), f: float = Body(...)) -> Response:
     return dict(i=i, f=f)
 
 
@@ -135,23 +129,17 @@ def method_pathex(
 
 
 @api.post("/test-form")
-def method_form(
-    request, data: Payload = Form(...)
-) -> Response:
+def method_form(request, data: Payload = Form(...)) -> Response:
     return dict(i=data.i, f=data.f)
 
 
 @api.post("/test-form-single")
-def method_form_single(
-    request, data: float = Form(...)
-) -> Response:
+def method_form_single(request, data: float = Form(...)) -> Response:
     return dict(i=int(data), f=data)
 
 
 @api.post("/test-form-body")
-def method_form_body(
-    request, i: int = Form(10), s: str = Body("10")
-) -> Response:
+def method_form_body(request, i: int = Form(10), s: str = Body("10")) -> Response:
     return dict(i=i, s=s)
 
 
@@ -172,23 +160,17 @@ def method_body_file(
 
 
 @api.post("/test-union-type")
-def method_union_payload(
-    request, data: Union[TypeA, TypeB]
-) -> Response:
+def method_union_payload(request, data: TypeA | TypeB) -> Response:
     return dict(i=data.i, f=data.f)
 
 
 @api.post("/test-union-type-with-simple")
-def method_union_payload_and_simple(
-    request, data: Union[int, TypeB]
-) -> Response:
+def method_union_payload_and_simple(request, data: int | TypeB) -> Response:
     return data.dict()
 
 
 @api.post("/test-new-union-type")
-def method_new_union_payload(
-    request, data: "TypeA | TypeB"
-) -> Response:
+def method_new_union_payload(request, data: TypeA | TypeB) -> Response:
     return dict(i=data.i, f=data.f)
 
 
@@ -908,9 +890,7 @@ def test_schema_deprecated_example_examples(schema):
             "description": "OK",
             "content": {
                 "application/json": {
-                    "schema": {
-                        "$ref": "#/components/schemas/DeprecatedExampleResult"
-                    },
+                    "schema": {"$ref": "#/components/schemas/DeprecatedExampleResult"},
                 }
             },
         },
@@ -1280,9 +1260,7 @@ def test_nested_models_with_and_without_alias_keep_inner_refs_consistent():
     plain_outer = schemas[plain_outer_ref.rsplit("/", 1)[-1]]
     aliased_outer = schemas[aliased_outer_ref.rsplit("/", 1)[-1]]
 
-    plain_inner = schemas[
-        plain_outer["properties"]["inner"]["$ref"].rsplit("/", 1)[-1]
-    ]
+    plain_inner = schemas[plain_outer["properties"]["inner"]["$ref"].rsplit("/", 1)[-1]]
     aliased_inner = schemas[
         aliased_outer["properties"]["inner"]["$ref"].rsplit("/", 1)[-1]
     ]
@@ -1334,9 +1312,7 @@ def test_422_not_overwritten():
         code = 422
 
     @api.get("/items")
-    def get_items(
-        request, q: str = Query(...)
-    ) -> TypeA | ValidationFailed:
+    def get_items(request, q: str = Query(...)) -> TypeA | ValidationFailed:
         return {"a": q}
 
     schema = api.get_openapi_schema()

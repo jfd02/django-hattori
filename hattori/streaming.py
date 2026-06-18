@@ -18,11 +18,21 @@ class _StreamAlias:
 
 
 class StreamFormat:
-    """Base class for streaming formats. Extensible by users."""
+    """Base class for streaming formats. Extensible by users.
+
+    Anything affecting the response status line or headers — status code,
+    headers, cookies set on the injected ``response`` object — must be done
+    *before the first ``yield``*. The status line and headers are flushed to
+    the client before the body is streamed, so changes made after the first
+    ``yield`` cannot be sent and are ignored. For the same reason, an exception
+    raised after the first ``yield`` cannot be converted into an error
+    response; only one raised before it is dispatched through the API's
+    exception handling.
+    """
 
     media_type: str
 
-    def __class_getitem__(cls, item_type: type) -> "_StreamAlias":
+    def __class_getitem__(cls, item_type: type) -> _StreamAlias:
         return _StreamAlias(cls, item_type)
 
     @classmethod

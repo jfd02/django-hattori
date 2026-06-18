@@ -1,6 +1,5 @@
 """Test that empty string POST values don't crash _MultiPartBody parsing."""
 
-
 from hattori import Body, Form, Router, Schema
 from hattori.testing import TestClient
 

@@ -2,7 +2,7 @@ from typing import Annotated
 
 from util import pydantic_ref_fix
 
-from hattori import Body, Cookie, Form, Header, HattoriAPI, Path, Query, Schema
+from hattori import Body, Cookie, Form, HattoriAPI, Header, Path, Query, Schema
 from hattori.testing import TestClient
 
 
@@ -69,9 +69,7 @@ def query_list(
 
 
 @api.post("/headers")
-def headers(
-    request, h: Annotated[str, Header()] = "some-default"
-) -> HeaderResult:
+def headers(request, h: Annotated[str, Header()] = "some-default") -> HeaderResult:
     return {"h": h}
 
 
@@ -162,9 +160,7 @@ def test_openapi_schema():
                         "description": "OK",
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/MultiOpResult"
-                                }
+                                "schema": {"$ref": "#/components/schemas/MultiOpResult"}
                             }
                         },
                     },
@@ -242,9 +238,7 @@ def test_openapi_schema():
                         "description": "OK",
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HeaderResult"
-                                }
+                                "schema": {"$ref": "#/components/schemas/HeaderResult"}
                             }
                         },
                     },
@@ -262,9 +256,7 @@ def test_openapi_schema():
                         "description": "OK",
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/BodyOpResult"
-                                }
+                                "schema": {"$ref": "#/components/schemas/BodyOpResult"}
                             }
                         },
                     },

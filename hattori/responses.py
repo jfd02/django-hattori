@@ -21,11 +21,6 @@ __all__ = [
     "json_dumps",
     "json_loads",
     "JSON_OPT",
-    "codes_1xx",
-    "codes_2xx",
-    "codes_3xx",
-    "codes_4xx",
-    "codes_5xx",
 ]
 
 JSON_OPT = orjson.OPT_UTC_Z | orjson.OPT_NON_STR_KEYS
@@ -100,23 +95,26 @@ def resolve_api_return_schema(cls: type) -> Any:
 class Created(APIReturn[T]):
     """201 Created. Use as ``Created[BodyType](body)`` in return positions::
 
-        def create(...) -> Created[UserOut] | DuplicateName:
-            return Created(user)
+    def create(...) -> Created[UserOut] | DuplicateName:
+        return Created(user)
     """
+
     code: ClassVar[int] = 201
 
 
 class Accepted(APIReturn[T]):
     """202 Accepted. Use as ``Accepted[BodyType](body)`` for async/queued work."""
+
     code: ClassVar[int] = 202
 
 
 class NoContent(APIReturn[None]):
     """204 No Content. No body. Construct with no args::
 
-        def delete(...) -> NoContent | NotFound:
-            return NoContent()
+    def delete(...) -> NoContent | NotFound:
+        return NoContent()
     """
+
     code: ClassVar[int] = 204
 
     def __init__(self) -> None:
@@ -151,15 +149,3 @@ class JsonResponse(HttpResponse):
     def __init__(self, data: Any, **kwargs: Any) -> None:
         kwargs.setdefault("content_type", "application/json")
         super().__init__(content=json_dumps(data), **kwargs)
-
-
-def resp_codes(from_code: int, to_code: int) -> frozenset[int]:
-    return frozenset(range(from_code, to_code + 1))
-
-
-# most common http status codes
-codes_1xx = resp_codes(100, 101)
-codes_2xx = resp_codes(200, 206)
-codes_3xx = resp_codes(300, 308)
-codes_4xx = resp_codes(400, 412) | frozenset({416, 418, 425, 429, 451})
-codes_5xx = resp_codes(500, 504)

@@ -1,6 +1,7 @@
 import inspect
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from django.http import HttpRequest, HttpResponseForbidden
 from django.middleware.csrf import CsrfViewMiddleware

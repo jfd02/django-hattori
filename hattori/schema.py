@@ -13,13 +13,19 @@ That coupling is the user's to own, not the framework's.
 """
 
 from enum import Enum
-from typing import Any, Literal, get_args, get_origin, no_type_check
+from typing import (
+    Any,
+    Literal,
+    dataclass_transform,
+    get_args,
+    get_origin,
+    no_type_check,
+)
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic._internal._model_construction import ModelMetaclass
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
-from typing_extensions import dataclass_transform
 
 pydantic_version = list(map(int, pydantic.VERSION.split(".")[:2]))
 
@@ -47,17 +53,46 @@ class HattoriGenerateJsonSchema(GenerateJsonSchema):
         return result
 
 
-def _update_core_schema_ref(schema: Any, name: str) -> None:
-    """Recursively update 'ref' keys in a Pydantic core schema dict tree."""
+def _find_model_ref(schema: Any, model: type) -> str | None:
+    """Return the core-schema ref of ``model``'s own model-schema node.
+
+    Only the node whose ``cls`` is ``model`` itself is matched, so nested
+    model fields (which carry their own refs) are ignored.
+    """
     if isinstance(schema, dict):
-        if "ref" in schema:
-            schema["ref"] = name
+        if schema.get("type") == "model" and schema.get("cls") is model:
+            return schema.get("ref")
         for v in schema.values():
             if isinstance(v, (dict, list)):
-                _update_core_schema_ref(v, name)
+                found = _find_model_ref(v, model)
+                if found is not None:
+                    return found
     elif isinstance(schema, list):
         for item in schema:
-            _update_core_schema_ref(item, name)
+            found = _find_model_ref(item, model)
+            if found is not None:
+                return found
+    return None
+
+
+def _rename_core_schema_ref(schema: Any, old_ref: str, name: str) -> None:
+    """Rename only ``old_ref`` to ``name`` across a Pydantic core schema tree.
+
+    Touches both ``ref`` definitions and the ``schema_ref`` keys that point
+    back to them (e.g. self-referential models), while leaving every other
+    model's ref untouched so nested schemas are not clobbered.
+    """
+    if isinstance(schema, dict):
+        if schema.get("ref") == old_ref:
+            schema["ref"] = name
+        if schema.get("schema_ref") == old_ref:
+            schema["schema_ref"] = name
+        for v in schema.values():
+            if isinstance(v, (dict, list)):
+                _rename_core_schema_ref(v, old_ref, name)
+    elif isinstance(schema, list):
+        for item in schema:
+            _rename_core_schema_ref(item, old_ref, name)
 
 
 @dataclass_transform(kw_only_default=True, field_specifiers=(Field,))
@@ -98,7 +133,9 @@ class Schema(BaseModel, metaclass=_SchemaMetaclass):
             name = cls.__name__ + "_" + "_".join(values)
             model.__name__ = name
             model.__qualname__ = name
-            _update_core_schema_ref(model.__pydantic_core_schema__, name)
+            old_ref = _find_model_ref(model.__pydantic_core_schema__, model)
+            if old_ref is not None:
+                _rename_core_schema_ref(model.__pydantic_core_schema__, old_ref, name)
 
         return model
 

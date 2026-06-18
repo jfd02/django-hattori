@@ -1,4 +1,3 @@
-
 from hattori import HattoriAPI, Router
 from hattori.testing import TestClient
 

@@ -8,14 +8,16 @@ from hattori.signature.details import is_collection_type
 @pytest.mark.parametrize(
     ("annotation", "expected"),
     [
-        pytest.param(typing.List, True, id="true_for_typing_List"),
+        pytest.param(list, True, id="true_for_typing_List"),
         pytest.param(list, True, id="true_for_native_list"),
-        pytest.param(typing.Set, True, id="true_for_typing_Set"),
+        pytest.param(set, True, id="true_for_typing_Set"),
         pytest.param(set, True, id="true_for_native_set"),
-        pytest.param(typing.Tuple, True, id="true_for_typing_Tuple"),
+        pytest.param(tuple, True, id="true_for_typing_Tuple"),
         pytest.param(tuple, True, id="true_for_native_tuple"),
         pytest.param(
-            typing.Optional[typing.List[str]], True, id="true_for_optional_list"
+            typing.Optional[list[str]],  # noqa: UP045 — intentionally tests typing.Optional
+            True,
+            id="true_for_optional_list",
         ),
         pytest.param(
             type("Custom", (), {}),

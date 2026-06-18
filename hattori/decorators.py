@@ -1,7 +1,6 @@
+from collections.abc import Callable
 from functools import partial
-from typing import Any, Callable
-
-from typing_extensions import Literal
+from typing import Any, Literal
 
 from hattori.operation import Operation
 from hattori.types import TCallable
@@ -28,7 +27,7 @@ def decorate_view(*decorators: Callable[..., Any]) -> Callable[[TCallable], TCal
     def outer_wrapper(op_func: TCallable) -> TCallable:
         if hasattr(op_func, "_hattori_operation"):
             # Means user used decorate_view on top of @api.method
-            _apply_decorators(decorators, op_func._hattori_operation)  # type: ignore
+            _apply_decorators(decorators, op_func._hattori_operation)
         else:
             # Means user used decorate_view after(bottom) of @api.method
             contribute_operation_callback(
@@ -41,7 +40,7 @@ def decorate_view(*decorators: Callable[..., Any]) -> Callable[[TCallable], TCal
 
 
 def _apply_decorators(
-    decorators: tuple[Callable[..., Any]], operation: Operation
+    decorators: tuple[Callable[..., Any], ...], operation: Operation
 ) -> None:
     # Track decorators for cloning support
     if not hasattr(operation, "_run_decorators"):

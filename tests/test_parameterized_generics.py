@@ -46,9 +46,7 @@ class AccountBelongsToAnother(
     code = 409
 
 
-class LikelyDuplicate(
-    APIReturn[ErrorResponse[Literal[SyncError.LIKELY_DUPLICATE]]]
-):
+class LikelyDuplicate(APIReturn[ErrorResponse[Literal[SyncError.LIKELY_DUPLICATE]]]):
     code = 409
 
 
@@ -132,6 +130,42 @@ class TestSchemaCleanNaming:
         resp_404 = item_get["responses"][404]
         ref = resp_404["content"]["application/json"]["schema"]["$ref"]
         assert ref == "#/components/schemas/ErrorResponse_not_found"
+
+
+class TestNestedModelRefsPreserved:
+    """A generic with nested model fields, parameterized by a Literal, must
+    rename only its own ref — nested model refs must stay intact."""
+
+    def test_nested_ref_not_clobbered(self):
+        N = TypeVar("N")
+
+        class Nested(Schema):
+            x: int
+
+        class Wrapper(Schema, Generic[N]):
+            kind: N
+            nested: Nested
+
+        schema = Wrapper[Literal["foo"]].model_json_schema()
+
+        assert list(schema["properties"]) == ["kind", "nested"]
+        assert schema["properties"]["nested"]["$ref"] == "#/$defs/Nested"
+        assert "Nested" in schema["$defs"]
+        assert schema["properties"]["kind"]["const"] == "foo"
+
+    def test_plain_param_with_nested_unaffected(self):
+        N = TypeVar("N")
+
+        class Nested(Schema):
+            x: int
+
+        class Wrapper(Schema, Generic[N]):
+            kind: N
+            nested: Nested
+
+        schema = Wrapper[int].model_json_schema()
+        assert schema["properties"]["nested"]["$ref"] == "#/$defs/Nested"
+        assert list(schema["properties"]) == ["kind", "nested"]
 
 
 class TestDuplicateStatusCodesCombined:

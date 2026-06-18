@@ -28,13 +28,13 @@ BODY_CONTENT_TYPES: dict[str, str] = {
 }
 
 
-def get_schema(api: "HattoriAPI", path_prefix: str = "") -> "OpenAPISchema":
+def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
     openapi = OpenAPISchema(api, path_prefix)
     return openapi
 
 
 class OpenAPISchema(dict):
-    def __init__(self, api: "HattoriAPI", path_prefix: str) -> None:
+    def __init__(self, api: HattoriAPI, path_prefix: str) -> None:
         self.api = api
         self.path_prefix = path_prefix
         self.schemas: dict[str, Any] = {}
@@ -81,9 +81,7 @@ class OpenAPISchema(dict):
 
         return result
 
-    def methods(
-        self, operations: list, bound_router: "BoundRouter"
-    ) -> dict[str, Any]:
+    def methods(self, operations: list, bound_router: BoundRouter) -> dict[str, Any]:
         result = {}
         for op in operations:
             if op.include_in_schema:
@@ -112,7 +110,7 @@ class OpenAPISchema(dict):
                 main_dict[key] = update_dict[key]
 
     def operation_details(
-        self, operation: Operation, bound_router: "BoundRouter"
+        self, operation: Operation, bound_router: BoundRouter
     ) -> dict[str, Any]:
         op_id = operation.operation_id or self.api.get_openapi_operation_id(
             operation, bound_router
@@ -140,7 +138,7 @@ class OpenAPISchema(dict):
             result["tags"] = operation.tags
 
         if operation.deprecated:
-            result["deprecated"] = operation.deprecated  # type: ignore
+            result["deprecated"] = operation.deprecated
 
         body = self.request_body(operation)
         if body:
@@ -216,7 +214,7 @@ class OpenAPISchema(dict):
     def _flatten_schema(self, model: Any) -> dict[str, Any]:
         params = self._extract_parameters(model)
         flattened = {
-            "title": model.__name__,  # type: ignore
+            "title": model.__name__,
             "type": "object",
             "properties": {p["name"]: p["schema"] for p in params},
         }
@@ -376,9 +374,7 @@ class OpenAPISchema(dict):
                 self.securitySchemes[name] = security_schema
         return result
 
-    def _unique_security_scheme_name(
-        self, name: str, schema: dict[str, Any]
-    ) -> str:
+    def _unique_security_scheme_name(self, name: str, schema: dict[str, Any]) -> str:
         existing = self.securitySchemes.get(name)
         if existing is None or existing == schema:
             return name
@@ -515,9 +511,7 @@ class OpenAPISchema(dict):
         index = 2
         while candidate in self.schemas and self.schemas[candidate] != schema:
             index += 1
-            candidate = (
-                f"{name}{suffix}_{index}" if suffix else f"{name}_{index}"
-            )
+            candidate = f"{name}{suffix}_{index}" if suffix else f"{name}_{index}"
         return candidate
 
 
@@ -526,7 +520,7 @@ def flatten_properties(
     prop_details: dict[str, Any],
     prop_required: bool,
     definitions: dict[str, Any],
-) -> Generator[tuple[str, dict[str, Any], bool], None, None]:
+) -> Generator[tuple[str, dict[str, Any], bool]]:
     """
     extracts all nested model's properties into flat properties
     (used f.e. in GET params with multiple arguments and models)

@@ -13,6 +13,33 @@ class Item(Schema):
     price: float = 0.0
 
 
+def _raw_sync(client, method, path):
+    """Resolve and invoke an operation, returning the *unconsumed*
+    StreamingHttpResponse — mirrors a real WSGI server which reads headers
+    before iterating the body."""
+    func, request, kwargs = client._resolve(method, path, {}, {})
+    return func(request, **kwargs)
+
+
+async def _raw_async(client, method, path):
+    """Async counterpart of _raw_sync — returns the unconsumed response."""
+    func, request, kwargs = client._resolve(method, path, {}, {})
+    return await func(request, **kwargs)
+
+
+def _drain_sync(raw):
+    return b"".join(
+        c.encode() if isinstance(c, str) else c for c in raw.streaming_content
+    )
+
+
+async def _drain_async(raw):
+    chunks = []
+    async for c in raw.streaming_content:
+        chunks.append(c.encode() if isinstance(c, str) else c)
+    return b"".join(chunks)
+
+
 # --- Sync JSONL ---
 
 api = HattoriAPI()
@@ -36,19 +63,50 @@ def jsonl_echo(request) -> JSONL[Item]:
 
 
 @api.get("/jsonl/with-params/{item_id}")
-def jsonl_with_params(
-    request, item_id: int, q: str = "default"
-) -> JSONL[Item]:
+def jsonl_with_params(request, item_id: int, q: str = "default") -> JSONL[Item]:
     yield {"name": f"item-{item_id}-{q}", "price": 0.0}
 
 
 @api.get("/jsonl/with-headers")
-def jsonl_with_headers(
-    request, response: HttpResponse
-) -> JSONL[Item]:
+def jsonl_with_headers(request, response: HttpResponse) -> JSONL[Item]:
     response["X-Custom"] = "hello"
     response.set_cookie("session", "abc123")
     yield {"name": "with-headers", "price": 0.0}
+
+
+@api.get("/jsonl/multi-with-headers")
+def jsonl_multi_with_headers(request, response: HttpResponse) -> JSONL[Item]:
+    # Headers set before the first yield must reach the client even though
+    # several more items follow.
+    response["X-Custom"] = "hello"
+    response.set_cookie("session", "abc123")
+    for i in range(3):
+        yield {"name": f"item-{i}", "price": float(i)}
+
+
+@api.get("/jsonl/empty-with-headers")
+def jsonl_empty_with_headers(request, response: HttpResponse) -> JSONL[Item]:
+    response["X-Custom"] = "hello"
+    response.set_cookie("session", "abc123")
+    return
+    yield  # pragma: no cover - makes this a generator function
+
+
+@api.get("/jsonl/midstream-headers")
+def jsonl_midstream_headers(request, response: HttpResponse) -> JSONL[Item]:
+    response["X-Before"] = "before"
+    yield {"name": "first", "price": 0.0}
+    # Set after the first yield — the response is already flushed, so this
+    # cannot reach the client. Documented limitation.
+    response["X-After"] = "after"
+    yield {"name": "second", "price": 1.0}
+
+
+@api.get("/jsonl/status-before-yield")
+def jsonl_status_before_yield(request, response: HttpResponse) -> JSONL[Item]:
+    response.status_code = 503
+    response["X-Reason"] = "degraded"
+    yield {"name": "a", "price": 0.0}
 
 
 client = TestClient(api)
@@ -119,6 +177,59 @@ class TestStreamingHeaders:
         assert response["X-Custom"] == "hello"
         assert "session" in response.cookies
 
+    def test_headers_available_before_body_consumed(self):
+        """Production ordering: a WSGI server flushes the status line and
+        headers BEFORE iterating the response body. Headers/cookies the view
+        set before its first yield must already be present at that point."""
+        raw = _raw_sync(client, "GET", "/jsonl/with-headers")
+        # Read headers/cookies BEFORE touching the body (real-server order).
+        assert raw["X-Custom"] == "hello"
+        assert "session" in raw.cookies
+        # Body still streams correctly afterwards.
+        body = _drain_sync(raw)
+        assert json.loads(body.decode().strip()) == {
+            "name": "with-headers",
+            "price": 0.0,
+        }
+
+    def test_headers_before_body_with_multiple_items(self):
+        raw = _raw_sync(client, "GET", "/jsonl/multi-with-headers")
+        assert raw["X-Custom"] == "hello"
+        assert "session" in raw.cookies
+        lines = _drain_sync(raw).decode().strip().split("\n")
+        assert len(lines) == 3
+        for i, line in enumerate(lines):
+            assert json.loads(line) == {"name": f"item-{i}", "price": float(i)}
+
+    def test_headers_before_body_empty_generator(self):
+        """A view that sets headers then yields nothing must still surface
+        those headers before the (empty) body is consumed."""
+        raw = _raw_sync(client, "GET", "/jsonl/empty-with-headers")
+        assert raw["X-Custom"] == "hello"
+        assert "session" in raw.cookies
+        assert _drain_sync(raw) == b""
+
+    def test_headers_set_after_first_yield_are_not_honored(self):
+        """Documented limitation: only headers set before the first yield can
+        reach the client. Headers set mid-stream are silently dropped, not
+        attempted at the end."""
+        raw = _raw_sync(client, "GET", "/jsonl/midstream-headers")
+        assert raw["X-Before"] == "before"
+        assert "X-After" not in raw
+        # Even after the whole body is consumed, the mid-stream header never
+        # appears on the response.
+        body = _drain_sync(raw)
+        assert "X-After" not in raw
+        assert len(body.decode().strip().split("\n")) == 2
+
+    def test_status_code_set_before_first_yield(self):
+        """A status code set before the first yield is reflected on the
+        streamed response — the status line is flushed before the body."""
+        raw = _raw_sync(client, "GET", "/jsonl/status-before-yield")
+        assert raw.status_code == 503
+        assert raw["X-Reason"] == "degraded"
+        assert _drain_sync(raw)  # body still streams
+
 
 # --- Async ---
 
@@ -138,12 +249,39 @@ async def async_sse_items(request) -> SSE[Item]:
 
 
 @async_api.get("/jsonl/with-headers")
-async def async_jsonl_with_headers(
+async def async_jsonl_with_headers(request, response: HttpResponse) -> JSONL[Item]:
+    response["X-Custom"] = "async-hello"
+    response.set_cookie("token", "xyz")
+    yield {"name": "async-headers", "price": 0.0}
+
+
+@async_api.get("/jsonl/multi-with-headers")
+async def async_jsonl_multi_with_headers(
     request, response: HttpResponse
 ) -> JSONL[Item]:
     response["X-Custom"] = "async-hello"
     response.set_cookie("token", "xyz")
-    yield {"name": "async-headers", "price": 0.0}
+    for i in range(3):
+        yield {"name": f"item-{i}", "price": float(i)}
+
+
+@async_api.get("/jsonl/empty-with-headers")
+async def async_jsonl_empty_with_headers(
+    request, response: HttpResponse
+) -> JSONL[Item]:
+    response["X-Custom"] = "async-hello"
+    response.set_cookie("token", "xyz")
+    return
+    yield  # pragma: no cover - makes this an async generator function
+
+
+@async_api.get("/jsonl/status-before-yield")
+async def async_jsonl_status_before_yield(
+    request, response: HttpResponse
+) -> JSONL[Item]:
+    response.status_code = 503
+    response["X-Reason"] = "degraded"
+    yield {"name": "a", "price": 0.0}
 
 
 async_client = TestAsyncClient(async_api)
@@ -181,6 +319,39 @@ class TestAsyncHeaders:
         assert response.status_code == 200
         assert response["X-Custom"] == "async-hello"
         assert "token" in response.cookies
+
+    async def test_async_headers_available_before_body_consumed(self):
+        """Async/ASGI counterpart: headers set before the first yield must be
+        present before the body is iterated."""
+        raw = await _raw_async(async_client, "GET", "/jsonl/with-headers")
+        assert raw["X-Custom"] == "async-hello"
+        assert "token" in raw.cookies
+        body = await _drain_async(raw)
+        assert json.loads(body.decode().strip()) == {
+            "name": "async-headers",
+            "price": 0.0,
+        }
+
+    async def test_async_headers_before_body_with_multiple_items(self):
+        raw = await _raw_async(async_client, "GET", "/jsonl/multi-with-headers")
+        assert raw["X-Custom"] == "async-hello"
+        assert "token" in raw.cookies
+        lines = (await _drain_async(raw)).decode().strip().split("\n")
+        assert len(lines) == 3
+        for i, line in enumerate(lines):
+            assert json.loads(line) == {"name": f"item-{i}", "price": float(i)}
+
+    async def test_async_headers_before_body_empty_generator(self):
+        raw = await _raw_async(async_client, "GET", "/jsonl/empty-with-headers")
+        assert raw["X-Custom"] == "async-hello"
+        assert "token" in raw.cookies
+        assert await _drain_async(raw) == b""
+
+    async def test_async_status_code_set_before_first_yield(self):
+        raw = await _raw_async(async_client, "GET", "/jsonl/status-before-yield")
+        assert raw.status_code == 503
+        assert raw["X-Reason"] == "degraded"
+        assert await _drain_async(raw)
 
 
 # --- OpenAPI Schema ---
@@ -291,3 +462,49 @@ class TestMultipleMethods:
             "name": "deleted",
             "price": 0.0,
         }
+
+
+# --- Exceptions raised before the first yield ---
+#
+# Because the generator is primed up to its first yield while the request is
+# still being handled, an error raised there is dispatched through the API's
+# exception handling (on_exception) — producing a proper, non-streaming error
+# response — instead of corrupting an already-flushed stream. (An error raised
+# *mid-stream*, after the first yield, cannot be turned into an error response:
+# the status line and headers have already gone to the client.)
+
+exc_api = HattoriAPI()
+exc_api.add_exception_handler(
+    ValueError, lambda request, exc: HttpResponse(str(exc), status=400)
+)
+
+
+@exc_api.get("/raise-before-yield")
+def exc_raise_before_yield(request) -> JSONL[Item]:
+    raise ValueError("boom before first yield")
+    yield  # pragma: no cover - makes this a generator function
+
+
+@exc_api.get("/raise-before-yield-async")
+async def exc_raise_before_yield_async(request) -> JSONL[Item]:
+    raise ValueError("boom before first yield")
+    yield  # pragma: no cover - makes this an async generator function
+
+
+exc_client = TestClient(exc_api)
+exc_async_client = TestAsyncClient(exc_api)
+
+
+class TestStreamExceptionBeforeFirstYield:
+    def test_handled_by_exception_handler(self):
+        response = exc_client.get("/raise-before-yield")
+        assert response.status_code == 400
+        assert response.streaming is False
+        assert response.content == b"boom before first yield"
+
+    @pytest.mark.asyncio
+    async def test_handled_by_exception_handler_async(self):
+        response = await exc_async_client.get("/raise-before-yield-async")
+        assert response.status_code == 400
+        assert response.streaming is False
+        assert response.content == b"boom before first yield"

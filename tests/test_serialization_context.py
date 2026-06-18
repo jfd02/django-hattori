@@ -1,4 +1,3 @@
-
 from pydantic import model_serializer
 
 from hattori import Router, Schema

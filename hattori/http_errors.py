@@ -26,10 +26,9 @@ member's value.
 """
 
 from enum import Enum
-from typing import Any, ClassVar, Generic, Literal, get_args, get_origin
+from typing import Any, ClassVar, Generic, Literal, TypeVar, get_args, get_origin
 
 from pydantic import create_model
-from typing_extensions import TypeVar
 
 from hattori.errors import ApiError, ErrorBody
 from hattori.responses import APIReturn
@@ -75,7 +74,9 @@ def get_default_error_body() -> type[ErrorBody]:
 
 def _resolve_body_base(cls: type) -> type[ErrorBody]:
     for klass in cls.__mro__:
-        base = klass.__dict__.get("__hattori_response_body_base__")
+        base: type[ErrorBody] | None = klass.__dict__.get(
+            "__hattori_response_body_base__"
+        )
         if base is not None:
             return base
     return _default_error_body
@@ -123,6 +124,7 @@ class HTTPError(ApiError, Generic[EnumT]):
     # Concrete subclasses replace this with a generated ErrorBody subclass whose
     # `code` field is narrowed to the bound enum member value.
     __hattori_response_body__ = ErrorBody
+    __hattori_response_body_base__: ClassVar[type[ErrorBody] | None] = None
 
     def __init_subclass__(
         cls, *, body: type[ErrorBody] | None = None, **kwargs: Any

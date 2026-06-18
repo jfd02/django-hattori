@@ -1,7 +1,6 @@
 import json
 from enum import Enum
 from ipaddress import IPv4Address, IPv6Address
-from typing import Union
 
 import pytest
 from django.http import HttpResponse
@@ -62,7 +61,7 @@ def check_model_alias(request) -> UserModel:
 
 
 @router.get("/check_union")
-def check_union(request, q: int) -> Union[int, UserModel]:
+def check_union(request, q: int) -> int | UserModel:
     if q == 0:
         return 1
     if q == 1:
@@ -77,9 +76,7 @@ def check_set_header(request, response: HttpResponse) -> int:
 
 
 @router.get("/check_set_cookie")
-def check_set_cookie(
-    request, set: bool, response: HttpResponse
-) -> int:
+def check_set_cookie(request, set: bool, response: HttpResponse) -> int:
     if set:
         response.set_cookie("test", "me")
     return 1

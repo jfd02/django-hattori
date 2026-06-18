@@ -196,23 +196,17 @@ def test_decorator_cascading():
 
     # Add decorator at API level
     api.add_decorator(
-        lambda f: wraps(f)(
-            lambda req, *a, **k: {**f(req, *a, **k), "api": True}
-        )
+        lambda f: wraps(f)(lambda req, *a, **k: {**f(req, *a, **k), "api": True})
     )
 
     # Add decorator at parent router level
     parent_router.add_decorator(
-        lambda f: wraps(f)(
-            lambda req, *a, **k: {**f(req, *a, **k), "parent": True}
-        )
+        lambda f: wraps(f)(lambda req, *a, **k: {**f(req, *a, **k), "parent": True})
     )
 
     # Add decorator at child router level
     child_router.add_decorator(
-        lambda f: wraps(f)(
-            lambda req, *a, **k: {**f(req, *a, **k), "child": True}
-        )
+        lambda f: wraps(f)(lambda req, *a, **k: {**f(req, *a, **k), "child": True})
     )
 
     @child_router.get("/test")

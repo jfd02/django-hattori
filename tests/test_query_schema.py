@@ -5,7 +5,6 @@ from enum import IntEnum
 import pytest
 from pydantic import BaseModel, Field
 
-
 from hattori import HattoriAPI, Query, Schema
 from hattori.testing.client import TestClient
 
@@ -51,9 +50,7 @@ api = HattoriAPI()
 
 
 @api.get("/test")
-def query_params_schema(
-    request, filters: Filter = Query(...)
-) -> FilterResult:
+def query_params_schema(request, filters: Filter = Query(...)) -> FilterResult:
     return filters.model_dump()
 
 
@@ -209,9 +206,7 @@ def test_optional_query_schema():
     temp_api = HattoriAPI()
 
     @temp_api.get("/opt")
-    def view(
-        request, f: MyFilter | None = Query(None)
-    ) -> MyFilter:
+    def view(request, f: MyFilter | None = Query(None)) -> MyFilter:
         if f:
             return f.model_dump()
         return {}
@@ -236,9 +231,7 @@ def test_union_pipe_syntax_query_schema():
     temp_api = HattoriAPI()
 
     @temp_api.get("/pipe")
-    def view(
-        request, f: MyFilter | None = Query(None)
-    ) -> MyFilter:
+    def view(request, f: MyFilter | None = Query(None)) -> MyFilter:
         if f:
             return f.model_dump()
         return {}

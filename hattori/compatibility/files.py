@@ -24,9 +24,7 @@ def need_to_fix_request_files(methods: list[str], params_models: list[Any]) -> b
 
 
 def _should_fix(request: HttpRequest) -> bool:
-    return (
-        request.method in FIX_METHODS and request.content_type != "application/json"
-    )
+    return request.method in FIX_METHODS and request.content_type != "application/json"
 
 
 @contextmanager

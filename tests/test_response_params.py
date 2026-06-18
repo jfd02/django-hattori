@@ -1,5 +1,3 @@
-from typing import Optional
-
 from hattori import HattoriAPI, Schema
 from hattori.testing import TestClient
 
@@ -7,9 +5,9 @@ api = HattoriAPI()
 
 
 class SomeResponse(Schema):
-    field1: Optional[int] = 1
-    field2: Optional[str] = "default value"
-    field3: Optional[int] = None
+    field1: int | None = 1
+    field2: str | None = "default value"
+    field3: int | None = None
 
 
 @api.get("/test-no-params")

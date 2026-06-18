@@ -19,7 +19,7 @@ class NoContent(APIReturn[None]):
     code = 204
 
 
-def event_to_schema(event: "Event") -> EventSchema:
+def event_to_schema(event: Event) -> EventSchema:
     return EventSchema(
         title=event.title,
         start_date=event.start_date,

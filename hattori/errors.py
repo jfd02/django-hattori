@@ -146,7 +146,7 @@ class ApiError(APIReturn[ErrorBody]):
         )
 
 
-def set_default_exc_handlers(api: "HattoriAPI") -> None:
+def set_default_exc_handlers(api: HattoriAPI) -> None:
     api.add_exception_handler(
         Exception,
         partial(_default_exception, api=api),
@@ -165,7 +165,7 @@ def set_default_exc_handlers(api: "HattoriAPI") -> None:
     )
 
 
-def _default_404(request: HttpRequest, exc: Exception, api: "HattoriAPI") -> HttpResponse:
+def _default_404(request: HttpRequest, exc: Exception, api: HattoriAPI) -> HttpResponse:
     msg = "Not Found"
     if settings.DEBUG:
         msg += f": {exc}"
@@ -173,19 +173,19 @@ def _default_404(request: HttpRequest, exc: Exception, api: "HattoriAPI") -> Htt
 
 
 def _default_http_error(
-    request: HttpRequest, exc: HttpError, api: "HattoriAPI"
+    request: HttpRequest, exc: HttpError, api: HattoriAPI
 ) -> HttpResponse:
     return api.create_response(request, {"detail": str(exc)}, status=exc.status_code)
 
 
 def _default_validation_error(
-    request: HttpRequest, exc: ValidationError, api: "HattoriAPI"
+    request: HttpRequest, exc: ValidationError, api: HattoriAPI
 ) -> HttpResponse:
     return api.create_response(request, {"detail": exc.errors}, status=422)
 
 
 def _default_exception(
-    request: HttpRequest, exc: Exception, api: "HattoriAPI"
+    request: HttpRequest, exc: Exception, api: HattoriAPI
 ) -> HttpResponse:
     if not settings.DEBUG:
         raise exc  # let django deal with it

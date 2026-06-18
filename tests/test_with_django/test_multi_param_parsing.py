@@ -87,13 +87,13 @@ def test_validate_test_data():
 
     for path in tuple(schema["paths"]):
         schema["paths"]["/" + path.split("/", 3)[3]] = schema["paths"].pop(path)
-    assert set(ops) == set(
-        schema["paths"]
-    ), "Expect a test case for each endpoint on the API"
+    assert set(ops) == set(schema["paths"]), (
+        "Expect a test case for each endpoint on the API"
+    )
 
     fixture_dir = Path(__file__).parent / "schema_fixtures"
     fixture_files = {
-        path: (fixture_dir / f"{path.split("/", 2)[1]}.json") for path in ops
+        path: (fixture_dir / f"{path.split('/', 2)[1]}.json") for path in ops
     }
 
     # verify that the currently generated schema matches the fixtures.  Since the generated

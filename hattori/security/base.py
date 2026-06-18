@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Union, get_args, get_origin
+from collections.abc import Callable
+from typing import Any, get_args, get_origin, get_type_hints
 
 from django.http import HttpRequest
-from typing_extensions import get_type_hints
 
 from hattori.compatibility.util import UNION_TYPES
 from hattori.errors import ConfigError
@@ -55,7 +55,7 @@ class AuthBase(ABC):
 
         self.is_async = False
         if hasattr(self, "authenticate"):  # pragma: no branch
-            self.is_async = is_async_callable(getattr(self, "authenticate"))
+            self.is_async = is_async_callable(self.authenticate)
 
         self.auth_responses: dict[int, Any] = _parse_auth_responses(self)
 
@@ -106,6 +106,6 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
         if existing is None or existing is schema:
             responses[code] = schema
         else:
-            responses[code] = Union[existing, schema]
+            responses[code] = existing | schema
 
     return responses

@@ -1,11 +1,10 @@
 import warnings
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Q, QuerySet
 from pydantic import ConfigDict
 from pydantic.fields import FieldInfo
-from typing_extensions import Literal
 
 from .constants import NOT_SET
 from .schema import Schema

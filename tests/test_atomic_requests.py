@@ -2,11 +2,10 @@ import pytest
 from django.db import connection
 from django.test import Client
 from django.urls import path
+from someapp.models import Event
 
 from hattori import HattoriAPI
 from hattori.errors import HttpError
-from someapp.models import Event
-
 
 api = HattoriAPI(urls_namespace="atomic-requests-test")
 

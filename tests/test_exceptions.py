@@ -1,4 +1,3 @@
-
 import pytest
 from django.http import Http404
 
@@ -22,9 +21,7 @@ class Payload(Schema):
 
 
 @api.post("/error/{code}")
-def err_thrower(
-    request, code: str, payload: Payload = None
-) -> None:
+def err_thrower(request, code: str, payload: Payload = None) -> None:
     if code == "base":
         raise RuntimeError("test")
     if code == "404":

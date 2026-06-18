@@ -4,6 +4,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     TypeVar,
+    cast,
 )
 
 from django.conf import settings
@@ -38,7 +39,7 @@ class ParamModel(BaseModel, ABC):
     @classmethod
     @abstractmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         pass  # pragma: no cover
 
@@ -46,7 +47,7 @@ class ParamModel(BaseModel, ABC):
     def resolve(
         cls: type[TModel],
         request: HttpRequest,
-        api: "HattoriAPI",
+        api: HattoriAPI,
         path_params: dict[str, Any],
     ) -> TModel:
         data = cls.get_request_data(request, api, path_params)
@@ -98,7 +99,7 @@ def _parse_querydict(
 class QueryModel(ParamModel):
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         csv_fields = getattr(cls, "__hattori_csv_fields__", None)
@@ -108,7 +109,7 @@ class QueryModel(ParamModel):
 class PathModel(ParamModel):
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         return path_params
 
@@ -118,7 +119,7 @@ class HeaderModel(ParamModel):
 
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         data = {}
         headers = request.headers
@@ -131,7 +132,7 @@ class HeaderModel(ParamModel):
 class CookieModel(ParamModel):
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         return request.COOKIES
 
@@ -141,7 +142,7 @@ class BodyModel(ParamModel):
 
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         if request.body:
             try:
@@ -155,7 +156,7 @@ class BodyModel(ParamModel):
             varname = getattr(cls, "__read_from_single_attr__", None)
             if varname:
                 data = {varname: data}
-            return data
+            return cast("dict[str, Any]", data)
 
         return None
 
@@ -163,7 +164,7 @@ class BodyModel(ParamModel):
 class FormModel(ParamModel):
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _parse_querydict(request.POST, list_fields)
@@ -172,7 +173,7 @@ class FormModel(ParamModel):
 class FileModel(ParamModel):
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _parse_querydict(request.FILES, list_fields)
@@ -187,7 +188,7 @@ class _MultiPartBodyModel(BodyModel):
 
     @classmethod
     def get_request_data(
-        cls, request: HttpRequest, api: "HattoriAPI", path_params: dict[str, Any]
+        cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         req = _HttpRequest()
         get_request_data = super().get_request_data

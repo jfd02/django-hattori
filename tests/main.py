@@ -1,8 +1,8 @@
+from typing import Annotated
 from uuid import UUID
 
 import pydantic
 from django.urls import register_converter
-from typing_extensions import Annotated
 
 from hattori import Field, P, Path, PathEx, Query, Router, Schema
 
@@ -64,30 +64,22 @@ def get_path_param_ex_id(
 
 
 @router.get("/path/param/{item_id}")
-def get_path_param_id(
-    request, item_id: str = Path(None)
-) -> str:
+def get_path_param_id(request, item_id: str = Path(None)) -> str:
     return item_id
 
 
 @router.get("/path/param-required/{item_id}")
-def get_path_param_required_id(
-    request, item_id: str = Path(...)
-) -> str:
+def get_path_param_required_id(request, item_id: str = Path(...)) -> str:
     return item_id
 
 
 @router.get("/path/param-minlength/{item_id}")
-def get_path_param_min_length(
-    request, item_id: str = Path(..., min_length=3)
-) -> str:
+def get_path_param_min_length(request, item_id: str = Path(..., min_length=3)) -> str:
     return item_id
 
 
 @router.get("/path/param-maxlength/{item_id}")
-def get_path_param_max_length(
-    request, item_id: str = Path(..., max_length=3)
-) -> str:
+def get_path_param_max_length(request, item_id: str = Path(..., max_length=3)) -> str:
     return item_id
 
 
@@ -99,107 +91,77 @@ def get_path_param_min_max_length(
 
 
 @router.get("/path/param-gt/{item_id}")
-def get_path_param_gt(
-    request, item_id: float = Path(..., gt=3)
-) -> float:
+def get_path_param_gt(request, item_id: float = Path(..., gt=3)) -> float:
     return item_id
 
 
 @router.get("/path/param-gt0/{item_id}")
-def get_path_param_gt0(
-    request, item_id: float = Path(..., gt=0)
-) -> float:
+def get_path_param_gt0(request, item_id: float = Path(..., gt=0)) -> float:
     return item_id
 
 
 @router.get("/path/param-ge/{item_id}")
-def get_path_param_ge(
-    request, item_id: float = Path(..., ge=3)
-) -> float:
+def get_path_param_ge(request, item_id: float = Path(..., ge=3)) -> float:
     return item_id
 
 
 @router.get("/path/param-lt/{item_id}")
-def get_path_param_lt(
-    request, item_id: float = Path(..., lt=3)
-) -> float:
+def get_path_param_lt(request, item_id: float = Path(..., lt=3)) -> float:
     return item_id
 
 
 @router.get("/path/param-lt0/{item_id}")
-def get_path_param_lt0(
-    request, item_id: float = Path(..., lt=0)
-) -> float:
+def get_path_param_lt0(request, item_id: float = Path(..., lt=0)) -> float:
     return item_id
 
 
 @router.get("/path/param-le/{item_id}")
-def get_path_param_le(
-    request, item_id: float = Path(..., le=3)
-) -> float:
+def get_path_param_le(request, item_id: float = Path(..., le=3)) -> float:
     return item_id
 
 
 @router.get("/path/param-lt-gt/{item_id}")
-def get_path_param_lt_gt(
-    request, item_id: float = Path(..., lt=3, gt=1)
-) -> float:
+def get_path_param_lt_gt(request, item_id: float = Path(..., lt=3, gt=1)) -> float:
     return item_id
 
 
 @router.get("/path/param-le-ge/{item_id}")
-def get_path_param_le_ge(
-    request, item_id: float = Path(..., le=3, ge=1)
-) -> float:
+def get_path_param_le_ge(request, item_id: float = Path(..., le=3, ge=1)) -> float:
     return item_id
 
 
 @router.get("/path/param-lt-int/{item_id}")
-def get_path_param_lt_int(
-    request, item_id: int = Path(..., lt=3)
-) -> int:
+def get_path_param_lt_int(request, item_id: int = Path(..., lt=3)) -> int:
     return item_id
 
 
 @router.get("/path/param-gt-int/{item_id}")
-def get_path_param_gt_int(
-    request, item_id: int = Path(..., gt=3)
-) -> int:
+def get_path_param_gt_int(request, item_id: int = Path(..., gt=3)) -> int:
     return item_id
 
 
 @router.get("/path/param-le-int/{item_id}")
-def get_path_param_le_int(
-    request, item_id: int = Path(..., le=3)
-) -> int:
+def get_path_param_le_int(request, item_id: int = Path(..., le=3)) -> int:
     return item_id
 
 
 @router.get("/path/param-ge-int/{item_id}")
-def get_path_param_ge_int(
-    request, item_id: int = Path(..., ge=3)
-) -> int:
+def get_path_param_ge_int(request, item_id: int = Path(..., ge=3)) -> int:
     return item_id
 
 
 @router.get("/path/param-lt-gt-int/{item_id}")
-def get_path_param_lt_gt_int(
-    request, item_id: int = Path(..., lt=3, gt=1)
-) -> int:
+def get_path_param_lt_gt_int(request, item_id: int = Path(..., lt=3, gt=1)) -> int:
     return item_id
 
 
 @router.get("/path/param-le-ge-int/{item_id}")
-def get_path_param_le_ge_int(
-    request, item_id: int = Path(..., le=3, ge=1)
-) -> int:
+def get_path_param_le_ge_int(request, item_id: int = Path(..., le=3, ge=1)) -> int:
     return item_id
 
 
 @router.get("/path/param-pattern/{item_id}")
-def get_path_param_pattern(
-    request, item_id: str = Path(..., pattern="^foo")
-) -> str:
+def get_path_param_pattern(request, item_id: str = Path(..., pattern="^foo")) -> str:
     return item_id
 
 
@@ -221,9 +183,7 @@ def get_path_param_django_not_an_int(request) -> str:
 
 
 @router.get("/path/param-django-int-str/{int:item_id}")
-def get_path_param_django_int_str(
-    request, item_id: str
-) -> str:
+def get_path_param_django_int_str(request, item_id: str) -> str:
     assert isinstance(item_id, str)
     return item_id
 
@@ -240,18 +200,14 @@ def get_path_param_django_uuid(request, item_id: UUID) -> UUID:
 
 
 @router.get("/path/param-django-uuid-notype/{uuid:item_id}")
-def get_path_param_django_uuid_notype(
-    request, item_id
-) -> str:
+def get_path_param_django_uuid_notype(request, item_id) -> str:
     # no type annotation defaults to str..............^
     assert isinstance(item_id, str)
     return item_id
 
 
 @router.get("/path/param-django-uuid-typestr/{uuid:item_id}")
-def get_path_param_django_uuid_typestr(
-    request, item_id: str
-) -> str:
+def get_path_param_django_uuid_typestr(request, item_id: str) -> str:
     assert isinstance(item_id, str)
     return item_id
 
@@ -279,9 +235,7 @@ def get_query_type(request, query: int) -> str:
 
 
 @router.get("/query/int/optional")
-def get_query_type_optional(
-    request, query: int = None
-) -> str:
+def get_query_type_optional(request, query: int = None) -> str:
     if query is None:
         return "foo bar"
     return f"foo bar {query}"
@@ -296,16 +250,12 @@ def get_query_str_optional(request, query: str = None) -> str:
 
 
 @router.get("/query/int/default")
-def get_query_type_optional_10(
-    request, query: int = 10
-) -> str:
+def get_query_type_optional_10(request, query: int = 10) -> str:
     return f"foo bar {query}"
 
 
 @router.get("/query/list")
-def get_query_list(
-    request, query: list[str] = Query(...)
-) -> str:
+def get_query_list(request, query: list[str] = Query(...)) -> str:
     return ",".join(query)
 
 
@@ -326,16 +276,12 @@ def get_query_param(request, query=Query(None)) -> str:
 
 
 @router.get("/query/param-required")
-def get_query_param_required(
-    request, query=Query(...)
-) -> str:
+def get_query_param_required(request, query=Query(...)) -> str:
     return f"foo bar {query}"
 
 
 @router.get("/query/param-required/int")
-def get_query_param_required_type(
-    request, query: int = Query(...)
-) -> str:
+def get_query_param_required_type(request, query: int = Query(...)) -> str:
     return f"foo bar {query}"
 
 
@@ -344,16 +290,14 @@ class AliasedSchema(Schema):
 
 
 @router.get("/query/aliased-name")
-def get_query_aliased_name(
-    request, query: AliasedSchema = Query(...)
-) -> str:
+def get_query_aliased_name(request, query: AliasedSchema = Query(...)) -> str:
     return f"foo bar {query.query}"
 
 
 class CustomPathConverter1:
     regex = "[0-9]+"
 
-    def to_python(self, value) -> "int":
+    def to_python(self, value) -> int:
         """reverse the string and convert to int"""
         return int(value[::-1])
 
@@ -377,14 +321,10 @@ register_converter(CustomPathConverter2, "custom-float")
 
 
 @router.get("/path/param-django-custom-int/{custom-int:item_id}")
-def get_path_param_django_custom_int(
-    request, item_id: int
-) -> int:
+def get_path_param_django_custom_int(request, item_id: int) -> int:
     return item_id
 
 
 @router.get("/path/param-django-custom-float/{custom-float:item_id}")
-def get_path_param_django_custom_float(
-    request, item_id: float
-) -> float:
+def get_path_param_django_custom_float(request, item_id: float) -> float:
     return item_id

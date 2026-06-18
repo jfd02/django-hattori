@@ -47,12 +47,13 @@ def create_patch_schema(schema_cls: type[Any]) -> type[ModelToDict]:
     values, annotations = {}, {}
     for f in schema_cls.model_fields.keys():
         t = schema_annotations[f]
-        if not is_optional_type(t):
-            field_info = copy(schema_cls.model_fields[f])
-            field_info.default = None
-            field_info.default_factory = None
-            values[f] = field_info
-            annotations[f] = t | None
+        field_info = copy(schema_cls.model_fields[f])
+        field_info.default = None
+        field_info.default_factory = None
+        values[f] = field_info
+        # Already-nullable fields keep their annotation; non-nullable ones are
+        # widened. Either way the default is cleared so every field is optional.
+        annotations[f] = t if is_optional_type(t) else t | None
     values["__annotations__"] = annotations
     OptionalSchema = type(f"{schema_cls.__name__}Patch", (schema_cls,), values)
 

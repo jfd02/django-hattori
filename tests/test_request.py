@@ -1,4 +1,3 @@
-
 import pytest
 from pydantic import ConfigDict
 
@@ -26,23 +25,17 @@ def headers1(request, user_agent: str = Header(...)) -> str:
 
 
 @router.get("/headers2")
-def headers2(
-    request, ua: str = Header(..., alias="User-Agent")
-) -> str:
+def headers2(request, ua: str = Header(..., alias="User-Agent")) -> str:
     return ua
 
 
 @router.get("/headers3")
-def headers3(
-    request, content_length: int = Header(...)
-) -> int:
+def headers3(request, content_length: int = Header(...)) -> int:
     return content_length
 
 
 @router.get("/headers4")
-def headers4(
-    request, c_len: int = Header(..., alias="Content-length")
-) -> int:
+def headers4(request, c_len: int = Header(..., alias="Content-length")) -> int:
     return c_len
 
 
@@ -57,16 +50,12 @@ def cookies1(request, weapon: str = Cookie(...)) -> str:
 
 
 @router.get("/cookies2")
-def cookies2(
-    request, wpn: str = Cookie(..., alias="weapon")
-) -> str:
+def cookies2(request, wpn: str = Cookie(..., alias="weapon")) -> str:
     return wpn
 
 
 @router.post("/test-schema")
-def schema(
-    request, payload: ExtraForbidSchema = Body(...)
-) -> str:
+def schema(request, payload: ExtraForbidSchema = Body(...)) -> str:
     return "ok"
 
 

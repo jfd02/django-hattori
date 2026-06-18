@@ -1,14 +1,13 @@
 import inspect
 import warnings
 from collections import defaultdict, namedtuple
-from collections.abc import Generator
-from typing import Any, Callable
+from collections.abc import Callable, Generator
+from typing import Annotated, Any, get_args, get_origin
 
 import pydantic
 from django.http import HttpResponse
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
-from typing_extensions import Annotated, get_args, get_origin
 
 from hattori import UploadedFile
 from hattori.compatibility.util import UNION_TYPES
@@ -274,9 +273,9 @@ class ViewSignature:
 
         # 2) if param name is a part of the path parameter
         elif name in self.path_params_names:
-            assert (
-                default == self.signature.empty
-            ), f"'{name}' is a path param, default not allowed"
+            assert default == self.signature.empty, (
+                f"'{name}' is a path param, default not allowed"
+            )
             param_source = Path(...)
 
         # 3) if param is a collection, or annotation is part of pydantic model:

@@ -1,4 +1,3 @@
-
 import pytest
 from pydantic import BaseModel
 
@@ -19,7 +18,7 @@ class OtherModel(BaseModel):
 
 class SelfReference(BaseModel):
     a: int = 123
-    sibling: "SelfReference" = None
+    sibling: SelfReference = None
 
 
 SelfReference.model_rebuild()
@@ -47,7 +46,7 @@ def view2(request, some: SomeModel, other: OtherModel) -> SomeOtherResponse:
 
 
 @router.post("/test3")
-def view3(request, some: "SomeModel") -> SomeModel:
+def view3(request, some: SomeModel) -> SomeModel:
     assert isinstance(some, SomeModel)
     return some
 
@@ -77,9 +76,7 @@ def view6(request, obj: OtherModel = None) -> OtherModel | None:
 
 
 @router.post("/model-default2")
-def view7(
-    request, obj: OtherModel = OtherModel(x=1, y=1)
-) -> OtherModel:
+def view7(request, obj: OtherModel = OtherModel(x=1, y=1)) -> OtherModel:
     assert isinstance(obj, OtherModel)
     return obj
 

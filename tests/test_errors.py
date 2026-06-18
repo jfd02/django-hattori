@@ -1,9 +1,10 @@
+import math
 import pickle
 
 import pydantic
 import pytest
 
-from hattori import Body, Header, HattoriAPI, Query, Schema
+from hattori import Body, HattoriAPI, Header, Query, Schema
 from hattori.errors import (
     HttpError,
     ValidationError,
@@ -22,7 +23,7 @@ def test_validation_error_detail_accepts_str_and_int_loc():
 
 def test_validation_error_detail_rejects_invalid_loc():
     with pytest.raises(pydantic.ValidationError):
-        ValidationErrorDetail(loc=[3.14], msg="bad", type="x")
+        ValidationErrorDetail(loc=[math.pi], msg="bad", type="x")
 
 
 def test_validation_error_response_structure():

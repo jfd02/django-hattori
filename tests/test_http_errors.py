@@ -54,7 +54,9 @@ api = HattoriAPI()
 
 
 @api.get("/users/{id}")
-def get_user(request, id: int) -> UserOut | DuplicateName | GroupNotFound | InvalidInput:
+def get_user(
+    request, id: int
+) -> UserOut | DuplicateName | GroupNotFound | InvalidInput:
     if id == 1:
         return DuplicateName()
     if id == 2:
@@ -154,6 +156,7 @@ class _BareE(Enum):
 class BareConflict(Conflict[_BareE.BARE_X]):
     """Pyright auto-promotes an enum member to Literal[member] in type position,
     so the framework must accept both forms identically."""
+
     message = "bare X"
 
 
