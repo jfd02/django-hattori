@@ -9,7 +9,7 @@ from hattori.errors import ConfigError
 from hattori.responses import APIReturn, resolve_api_return_schema
 from hattori.utils import is_async_callable
 
-__all__ = ["SecuritySchema", "AuthBase"]
+__all__ = ["SecuritySchema", "AuthBase", "parse_api_return_responses"]
 
 
 class SecuritySchema(dict):
@@ -64,18 +64,19 @@ class AuthBase(ABC):
         pass  # pragma: no cover
 
 
-def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
-    """Extract ``{code: body_schema}`` from ``authenticate``'s return annotation.
+def parse_api_return_responses(
+    target: Callable[..., Any], owner: str
+) -> dict[int, Any]:
+    """Extract ``{code: body_schema}`` from a callable's return annotation.
 
-    Looks at ``authenticate`` first, falls back to ``__call__`` for custom auth
-    classes that skip the ``authenticate`` convention. Only ``APIReturn``
-    subclasses in the annotation contribute to the result. No annotation means
-    no auth entries in the OpenAPI spec.
+    Walks the union arms of ``target``'s return type and, for every
+    :class:`~hattori.APIReturn` subclass found, records its ``code`` and resolved
+    body schema. Shared by auth (``authenticate``) and permissions (``check``) so
+    both contribute their typed responses to the OpenAPI spec the same way.
+
+    ``owner`` is a human-readable label used in error messages (e.g.
+    ``"BearerAuth.authenticate"``). No annotation means an empty result.
     """
-    target: Callable[..., Any] | None = getattr(auth, "authenticate", None)
-    if target is None:
-        target = auth.__call__
-
     try:
         hints = get_type_hints(target)
     except Exception:
@@ -95,8 +96,8 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
         code = getattr(arm, "code", None)
         if not isinstance(code, int):
             raise ConfigError(
-                f"{arm.__name__} (in return type of {type(auth).__name__}"
-                f".authenticate) must define a concrete `code: ClassVar[int]`."
+                f"{arm.__name__} (in return type of {owner}) must define a "
+                f"concrete `code: ClassVar[int]`."
             )
         try:
             schema = resolve_api_return_schema(arm)
@@ -109,3 +110,17 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
             responses[code] = existing | schema
 
     return responses
+
+
+def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
+    """Extract ``{code: body_schema}`` from ``authenticate``'s return annotation.
+
+    Looks at ``authenticate`` first, falls back to ``__call__`` for custom auth
+    classes that skip the ``authenticate`` convention. Only ``APIReturn``
+    subclasses in the annotation contribute to the result. No annotation means
+    no auth entries in the OpenAPI spec.
+    """
+    target: Callable[..., Any] | None = getattr(auth, "authenticate", None)
+    if target is None:
+        target = auth.__call__
+    return parse_api_return_responses(target, f"{type(auth).__name__}.authenticate")

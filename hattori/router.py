@@ -39,12 +39,14 @@ class RouterMount:
     prefix: str
     url_name_prefix: str | None = None
     auth: Any = NOT_SET
+    permissions: Any = NOT_SET
     tags: list[str] | None = None
     inherited_decorators: list[tuple[Callable, DecoratorMode]] = field(
         default_factory=list
     )
-    # Inherited auth/tags from parent routers (for nested router inheritance)
+    # Inherited auth/permissions/tags from parent routers (for nested inheritance)
     inherited_auth: Any = NOT_SET
+    inherited_permissions: Any = NOT_SET
     inherited_tags: list[str] | None = None
 
 
@@ -63,15 +65,22 @@ class _OperationOptions:
     url_name: str | None = None
     include_in_schema: bool = True
     openapi_extra: dict[str, Any] | None = None
+    permissions: Any = NOT_SET
 
     def with_default_auth(self, auth: Any) -> _OperationOptions:
         if self.auth is not NOT_SET:
             return self
         return replace(self, auth=auth)
 
+    def with_default_permissions(self, permissions: Any) -> _OperationOptions:
+        if self.permissions is not NOT_SET:
+            return self
+        return replace(self, permissions=permissions)
+
     def as_kwargs(self) -> dict[str, Any]:
         return {
             "auth": self.auth,
+            "permissions": self.permissions,
             "operation_id": self.operation_id,
             "summary": self.summary,
             "description": self.description,
@@ -115,6 +124,16 @@ class BoundRouter:
         else:
             self.auth = NOT_SET
 
+        # Permissions follow the same priority chain as auth.
+        if mount.permissions is not NOT_SET:
+            self.permissions = mount.permissions
+        elif mount.template.permissions is not NOT_SET:
+            self.permissions = mount.template.permissions
+        elif mount.inherited_permissions is not NOT_SET:
+            self.permissions = mount.inherited_permissions
+        else:
+            self.permissions = NOT_SET
+
         # Tags handling (issue #794):
         # - mount.tags (from add_router call) = explicit override, use as-is
         # - Otherwise, accumulate: inherited tags + template's own tags
@@ -154,6 +173,13 @@ class BoundRouter:
                         operation._set_auth(self.auth)
                     elif self.api.auth != NOT_SET:
                         operation._set_auth(self.api.auth)
+
+                # Apply permission inheritance (same priority as auth)
+                if operation.permissions_param == NOT_SET:
+                    if self.permissions != NOT_SET:
+                        operation._set_permissions(self.permissions)
+                    elif self.api.permissions != NOT_SET:
+                        operation._set_permissions(self.api.permissions)
 
                 # Apply tags inheritance
                 if operation.tags is None and self.tags is not None:
@@ -199,6 +225,7 @@ class Router:
         self,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         tags: list[str] | None = None,
         by_alias: bool | None = None,
         exclude_unset: bool | None = None,
@@ -207,6 +234,7 @@ class Router:
     ) -> None:
         self._frozen = False
         self.auth = auth
+        self.permissions = permissions
         self.tags = tags
         self.by_alias = by_alias
         self.exclude_unset = exclude_unset
@@ -214,13 +242,15 @@ class Router:
         self.exclude_none = exclude_none
 
         self.path_operations: dict[str, PathView] = {}
-        self._routers: list[tuple[str, Router, Any, list[str] | None, str | None]] = []
+        self._routers: list[
+            tuple[str, Router, Any, Any, list[str] | None, str | None]
+        ] = []
         self._decorators: list[tuple[Callable, DecoratorMode]] = []
 
     def _freeze(self) -> None:
         """Mark router as frozen - no more modifications allowed."""
         self._frozen = True
-        for _, child_router, _, _, _ in self._routers:
+        for _, child_router, *_ in self._routers:
             child_router._freeze()
 
     def _check_not_frozen(self) -> None:
@@ -241,6 +271,7 @@ class Router:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -271,6 +302,7 @@ class Router:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -279,6 +311,7 @@ class Router:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -309,6 +342,7 @@ class Router:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -317,6 +351,7 @@ class Router:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -347,6 +382,7 @@ class Router:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -355,6 +391,7 @@ class Router:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -385,6 +422,7 @@ class Router:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -393,6 +431,7 @@ class Router:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -423,6 +462,7 @@ class Router:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -432,6 +472,7 @@ class Router:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -459,6 +500,7 @@ class Router:
             url_name,
             include_in_schema,
             openapi_extra,
+            permissions=permissions,
         )
 
         def decorator(view_func: TCallable) -> TCallable:
@@ -474,6 +516,7 @@ class Router:
         view_func: Callable,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -514,6 +557,7 @@ class Router:
             methods=methods,
             view_func=view_func,
             auth=auth,
+            permissions=permissions,
             operation_id=operation_id,
             summary=summary,
             description=description,
@@ -568,6 +612,7 @@ class Router:
         router: Router | str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         tags: list[str] | None = None,
         url_name_prefix: str | None = None,
     ) -> None:
@@ -587,7 +632,7 @@ class Router:
 
         # Store child router with its mount-time configuration.
         # These values belong to the mount, not the shared router template.
-        self._routers.append((prefix, router, auth, tags, url_name_prefix))
+        self._routers.append((prefix, router, auth, permissions, tags, url_name_prefix))
 
     def add_decorator(
         self,
@@ -613,6 +658,7 @@ class Router:
         inherited_decorators: list[tuple[Callable, DecoratorMode]] | None = None,
         inherited_auth: Any = NOT_SET,
         inherited_tags: list[str] | None = None,
+        inherited_permissions: Any = NOT_SET,
     ) -> list[RouterMount]:
         """
         Build mount configurations for this router and all child routers.
@@ -625,6 +671,7 @@ class Router:
             inherited_decorators: Decorators inherited from parent routers/API
             inherited_auth: Auth inherited from parent routers
             inherited_tags: Tags inherited from parent routers
+            inherited_permissions: Permissions inherited from parent routers
 
         Returns:
             List of RouterMount configurations for this router and all descendants
@@ -638,15 +685,21 @@ class Router:
             prefix=prefix,
             inherited_decorators=list(inherited_decorators),
             inherited_auth=inherited_auth,
+            inherited_permissions=inherited_permissions,
             inherited_tags=inherited_tags,
         )
 
         # Calculate values to pass to children
         child_decorators = inherited_decorators + self._decorators
 
-        # For auth/tags, effective value is used for children:
+        # For auth/permissions/tags, effective value is used for children:
         # priority: this router's own setting > inherited
         child_auth = self.auth if self.auth is not NOT_SET else inherited_auth
+        child_permissions = (
+            self.permissions
+            if self.permissions is not NOT_SET
+            else inherited_permissions
+        )
         child_tags = self.tags if self.tags is not None else inherited_tags
 
         # Build mounts for child routers
@@ -655,6 +708,7 @@ class Router:
             child_prefix,
             child_router,
             child_mount_auth,
+            child_mount_permissions,
             child_mount_tags,
             child_url_name_prefix,
         ) in self._routers:
@@ -662,14 +716,22 @@ class Router:
             child_inherited_auth = (
                 child_mount_auth if child_mount_auth is not NOT_SET else child_auth
             )
+            child_inherited_permissions = (
+                child_mount_permissions
+                if child_mount_permissions is not NOT_SET
+                else child_permissions
+            )
             mounts = child_router.build_routers(
                 child_path,
                 child_decorators,
                 child_inherited_auth,
                 child_tags,
+                child_inherited_permissions,
             )
             if mounts and child_mount_auth is not NOT_SET:
                 mounts[0].auth = child_mount_auth
+            if mounts and child_mount_permissions is not NOT_SET:
+                mounts[0].permissions = child_mount_permissions
             # Apply mount-level tags override to the first mount (the child router itself)
             if mounts and child_mount_tags is not None:
                 mounts[0].tags = child_mount_tags

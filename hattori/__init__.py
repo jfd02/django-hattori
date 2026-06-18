@@ -52,6 +52,7 @@ from hattori.patch_dict import PatchDict
 from hattori.responses import Accepted, APIReturn, Created, NoContent
 from hattori.router import Router
 from hattori.schema import Schema
+from hattori.security import BasePermission
 from hattori.streaming import JSONL, SSE
 
 __all__ = [
@@ -75,6 +76,7 @@ __all__ = [
     "Router",
     "P",
     "Schema",
+    "BasePermission",
     "FilterSchema",
     "FilterLookup",
     "FilterConfigDict",

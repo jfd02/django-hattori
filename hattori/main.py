@@ -58,6 +58,10 @@ class HattoriAPI:
         | Callable
         | NOT_SET_TYPE
         | None = NOT_SET,
+        permissions: collections.abc.Sequence[Any]
+        | Any
+        | NOT_SET_TYPE
+        | None = NOT_SET,
         renderer: BaseRenderer | None = None,
         default_router: Router | None = None,
         openapi_extra: dict[str, Any] | None = None,
@@ -100,10 +104,22 @@ class HattoriAPI:
         else:
             self.auth = auth
 
+        # Permissions: a single BasePermission isn't callable, so normalize by
+        # wrapping any non-sequence (and non-sentinel) value into a list.
+        self.permissions: collections.abc.Sequence[Any] | NOT_SET_TYPE | None
+        if (
+            permissions is NOT_SET
+            or permissions is None
+            or isinstance(permissions, collections.abc.Sequence)
+        ):
+            self.permissions = permissions
+        else:
+            self.permissions = [permissions]
+
         # Top-level router registrations (new architecture)
         # Stores (prefix, router, auth, tags, url_name_prefix) for each add_router call
         self._router_registrations: list[
-            tuple[str, Router, Any, list[str] | None, str | None]
+            tuple[str, Router, Any, Any, list[str] | None, str | None]
         ] = []
         self._bound_routers_cache: list[BoundRouter] | None = None
 
@@ -119,7 +135,10 @@ class HattoriAPI:
         return self.default_router.api_operation(
             methods,
             path,
-            **options.with_default_auth(self.auth).as_kwargs(),
+            **options
+            .with_default_auth(self.auth)
+            .with_default_permissions(self.permissions)
+            .as_kwargs(),
         )
 
     def get(
@@ -127,6 +146,7 @@ class HattoriAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -161,6 +181,7 @@ class HattoriAPI:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -169,6 +190,7 @@ class HattoriAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -203,6 +225,7 @@ class HattoriAPI:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -211,6 +234,7 @@ class HattoriAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -245,6 +269,7 @@ class HattoriAPI:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -253,6 +278,7 @@ class HattoriAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -287,6 +313,7 @@ class HattoriAPI:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -295,6 +322,7 @@ class HattoriAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -329,6 +357,7 @@ class HattoriAPI:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -338,6 +367,7 @@ class HattoriAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         operation_id: str | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -368,6 +398,7 @@ class HattoriAPI:
                 url_name,
                 include_in_schema,
                 openapi_extra,
+                permissions=permissions,
             ),
         )
 
@@ -393,6 +424,7 @@ class HattoriAPI:
         router: Router | str,
         *,
         auth: Any = NOT_SET,
+        permissions: Any = NOT_SET,
         tags: list[str] | None = None,
         url_name_prefix: str | None = None,
         parent_router: Router | None = None,
@@ -404,6 +436,7 @@ class HattoriAPI:
             prefix: URL prefix for all routes in the router
             router: Router instance or import path string
             auth: Authentication override for this router
+            permissions: Permissions override for this router
             tags: Tags override for this router
             url_name_prefix: Prefix for URL names (required when mounting same router multiple times)
             parent_router: Internal use - parent router for nested routers
@@ -433,6 +466,7 @@ class HattoriAPI:
             prefix,
             router,
             auth,
+            permissions,
             tags,
             url_name_prefix,
         ))
@@ -466,6 +500,7 @@ class HattoriAPI:
                 prefix,
                 router,
                 auth,
+                permissions,
                 tags,
                 url_name_prefix,
             ) in self._router_registrations:
@@ -477,12 +512,13 @@ class HattoriAPI:
                 )
 
                 # Build mount configurations (non-mutating)
-                # Pass auth/tags so they can be inherited by children
+                # Pass auth/permissions/tags so they can be inherited by children
                 mounts = router.build_routers(
                     prefix,
                     api_decorators,
                     inherited_auth=auth,
                     inherited_tags=tags,
+                    inherited_permissions=permissions,
                 )
 
                 # Apply mount-level overrides to the first (parent) mount
@@ -490,6 +526,8 @@ class HattoriAPI:
                 first_mount = mounts[0]
                 if auth is not NOT_SET:
                     first_mount.auth = auth
+                if permissions is not NOT_SET:
+                    first_mount.permissions = permissions
                 if tags is not None:
                     first_mount.tags = tags
 

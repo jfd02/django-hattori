@@ -390,6 +390,9 @@ class TestOperationClone:
         assert cloned.auth_param == original.auth_param
         assert cloned.auth_callbacks == original.auth_callbacks
         assert cloned.auth_callbacks is not original.auth_callbacks
+        assert cloned.permissions_param == original.permissions_param
+        assert cloned.permission_callbacks == original.permission_callbacks
+        assert cloned.permission_callbacks is not original.permission_callbacks
 
     def test_pathview_clone(self):
         """PathView.clone() should clone all contained operations."""
@@ -499,6 +502,8 @@ class TestCloneCompleteness:
             "csrf_exempt",
             "auth_param",
             "auth_callbacks",
+            "permissions_param",
+            "permission_callbacks",
             "signature",
             "models",
             "response_models",
@@ -573,6 +578,8 @@ class TestCloneCompleteness:
             "csrf_exempt",
             "auth_param",
             "auth_callbacks",
+            "permissions_param",
+            "permission_callbacks",
             # Signature and models
             "signature",
             "models",
@@ -738,12 +745,14 @@ class TestRouterAddRouterStringImport:
             _,
             added_child,
             mount_auth,
+            mount_permissions,
             mount_tags,
             mount_url_name_prefix,
         ) = parent._routers[0]
         assert isinstance(added_child, Router)
         assert added_child is child
         assert mount_auth is NOT_SET
+        assert mount_permissions is NOT_SET
         assert mount_tags is None  # No tags specified in add_router
         assert mount_url_name_prefix is None
 

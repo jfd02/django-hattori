@@ -28,6 +28,7 @@ from hattori.compatibility.util import UNION_TYPES
 from hattori.constants import NOT_SET, NOT_SET_TYPE
 from hattori.errors import (
     AuthenticationError,
+    AuthorizationError,
     ConfigError,
     ValidationErrorContext,
 )
@@ -192,6 +193,24 @@ def _parse_api_return_arm(arm: Any, view_func: Callable) -> tuple[int, Any]:
     return code, schema
 
 
+def _merge_response_schemas(
+    collected: dict[Any, Any], responses: dict[int, Any]
+) -> None:
+    """Fold ``{code: schema}`` entries from auth/permissions into ``collected``.
+
+    A code already present with a different schema becomes a union of the two so
+    every declared variant is documented; ``None``-bodied entries are overwritten.
+    """
+    for code, schema_type in responses.items():
+        existing = collected.get(code)
+        if existing is None or existing is type(None):
+            collected[code] = schema_type
+        elif existing is schema_type:
+            continue
+        else:
+            collected[code] = existing | schema_type
+
+
 class Operation:
     def __init__(
         self,
@@ -201,6 +220,10 @@ class Operation:
         *,
         auth: collections.abc.Sequence[Callable]
         | Callable
+        | NOT_SET_TYPE
+        | None = NOT_SET,
+        permissions: collections.abc.Sequence[Any]
+        | Any
         | NOT_SET_TYPE
         | None = NOT_SET,
         operation_id: str | None = None,
@@ -231,6 +254,10 @@ class Operation:
         self.auth_callbacks: collections.abc.Sequence[Callable] = []
         self._set_auth(auth)
 
+        self.permissions_param: collections.abc.Sequence[Any] | Any | None = permissions
+        self.permission_callbacks: collections.abc.Sequence[Any] = []
+        self._set_permissions(permissions)
+
         self.signature = ViewSignature(self.path, self.view_func)
         self.models: TModels = self.signature.models
 
@@ -243,20 +270,18 @@ class Operation:
         if parsed.stream_alias is not None:
             self.stream_format = parsed.stream_alias.format_cls
 
-        # Merge auth-declared responses into the operation's response map.
-        # Auth's APIReturn subclasses become valid response types for this
-        # operation both at runtime (short-circuit) and in the OpenAPI spec.
+        # Merge auth- and permission-declared responses into the operation's
+        # response map. Their APIReturn subclasses become valid response types for
+        # this operation both at runtime (short-circuit) and in the OpenAPI spec.
         collected = dict(parsed.response_models)
         for auth_cb in self.auth_callbacks:
-            auth_responses = getattr(auth_cb, "auth_responses", None) or {}
-            for code, schema_type in auth_responses.items():
-                existing = collected.get(code)
-                if existing is None or existing is type(None):
-                    collected[code] = schema_type
-                elif existing is schema_type:
-                    continue
-                else:
-                    collected[code] = Union[existing, schema_type]
+            _merge_response_schemas(
+                collected, getattr(auth_cb, "auth_responses", None) or {}
+            )
+        for permission in self.permission_callbacks:
+            _merge_response_schemas(
+                collected, getattr(permission, "permission_responses", None) or {}
+            )
 
         self.response_models = {}
         for status_code, schema_type in collected.items():
@@ -328,6 +353,10 @@ class Operation:
         cloned.auth_param = self.auth_param
         cloned.auth_callbacks = list(self.auth_callbacks)
 
+        # Copy permission settings
+        cloned.permissions_param = self.permissions_param
+        cloned.permission_callbacks = list(self.permission_callbacks)
+
         # Copy signature and models (immutable after creation, safe to share)
         cloned.signature = self.signature
         cloned.models = self.models
@@ -367,7 +396,7 @@ class Operation:
 
     def run(self, request: HttpRequest, **kw: Any) -> HttpResponseBase:
         temporal_response = self.api.create_temporal_response(request)
-        error = self._run_checks(request, temporal_response)
+        error = self._run_checks(request, temporal_response, kw)
         if error:
             return error
         try:
@@ -481,8 +510,21 @@ class Operation:
                 else [cast("Callable[..., Any]", auth)]
             )
 
+    def _set_permissions(
+        self, permissions: collections.abc.Sequence[Any] | Any | None
+    ) -> None:
+        if permissions is not None and permissions is not NOT_SET:
+            self.permission_callbacks = (
+                permissions
+                if isinstance(permissions, collections.abc.Sequence)
+                else [permissions]
+            )
+
     def _run_checks(
-        self, request: HttpRequest, temporal_response: HttpResponse
+        self,
+        request: HttpRequest,
+        temporal_response: HttpResponse,
+        path_params: dict[str, Any],
     ) -> HttpResponseBase | None:
         "Runs security checks for each operation"
         # NOTE: if you change anything in this function - do this also in AsyncOperation
@@ -495,6 +537,12 @@ class Operation:
         # auth:
         if self.auth_callbacks:
             error = self._run_authentication(request, temporal_response)
+            if error:
+                return error
+
+        # permissions (run after auth so request.auth is available):
+        if self.permission_callbacks:
+            error = self._run_permissions(request, temporal_response, path_params)
             if error:
                 return error
 
@@ -519,6 +567,47 @@ class Operation:
                 request.auth = result  # type: ignore
                 return None
         return self.api.on_exception(request, AuthenticationError())
+
+    def _permission_outcome(
+        self,
+        request: HttpRequest,
+        result: Any,
+        temporal_response: HttpResponse,
+        permission: Any,
+    ) -> HttpResponseBase | None:
+        """Map a permission ``check`` result to a short-circuit response (or None).
+
+        ``APIReturn`` short-circuits to that typed response; a falsy result is a
+        ``403`` using the permission's ``message``; truthy means pass.
+        """
+        if isinstance(result, APIReturn):
+            return self._result_to_response(request, result, temporal_response)
+        if result:
+            return None
+        message = getattr(permission, "message", "Forbidden")
+        return self.api.on_exception(request, AuthorizationError(message=message))
+
+    def _run_permissions(
+        self,
+        request: HttpRequest,
+        temporal_response: HttpResponse,
+        path_params: dict[str, Any],
+    ) -> HttpResponseBase | None:
+        for permission in self.permission_callbacks:
+            try:
+                kwargs = permission.select_path_kwargs(path_params)
+                result = permission.check(request, **kwargs)
+                if inspect.iscoroutine(result):
+                    result = async_to_sync(lambda res=result: res)()
+            except Exception as exc:
+                return self.api.on_exception(request, exc)
+
+            outcome = self._permission_outcome(
+                request, result, temporal_response, permission
+            )
+            if outcome is not None:
+                return outcome
+        return None
 
     def _result_to_response(
         self, request: HttpRequest, result: Any, temporal_response: HttpResponse
@@ -632,7 +721,7 @@ class AsyncOperation(Operation):
 
     async def run(self, request: HttpRequest, **kw: Any) -> HttpResponseBase:  # type: ignore
         temporal_response = self.api.create_temporal_response(request)
-        error = await self._run_checks(request, temporal_response)
+        error = await self._run_checks(request, temporal_response, kw)
         if error:
             return error
         try:
@@ -685,7 +774,10 @@ class AsyncOperation(Operation):
         return response
 
     async def _run_checks(  # type: ignore
-        self, request: HttpRequest, temporal_response: HttpResponse
+        self,
+        request: HttpRequest,
+        temporal_response: HttpResponse,
+        path_params: dict[str, Any],
     ) -> HttpResponseBase | None:
         "Runs security checks for each operation"
         # NOTE: if you change anything in this function - do this also in Sync Operation
@@ -697,6 +789,12 @@ class AsyncOperation(Operation):
         # auth:
         if self.auth_callbacks:
             error = await self._run_authentication(request, temporal_response)
+            if error:
+                return error
+
+        # permissions (run after auth so request.auth is available):
+        if self.permission_callbacks:
+            error = await self._run_permissions(request, temporal_response, path_params)
             if error:
                 return error
 
@@ -725,6 +823,29 @@ class AsyncOperation(Operation):
                 return None
         return self.api.on_exception(request, AuthenticationError())
 
+    async def _run_permissions(  # type: ignore
+        self,
+        request: HttpRequest,
+        temporal_response: HttpResponse,
+        path_params: dict[str, Any],
+    ) -> HttpResponseBase | None:
+        for permission in self.permission_callbacks:
+            try:
+                kwargs = permission.select_path_kwargs(path_params)
+                if permission.is_async:
+                    result = await permission.check(request, **kwargs)
+                else:
+                    result = await sync_to_async(permission.check)(request, **kwargs)
+            except Exception as exc:
+                return self.api.on_exception(request, exc)
+
+            outcome = self._permission_outcome(
+                request, result, temporal_response, permission
+            )
+            if outcome is not None:
+                return outcome
+        return None
+
 
 class PathView:
     def __init__(self) -> None:
@@ -741,6 +862,10 @@ class PathView:
         *,
         auth: collections.abc.Sequence[Callable]
         | Callable
+        | NOT_SET_TYPE
+        | None = NOT_SET,
+        permissions: collections.abc.Sequence[Any]
+        | Any
         | NOT_SET_TYPE
         | None = NOT_SET,
         operation_id: str | None = None,
@@ -775,6 +900,7 @@ class PathView:
             methods,
             view_func,
             auth=auth,
+            permissions=permissions,
             operation_id=operation_id,
             summary=summary,
             description=description,
