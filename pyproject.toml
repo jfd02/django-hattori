@@ -96,7 +96,6 @@ ignore = [
 "tests/*" = ["C408", "B017"]
 
 [tool.coverage.run]
-omit = ["hattori/compatibility/*"]
 branch = true
 
 [tool.coverage.report]
