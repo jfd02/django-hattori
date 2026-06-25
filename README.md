@@ -285,3 +285,80 @@ class Gone(APIReturn[ProblemDetail]):
             detail=detail,
         ))
 ```
+
+## Testing
+
+Hattori ships a lightweight test client that calls your endpoints in-process —
+no live server, no `urls.py` wiring. Point it at a `HattoriAPI` or a `Router`:
+
+```python
+from hattori.testing import TestClient
+
+from .api import api
+
+client = TestClient(api)
+
+
+def test_signup():
+    resp = client.post("/signup", json={"username": "neo", "password": "trinity!"})
+    assert resp.status_code == 201
+    assert resp.json() == {"id": 1, "username": "neo"}
+```
+
+Requests are built with Django's `RequestFactory`, so your handlers receive a
+real `HttpRequest` — real `request.user` (an `AnonymousUser` by default), headers,
+cookies, and body parsing — rather than a mock. Default headers and cookies can
+be set once on the client:
+
+```python
+client = TestClient(api, headers={"Authorization": "Bearer t0ken"})
+```
+
+Per request, pass `json=`, form `data=`, `headers=`, `COOKIES=`, `FILES=`,
+`query_params=`, or a custom authenticated `user=`:
+
+```python
+from django.core.files.uploadedfile import SimpleUploadedFile
+
+client.get("/me", headers={"Authorization": "Bearer t0ken"})
+client.post("/avatar", FILES={"file": SimpleUploadedFile("a.png", b"...")})
+client.get("/dashboard", user=some_user)
+```
+
+The response exposes `.status_code`, `.json()`, `.content`, and proxies header
+access (`resp["Content-Type"]`).
+
+### Async endpoints
+
+Use `TestAsyncClient` and `await` the calls:
+
+```python
+from hattori.testing import TestAsyncClient
+
+client = TestAsyncClient(api)
+
+
+async def test_me():
+    resp = await client.get("/me")
+    assert resp.status_code == 200
+```
+
+### pytest fixtures
+
+Opt in to the shipped fixtures by adding the plugin to your top-level
+`conftest.py`:
+
+```python
+# conftest.py
+pytest_plugins = ["hattori.testing.plugin"]
+```
+
+You then get `hattori_client` and `hattori_async_client` factory fixtures — call
+them with the API or router under test (extra kwargs are forwarded to the
+client):
+
+```python
+def test_signup(hattori_client):
+    client = hattori_client(api)
+    assert client.post("/signup", json={"username": "neo", "password": "x"}).status_code == 422
+```
