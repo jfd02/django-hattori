@@ -300,6 +300,15 @@ class Operation:
             for model in self.response_models.values()
             if model is not None
         }
+        # The origin type used for the revalidation-skip isinstance() check is
+        # invariant per response model; resolve it once instead of unwrapping the
+        # pydantic generic metadata on every response.
+        self._resp_types: dict[int, Any] = {}
+        for model_id, ann in self._resp_annotations.items():
+            meta = getattr(ann, "__pydantic_generic_metadata__", None)
+            self._resp_types[model_id] = (
+                meta["origin"] if meta and meta.get("origin") else ann
+            )
 
         if need_to_fix_request_files(methods, self.models):
             raise ConfigError(
@@ -352,6 +361,7 @@ class Operation:
         # Copy auth settings
         cloned.auth_param = self.auth_param
         cloned.auth_callbacks = list(self.auth_callbacks)
+        cloned.auth_callbacks_with_async = list(self.auth_callbacks_with_async)
 
         # Copy permission settings
         cloned.permissions_param = self.permissions_param
@@ -368,6 +378,7 @@ class Operation:
         # Copy response models (dict copy for isolation)
         cloned.response_models = dict(self.response_models)
         cloned._resp_annotations = self._resp_annotations
+        cloned._resp_types = self._resp_types
 
         # Copy metadata
         cloned.operation_id = self.operation_id
@@ -509,6 +520,21 @@ class Operation:
                 if isinstance(auth, collections.abc.Sequence)
                 else [cast("Callable[..., Any]", auth)]
             )
+        self._index_auth_callbacks()
+
+    def _index_auth_callbacks(self) -> None:
+        """Precompute each auth callback's async-ness once, off the request path.
+
+        ``is_async_callable`` walks ``inspect`` internals and the async-ness of a
+        callback never changes, so pairing each callback with its flag here keeps
+        that work off the per-request authentication loop. Called from every place
+        that assigns ``auth_callbacks`` (``__init__`` and bind-time inheritance via
+        ``_set_auth``) so the cache can never go stale.
+        """
+        self.auth_callbacks_with_async: list[tuple[Callable, bool]] = [
+            (cb, is_async_callable(cb) or getattr(cb, "is_async", False))
+            for cb in self.auth_callbacks
+        ]
 
     def _set_permissions(
         self, permissions: collections.abc.Sequence[Any] | Any | None
@@ -548,24 +574,39 @@ class Operation:
 
         return None
 
+    def _auth_outcome(
+        self, request: HttpRequest, result: Any, temporal_response: HttpResponse
+    ) -> tuple[HttpResponseBase | None, bool]:
+        """Map an auth callback ``result`` to ``(response, handled)``.
+
+        ``handled`` True means stop looping: either a typed ``APIReturn`` that
+        short-circuits to that response, or a successful auth whose value is
+        stashed on ``request.auth``. ``handled`` False means this callback
+        declined (returned ``None``) - try the next one.
+        """
+        if isinstance(result, APIReturn):
+            # Auth declared a typed error response - short-circuit to it
+            # instead of calling the view.
+            return self._result_to_response(request, result, temporal_response), True
+        if result is not None:
+            request.auth = result  # type: ignore
+            return None, True
+        return None, False
+
     def _run_authentication(
         self, request: HttpRequest, temporal_response: HttpResponse
     ) -> HttpResponseBase | None:
-        for callback in self.auth_callbacks:
+        for callback, is_async in self.auth_callbacks_with_async:
             try:
                 result = callback(request)
-                if inspect.iscoroutine(result):
+                if is_async and inspect.iscoroutine(result):
                     result = async_to_sync(lambda res=result: res)()
             except Exception as exc:
                 return self.api.on_exception(request, exc)
 
-            if isinstance(result, APIReturn):
-                # Auth declared a typed error response - short-circuit to it
-                # instead of calling the view.
-                return self._result_to_response(request, result, temporal_response)
-            if result is not None:
-                request.auth = result  # type: ignore
-                return None
+            outcome, handled = self._auth_outcome(request, result, temporal_response)
+            if handled:
+                return outcome
         return self.api.on_exception(request, AuthenticationError())
 
     def _permission_outcome(
@@ -663,8 +704,7 @@ class Operation:
         # check against the origin type since isinstance() doesn't work with
         # parameterized generics directly.
         resp_annotation = self._resp_annotations[id(response_model)]
-        meta = getattr(resp_annotation, "__pydantic_generic_metadata__", None)
-        resp_type = meta["origin"] if meta and meta.get("origin") else resp_annotation
+        resp_type = self._resp_types[id(response_model)]
         if (
             resp_annotation is not Any
             and isinstance(resp_type, type)
@@ -803,9 +843,9 @@ class AsyncOperation(Operation):
     async def _run_authentication(  # type: ignore
         self, request: HttpRequest, temporal_response: HttpResponse
     ) -> HttpResponseBase | None:
-        for callback in self.auth_callbacks:
+        for callback, is_async in self.auth_callbacks_with_async:
             try:
-                if is_async_callable(callback) or getattr(callback, "is_async", False):
+                if is_async:
                     cor: collections.abc.Coroutine | None = callback(request)
                     if cor is None:
                         result = None
@@ -816,11 +856,9 @@ class AsyncOperation(Operation):
             except Exception as exc:
                 return self.api.on_exception(request, exc)
 
-            if isinstance(result, APIReturn):
-                return self._result_to_response(request, result, temporal_response)
-            if result is not None:
-                request.auth = result  # type: ignore
-                return None
+            outcome, handled = self._auth_outcome(request, result, temporal_response)
+            if handled:
+                return outcome
         return self.api.on_exception(request, AuthenticationError())
 
     async def _run_permissions(  # type: ignore

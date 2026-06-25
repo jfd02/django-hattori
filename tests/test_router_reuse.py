@@ -578,6 +578,7 @@ class TestCloneCompleteness:
             "csrf_exempt",
             "auth_param",
             "auth_callbacks",
+            "auth_callbacks_with_async",
             "permissions_param",
             "permission_callbacks",
             # Signature and models
@@ -585,6 +586,7 @@ class TestCloneCompleteness:
             "models",
             "response_models",
             "_resp_annotations",
+            "_resp_types",
             # Streaming
             "stream_format",
             "stream_item_model",
