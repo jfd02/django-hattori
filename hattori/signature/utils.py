@@ -53,18 +53,6 @@ def get_path_param_names(path: str) -> set[str]:
     return {item.strip("{}").split(":")[-1] for item in re.findall("{[^}]*}", path)}
 
 
-def has_kwargs(func: Callable[..., Any]) -> bool:
-    for param in inspect.signature(func).parameters.values():
-        if param.kind == param.VAR_KEYWORD:
-            return True
-    return False
-
-
-def get_args_names(func: Callable[..., Any]) -> list[str]:
-    "returns list of function argument names"
-    return list(inspect.signature(func).parameters.keys())
-
-
 class UUIDStrConverter(UUIDConverter):
     """Return a path converted UUID as a str instead of the standard UUID"""
 

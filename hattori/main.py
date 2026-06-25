@@ -427,7 +427,6 @@ class HattoriAPI:
         permissions: Any = NOT_SET,
         tags: list[str] | None = None,
         url_name_prefix: str | None = None,
-        parent_router: Router | None = None,
     ) -> None:
         """
         Add a router to this API.
@@ -439,7 +438,6 @@ class HattoriAPI:
             permissions: Permissions override for this router
             tags: Tags override for this router
             url_name_prefix: Prefix for URL names (required when mounting same router multiple times)
-            parent_router: Internal use - parent router for nested routers
         """
         # Prevent adding routers after URLs have been generated
         if self._bound_routers_cache is not None:

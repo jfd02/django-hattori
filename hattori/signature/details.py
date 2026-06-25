@@ -50,7 +50,6 @@ class ViewSignature:
         self.path = path
         self.path_params_names = get_path_param_names(path)
         self.docstring = inspect.cleandoc(view_func.__doc__ or "")
-        self.has_kwargs = False
 
         self.params = []
         for name, arg in self.signature.parameters.items():
@@ -62,7 +61,6 @@ class ViewSignature:
 
             if arg.kind == arg.VAR_KEYWORD:
                 # Skipping **kwargs
-                self.has_kwargs = True
                 continue
 
             if arg.kind == arg.VAR_POSITIONAL:
