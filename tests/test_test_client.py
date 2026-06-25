@@ -37,7 +37,38 @@ def get_cookies(request) -> dict[str, str]:
     return dict(request.COOKIES)
 
 
+@router.get("/test-remote-addr")
+def get_remote_addr(request) -> str:
+    return request.META.get("REMOTE_ADDR", "")
+
+
+@router.get("/test-attr")
+def get_attr(request) -> str:
+    return getattr(request, "trace_id", "")
+
+
 client = TestClient(router)
+
+
+def test_meta_override_is_merged_onto_request():
+    r = client.get("/test-remote-addr", META={"REMOTE_ADDR": "9.9.9.9"})
+    assert r.json() == "9.9.9.9"
+
+
+def test_arbitrary_kwarg_is_set_on_request():
+    r = client.get("/test-attr", trace_id="abc-123")
+    assert r.json() == "abc-123"
+
+
+def test_response_data_caches_null_body():
+    from hattori.testing.client import HattoriTestResponse
+
+    fake = mock.Mock(streaming=False, status_code=200, content=b"null")
+    response = HattoriTestResponse(fake)
+
+    assert response.data is None  # JSON null -> None, then cached
+    with mock.patch.object(response, "json", side_effect=AssertionError):
+        assert response.data is None  # served from cache, json() not re-called
 
 
 @pytest.mark.parametrize(
