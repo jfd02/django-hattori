@@ -168,6 +168,34 @@ class TestNestedModelRefsPreserved:
         assert list(schema["properties"]) == ["kind", "nested"]
 
 
+_N = TypeVar("_N")
+
+
+class SelfRefNode(Schema, Generic[_N]):
+    kind: _N
+    # Defined at module scope (not inside the test) so the self-reference's
+    # forward ref resolves against module globals.
+    parent: "SelfRefNode[_N] | None" = None  # noqa: UP037 — self-reference needs the forward ref
+
+
+class TestSelfReferentialRefRenamed:
+    """A self-referential generic, parameterized by a Literal, must rename both
+    its own ref *and* the schema_ref back-pointer that the self-reference emits.
+    If only the definition were renamed, the recursive `$ref` would dangle."""
+
+    def test_self_reference_points_at_renamed_def(self):
+        schema = SelfRefNode[Literal["leaf"]].model_json_schema()
+
+        # The definition is renamed from the ugly default to the clean name.
+        assert "SelfRefNode_leaf" in schema["$defs"]
+        node_def = schema["$defs"]["SelfRefNode_leaf"]
+        assert node_def["properties"]["kind"]["const"] == "leaf"
+
+        # The recursive back-reference is rewritten to match the renamed def.
+        parent_ref = node_def["properties"]["parent"]["anyOf"][0]["$ref"]
+        assert parent_ref == "#/$defs/SelfRefNode_leaf"
+
+
 class TestDuplicateStatusCodesCombined:
     """Multiple response arms with the same status code should be combined, not overwritten."""
 

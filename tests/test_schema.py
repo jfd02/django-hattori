@@ -78,3 +78,19 @@ def test_literal_parameterization_produces_clean_names():
 
     model = _ErrorResponse[Literal["not_found"]]
     assert model.__name__ == "_ErrorResponse_not_found"
+
+
+def test_json_schema_strips_null_defaults():
+    """`Schema.json_schema()` uses HattoriGenerateJsonSchema, which omits the
+    `default: null` that stock pydantic renders for optional fields (it breaks
+    swagger). The override is the whole reason this classmethod exists."""
+
+    class Profile(Schema):
+        name: str
+        nickname: str | None = None
+
+    schema = Profile.json_schema()
+    assert isinstance(schema, dict)
+    assert "default" not in schema["properties"]["nickname"]
+    # Stock pydantic, by contrast, does render the null default:
+    assert "default" in Profile.model_json_schema()["properties"]["nickname"]

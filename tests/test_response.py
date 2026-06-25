@@ -1,14 +1,18 @@
 import json
+from datetime import timedelta
+from decimal import Decimal
 from enum import Enum
 from ipaddress import IPv4Address, IPv6Address
 
 import pytest
 from django.http import HttpResponse
+from django.utils.duration import duration_iso_string
+from django.utils.translation import gettext_lazy
 from pydantic import BaseModel, HttpUrl, ValidationError
 from pydantic_core import Url
 
 from hattori import Router
-from hattori.responses import JsonResponse
+from hattori.responses import JsonResponse, json_default
 from hattori.testing import TestClient
 
 router = Router()
@@ -196,3 +200,32 @@ def test_pydantic_httpurl_schema():
     response = client.get("/check_httpurl")
     assert response.status_code == 200
     assert response.json() == {"url": "https://django-hattori.dev/"}
+
+
+def test_timedelta_encoding():
+    value = timedelta(days=1, hours=2, minutes=3)
+    response = JsonResponse({"d": value})
+    response_data = json.loads(response.content)
+    assert response_data == {"d": duration_iso_string(value)}
+
+
+def test_decimal_encoding():
+    response = JsonResponse({"price": Decimal("19.99")})
+    response_data = json.loads(response.content)
+    assert response_data == {"price": "19.99"}
+
+
+def test_lazy_string_encoding():
+    # Django lazy strings (e.g. gettext_lazy) are Promise instances and must
+    # serialize to their resolved text.
+    response = JsonResponse({"label": gettext_lazy("hello")})
+    response_data = json.loads(response.content)
+    assert response_data == {"label": "hello"}
+
+
+def test_unsupported_type_raises_type_error():
+    class NotSerializable:
+        pass
+
+    with pytest.raises(TypeError):
+        json_default(NotSerializable())
