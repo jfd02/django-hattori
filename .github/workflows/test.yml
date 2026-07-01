@@ -18,4 +18,4 @@ jobs:
       - name: Test
         run: uv run pytest --cov=hattori --cov-report=xml tests
       - name: Coverage
-        uses: codecov/codecov-action@v4.4.1
+        uses: codecov/codecov-action@v7.0.0
