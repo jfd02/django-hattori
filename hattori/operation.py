@@ -270,45 +270,13 @@ class Operation:
         if parsed.stream_alias is not None:
             self.stream_format = parsed.stream_alias.format_cls
 
-        # Merge auth- and permission-declared responses into the operation's
-        # response map. Their APIReturn subclasses become valid response types for
-        # this operation both at runtime (short-circuit) and in the OpenAPI spec.
-        collected = dict(parsed.response_models)
-        for auth_cb in self.auth_callbacks:
-            _merge_response_schemas(
-                collected, getattr(auth_cb, "auth_responses", None) or {}
-            )
-        for permission in self.permission_callbacks:
-            _merge_response_schemas(
-                collected, getattr(permission, "permission_responses", None) or {}
-            )
-
-        self.response_models = {}
-        for status_code, schema_type in collected.items():
-            if schema_type is type(None):
-                self.response_models[status_code] = None
-            else:
-                self.response_models[status_code] = self._create_response_model(
-                    schema_type
-                )
-        if self.stream_format and self.response_models:
-            first_model = next(iter(self.response_models.values()))
-            self.stream_item_model = first_model
-
-        self._resp_annotations: dict[int, Any] = {
-            id(model): model.model_fields["response"].annotation
-            for model in self.response_models.values()
-            if model is not None
-        }
-        # The origin type used for the revalidation-skip isinstance() check is
-        # invariant per response model; resolve it once instead of unwrapping the
-        # pydantic generic metadata on every response.
+        # Response types declared purely by the return annotation, kept separate
+        # so response_models can be rebuilt whenever auth/permissions are attached
+        # after __init__ (e.g. inherited from a router or the API at bind time).
+        self._annotated_responses: dict[Any, Any] = dict(parsed.response_models)
+        self._resp_annotations: dict[int, Any] = {}
         self._resp_types: dict[int, Any] = {}
-        for model_id, ann in self._resp_annotations.items():
-            meta = getattr(ann, "__pydantic_generic_metadata__", None)
-            self._resp_types[model_id] = (
-                meta["origin"] if meta and meta.get("origin") else ann
-            )
+        self._build_response_models()
 
         if need_to_fix_request_files(methods, self.models):
             raise ConfigError(
@@ -335,6 +303,56 @@ class Operation:
             callbacks: list[Callable] = view_func._hattori_contribute_to_operation
             for callback in callbacks:
                 callback(self)
+
+    def _build_response_models(self) -> None:
+        """(Re)build ``response_models`` from the return annotation plus any
+        auth/permission-declared responses currently attached to this operation.
+
+        Auth and permissions may be attached *after* ``__init__`` — inherited
+        from a router or the API when the operation is bound — so this folds
+        their typed ``APIReturn`` responses in again. Keeping this idempotent and
+        callable at bind time keeps both the OpenAPI spec and the runtime
+        short-circuit dispatch (:meth:`_result_to_response`) in sync with the
+        effective auth, no matter how it was supplied.
+        """
+        # Their APIReturn subclasses become valid response types for this
+        # operation both at runtime (short-circuit) and in the OpenAPI spec.
+        collected = dict(self._annotated_responses)
+        for auth_cb in self.auth_callbacks:
+            _merge_response_schemas(
+                collected, getattr(auth_cb, "auth_responses", None) or {}
+            )
+        for permission in self.permission_callbacks:
+            _merge_response_schemas(
+                collected, getattr(permission, "permission_responses", None) or {}
+            )
+
+        self.response_models = {}
+        for status_code, schema_type in collected.items():
+            if schema_type is type(None):
+                self.response_models[status_code] = None
+            else:
+                self.response_models[status_code] = self._create_response_model(
+                    schema_type
+                )
+        if self.stream_format and self.response_models:
+            first_model = next(iter(self.response_models.values()))
+            self.stream_item_model = first_model
+
+        self._resp_annotations = {
+            id(model): model.model_fields["response"].annotation
+            for model in self.response_models.values()
+            if model is not None
+        }
+        # The origin type used for the revalidation-skip isinstance() check is
+        # invariant per response model; resolve it once instead of unwrapping the
+        # pydantic generic metadata on every response.
+        self._resp_types = {}
+        for model_id, ann in self._resp_annotations.items():
+            meta = getattr(ann, "__pydantic_generic_metadata__", None)
+            self._resp_types[model_id] = (
+                meta["origin"] if meta and meta.get("origin") else ann
+            )
 
     def clone(self) -> Operation:
         """
@@ -379,6 +397,9 @@ class Operation:
         cloned.response_models = dict(self.response_models)
         cloned._resp_annotations = self._resp_annotations
         cloned._resp_types = self._resp_types
+        # Return-annotation responses, so the clone can rebuild response_models
+        # if auth/permissions are attached during binding (read-only, safe to share).
+        cloned._annotated_responses = self._annotated_responses
 
         # Copy metadata
         cloned.operation_id = self.operation_id

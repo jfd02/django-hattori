@@ -167,19 +167,32 @@ class BoundRouter:
                 # Bind to API
                 operation.api = self.api
 
+                auth_or_perms_changed = False
+
                 # Apply auth inheritance
                 if operation.auth_param == NOT_SET:
                     if self.auth != NOT_SET:
                         operation._set_auth(self.auth)
+                        auth_or_perms_changed = True
                     elif self.api.auth != NOT_SET:
                         operation._set_auth(self.api.auth)
+                        auth_or_perms_changed = True
 
                 # Apply permission inheritance (same priority as auth)
                 if operation.permissions_param == NOT_SET:
                     if self.permissions != NOT_SET:
                         operation._set_permissions(self.permissions)
+                        auth_or_perms_changed = True
                     elif self.api.permissions != NOT_SET:
                         operation._set_permissions(self.api.permissions)
+                        auth_or_perms_changed = True
+
+                # Inherited auth/permissions can declare typed APIReturn responses;
+                # response_models was built in __init__ before they were attached,
+                # so rebuild it now to fold those responses into both the spec and
+                # the runtime short-circuit dispatch.
+                if auth_or_perms_changed:
+                    operation._build_response_models()
 
                 # Apply tags inheritance
                 if operation.tags is None and self.tags is not None:
