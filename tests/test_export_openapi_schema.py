@@ -53,3 +53,43 @@ def test_export_default_without_api_endpoint(mock):
     with pytest.raises(CommandError) as e:
         call_command(ExportCmd(), stdout=output)
     assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
+
+
+@patch("hattori.management.commands.export_openapi_schema.resolve")
+def test_export_default_endpoint_missing_api_keyword(mock):
+    # /api/ resolves but its view has no "api" keyword -> KeyError, not AttributeError.
+    from unittest.mock import Mock
+
+    mock.return_value = Mock(func=Mock(keywords={}))
+    with pytest.raises(CommandError) as e:
+        call_command(ExportCmd(), stdout=StringIO())
+    assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
+
+
+@patch("hattori.management.commands.export_openapi_schema.resolve")
+def test_export_default_endpoint_not_resolvable(mock):
+    # /api/ is not a registered route -> Resolver404.
+    from django.urls import Resolver404
+
+    mock.side_effect = Resolver404()
+    with pytest.raises(CommandError) as e:
+        call_command(ExportCmd(), stdout=StringIO())
+    assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
+
+
+def test_command_docstring_groups_command_args_before_base_args():
+    """The command's own options must be listed before inherited Django base options."""
+    from hattori.management.utils import command_docstring
+
+    doc = command_docstring(ExportCmd)
+    names = [
+        line.strip().split(":", 1)[0].split(" (")[0]
+        for line in doc.splitlines()
+        if line.startswith("    ") and ":" in line
+    ]
+    command_args = {"--api", "--output", "--indent", "--sorted"}
+    cmd_positions = [i for i, n in enumerate(names) if n in command_args]
+    base_positions = [i for i, n in enumerate(names) if n not in command_args]
+    assert cmd_positions and base_positions, names
+    # Every command-specific arg comes before every base arg.
+    assert max(cmd_positions) < min(base_positions), names

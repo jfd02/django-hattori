@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
 from hattori.errors import HttpError
-from hattori.responses import json_loads
+from hattori.responses import json_dumps, json_loads
 
 if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
@@ -196,11 +196,15 @@ class _MultiPartBodyModel(BodyModel):
         for name, annotation in cls.__hattori_body_params__.items():
             if name in request.POST:
                 data = request.POST[name]
-                if annotation is str and (
-                    not data or (data[0] != '"' and data[-1] != '"')
-                ):
-                    data = f'"{data}"'
-                req.body = data.encode()
+                if annotation is str:
+                    # A multipart form value for a `str` body param is a bare,
+                    # unquoted string. JSON-encode it so it round-trips through
+                    # BodyModel's JSON parser with every character preserved
+                    # (interior/edge quotes, newlines, unicode) instead of the
+                    # naive f'"{data}"' wrapping, which mangles or rejects them.
+                    req.body = json_dumps(data)
+                else:
+                    req.body = data.encode()
                 results[name] = get_request_data(req, api, path_params)
         return results
 

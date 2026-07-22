@@ -125,9 +125,11 @@ class Schema(BaseModel, metaclass=_SchemaMetaclass):
         for p in param_list:
             if get_origin(p) is Literal:
                 for a in get_args(p):
-                    values.append(a.value if isinstance(a, Enum) else str(a))
+                    # str() every part: an enum with a non-string value (e.g. an
+                    # IntEnum status code) would otherwise break "_".join below.
+                    values.append(str(a.value) if isinstance(a, Enum) else str(a))
             elif isinstance(p, Enum):
-                values.append(p.value)
+                values.append(str(p.value))
 
         if values:
             name = cls.__name__ + "_" + "_".join(values)

@@ -167,19 +167,32 @@ class BoundRouter:
                 # Bind to API
                 operation.api = self.api
 
+                auth_or_perms_changed = False
+
                 # Apply auth inheritance
                 if operation.auth_param == NOT_SET:
                     if self.auth != NOT_SET:
                         operation._set_auth(self.auth)
+                        auth_or_perms_changed = True
                     elif self.api.auth != NOT_SET:
                         operation._set_auth(self.api.auth)
+                        auth_or_perms_changed = True
 
                 # Apply permission inheritance (same priority as auth)
                 if operation.permissions_param == NOT_SET:
                     if self.permissions != NOT_SET:
                         operation._set_permissions(self.permissions)
+                        auth_or_perms_changed = True
                     elif self.api.permissions != NOT_SET:
                         operation._set_permissions(self.api.permissions)
+                        auth_or_perms_changed = True
+
+                # Inherited auth/permissions can declare typed APIReturn responses;
+                # response_models was built in __init__ before they were attached,
+                # so rebuild it now to fold those responses into both the spec and
+                # the runtime short-circuit dispatch.
+                if auth_or_perms_changed:
+                    operation._build_response_models()
 
                 # Apply tags inheritance
                 if operation.tags is None and self.tags is not None:
@@ -692,15 +705,18 @@ class Router:
         # Calculate values to pass to children
         child_decorators = inherited_decorators + self._decorators
 
-        # For auth/permissions/tags, effective value is used for children:
-        # priority: this router's own setting > inherited
+        # For auth/permissions, effective value is used for children:
+        # priority: this router's own setting > inherited (override semantics).
         child_auth = self.auth if self.auth is not NOT_SET else inherited_auth
         child_permissions = (
             self.permissions
             if self.permissions is not NOT_SET
             else inherited_permissions
         )
-        child_tags = self.tags if self.tags is not None else inherited_tags
+        # Tags accumulate (not override): a child inherits the full chain of its
+        # ancestors' tags plus this router's own. Passing only self.tags (or only
+        # inherited) drops ancestor tags beyond two levels of nesting.
+        child_tags = ((inherited_tags or []) + (self.tags or [])) or None
 
         # Build mounts for child routers
         child_mounts: list[RouterMount] = []

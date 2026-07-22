@@ -322,7 +322,14 @@ class OpenAPISchema(dict):
                     ref_name_suffix=ref_name_suffix,
                 )[0]
                 self._prefer_one_of_for_const_property_union(schema, "code")
-                if operation.stream_format is not None:
+                # Only the streamed body carries the stream media type. Other
+                # responses on a streaming op (auth/permission short-circuits,
+                # extra declared errors) are dispatched as ordinary JSON at
+                # runtime, so document them with the renderer's media type.
+                if (
+                    operation.stream_format is not None
+                    and model is operation.stream_item_model
+                ):
                     details[status]["content"] = (
                         operation.stream_format.openapi_content_schema(schema)
                     )
@@ -354,8 +361,13 @@ class OpenAPISchema(dict):
             schema = self._create_schema_from_model(
                 ValidationErrorResponse, remove_level=False
             )[0]
-            title = schema.get("title", "ValidationErrorResponse")
-            self.schemas[title] = schema
+            base_title = schema.get("title", "ValidationErrorResponse")
+            # Register through the collision-aware path (rather than writing
+            # self.schemas[title] directly) so a user model that happens to be
+            # named "ValidationErrorResponse" is never clobbered by — and never
+            # clobbers — the framework's auto-generated 422 schema.
+            renames = self.add_schema_definitions({base_title: schema})
+            title = renames.get(base_title, base_title)
             self._validation_error_title = title
         return title
 
