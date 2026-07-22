@@ -361,8 +361,13 @@ class OpenAPISchema(dict):
             schema = self._create_schema_from_model(
                 ValidationErrorResponse, remove_level=False
             )[0]
-            title = schema.get("title", "ValidationErrorResponse")
-            self.schemas[title] = schema
+            base_title = schema.get("title", "ValidationErrorResponse")
+            # Register through the collision-aware path (rather than writing
+            # self.schemas[title] directly) so a user model that happens to be
+            # named "ValidationErrorResponse" is never clobbered by — and never
+            # clobbers — the framework's auto-generated 422 schema.
+            renames = self.add_schema_definitions({base_title: schema})
+            title = renames.get(base_title, base_title)
             self._validation_error_title = title
         return title
 
