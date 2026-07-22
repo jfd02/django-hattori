@@ -322,7 +322,14 @@ class OpenAPISchema(dict):
                     ref_name_suffix=ref_name_suffix,
                 )[0]
                 self._prefer_one_of_for_const_property_union(schema, "code")
-                if operation.stream_format is not None:
+                # Only the streamed body carries the stream media type. Other
+                # responses on a streaming op (auth/permission short-circuits,
+                # extra declared errors) are dispatched as ordinary JSON at
+                # runtime, so document them with the renderer's media type.
+                if (
+                    operation.stream_format is not None
+                    and model is operation.stream_item_model
+                ):
                     details[status]["content"] = (
                         operation.stream_format.openapi_content_schema(schema)
                     )
