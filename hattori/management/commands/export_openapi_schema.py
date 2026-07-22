@@ -3,6 +3,7 @@ from typing import Any
 
 import orjson
 from django.core.management.base import BaseCommand, CommandError, CommandParser
+from django.urls import Resolver404
 from django.urls.base import resolve
 from django.utils.module_loading import import_string
 
@@ -28,9 +29,12 @@ class Command(BaseCommand):
 
     def _get_api_instance(self, api_path: str | None = None) -> HattoriAPI:
         if not api_path:
+            # /api/ may not resolve at all (Resolver404), its view may not be a
+            # partial (AttributeError), or the partial may lack the "api" keyword
+            # (KeyError) — all mean "couldn't auto-discover the API".
             try:
                 return resolve("/api/").func.keywords["api"]  # type: ignore
-            except AttributeError:
+            except AttributeError, KeyError, Resolver404:
                 raise CommandError(
                     "No HattoriAPI instance found; please specify one with --api"
                 ) from None

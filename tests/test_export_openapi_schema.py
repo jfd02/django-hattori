@@ -53,3 +53,25 @@ def test_export_default_without_api_endpoint(mock):
     with pytest.raises(CommandError) as e:
         call_command(ExportCmd(), stdout=output)
     assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
+
+
+@patch("hattori.management.commands.export_openapi_schema.resolve")
+def test_export_default_endpoint_missing_api_keyword(mock):
+    # /api/ resolves but its view has no "api" keyword -> KeyError, not AttributeError.
+    from unittest.mock import Mock
+
+    mock.return_value = Mock(func=Mock(keywords={}))
+    with pytest.raises(CommandError) as e:
+        call_command(ExportCmd(), stdout=StringIO())
+    assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
+
+
+@patch("hattori.management.commands.export_openapi_schema.resolve")
+def test_export_default_endpoint_not_resolvable(mock):
+    # /api/ is not a registered route -> Resolver404.
+    from django.urls import Resolver404
+
+    mock.side_effect = Resolver404()
+    with pytest.raises(CommandError) as e:
+        call_command(ExportCmd(), stdout=StringIO())
+    assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
