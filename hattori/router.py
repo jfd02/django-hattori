@@ -705,15 +705,18 @@ class Router:
         # Calculate values to pass to children
         child_decorators = inherited_decorators + self._decorators
 
-        # For auth/permissions/tags, effective value is used for children:
-        # priority: this router's own setting > inherited
+        # For auth/permissions, effective value is used for children:
+        # priority: this router's own setting > inherited (override semantics).
         child_auth = self.auth if self.auth is not NOT_SET else inherited_auth
         child_permissions = (
             self.permissions
             if self.permissions is not NOT_SET
             else inherited_permissions
         )
-        child_tags = self.tags if self.tags is not None else inherited_tags
+        # Tags accumulate (not override): a child inherits the full chain of its
+        # ancestors' tags plus this router's own. Passing only self.tags (or only
+        # inherited) drops ancestor tags beyond two levels of nesting.
+        child_tags = ((inherited_tags or []) + (self.tags or [])) or None
 
         # Build mounts for child routers
         child_mounts: list[RouterMount] = []
