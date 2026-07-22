@@ -45,9 +45,12 @@ class Swagger(DocsBase):
     def render_page(
         self, request: HttpRequest, api: HattoriAPI, **kwargs: Any
     ) -> HttpResponse:
-        self.settings["url"] = self.get_openapi_url(api, kwargs)
+        # Build the per-request url into a copy; mutating the shared self.settings
+        # races across concurrent requests when the openapi url is path-param
+        # dependent.
+        page_settings = {**self.settings, "url": self.get_openapi_url(api, kwargs)}
         context = {
-            "swagger_settings": json.dumps(self.settings, indent=1),
+            "swagger_settings": json.dumps(page_settings, indent=1),
             "api": api,
             "add_csrf": _csrf_needed(api),
         }
