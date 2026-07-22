@@ -75,3 +75,21 @@ def test_export_default_endpoint_not_resolvable(mock):
     with pytest.raises(CommandError) as e:
         call_command(ExportCmd(), stdout=StringIO())
     assert str(e.value) == "No HattoriAPI instance found; please specify one with --api"
+
+
+def test_command_docstring_groups_command_args_before_base_args():
+    """The command's own options must be listed before inherited Django base options."""
+    from hattori.management.utils import command_docstring
+
+    doc = command_docstring(ExportCmd)
+    names = [
+        line.strip().split(":", 1)[0].split(" (")[0]
+        for line in doc.splitlines()
+        if line.startswith("    ") and ":" in line
+    ]
+    command_args = {"--api", "--output", "--indent", "--sorted"}
+    cmd_positions = [i for i, n in enumerate(names) if n in command_args]
+    base_positions = [i for i, n in enumerate(names) if n not in command_args]
+    assert cmd_positions and base_positions, names
+    # Every command-specific arg comes before every base arg.
+    assert max(cmd_positions) < min(base_positions), names
