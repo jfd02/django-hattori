@@ -6,11 +6,9 @@ from typing import (
     TypeVar,
 )
 
-from pydantic import BaseModel
 from pydantic_core import core_schema
 
 from hattori import Body
-from hattori.schema import Schema
 from hattori.utils import is_optional_type
 
 
@@ -30,24 +28,14 @@ class ModelToDict(dict):
         return input_value.model_dump(**cls._wrapped_model_dump_params)
 
 
-def get_schema_annotations(schema_cls: type[Any]) -> dict[str, Any]:
-    annotations: dict[str, Any] = {}
-    excluded_bases = {Schema, BaseModel}
-    bases = schema_cls.mro()[:-1]
-    final_bases = reversed([b for b in bases if b not in excluded_bases])
-
-    for base in final_bases:
-        annotations.update(getattr(base, "__annotations__", {}))
-
-    return annotations
-
-
 def create_patch_schema(schema_cls: type[Any]) -> type[ModelToDict]:
-    schema_annotations = get_schema_annotations(schema_cls)
     values, annotations = {}, {}
-    for f in schema_cls.model_fields.keys():
-        t = schema_annotations[f]
-        field_info = copy(schema_cls.model_fields[f])
+    for f, model_field in schema_cls.model_fields.items():
+        # Use the annotation pydantic already resolved rather than the raw
+        # ``__annotations__`` value, which under ``from __future__ import
+        # annotations`` (PEP 563) is a *string* — and ``"str" | None`` raises.
+        t = model_field.annotation
+        field_info = copy(model_field)
         field_info.default = None
         field_info.default_factory = None
         values[f] = field_info
