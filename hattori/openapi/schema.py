@@ -2,10 +2,12 @@ import itertools
 import re
 from collections.abc import Generator
 from http.client import responses as _stdlib_responses
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
+from pydantic.fields import FieldInfo
 from pydantic.json_schema import JsonSchemaMode
 
+from hattori.compatibility.util import UNION_TYPES
 from hattori.errors import ConfigError, ValidationErrorResponse
 from hattori.operation import Operation
 from hattori.params.models import TModels
@@ -31,6 +33,50 @@ BODY_CONTENT_TYPES: dict[str, str] = {
 def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
     openapi = OpenAPISchema(api, path_prefix)
     return openapi
+
+
+def _field_can_fail_validation(field: FieldInfo) -> bool:
+    """Whether a value supplied for this field could fail validation.
+
+    Deliberately conservative — it answers "is a 422 *impossible*", so anything
+    it can't prove safe counts as fallible. Only a bare, unconstrained ``str``
+    (optionally nullable) is provably safe: path/query/header/cookie values
+    arrive as strings already, so there is nothing to coerce and no constraint
+    to violate. A narrower type can fail to coerce, and ``metadata`` covers both
+    constraints (``Field(min_length=...)``) and ``Annotated`` validators, whose
+    rejections are invisible in the field's JSON Schema.
+    """
+    if field.metadata:
+        return True
+    annotation = field.annotation
+    if get_origin(annotation) in UNION_TYPES:
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(args) != 1:
+            return True
+        annotation = args[0]
+    return annotation is not str
+
+
+def _params_can_fail_validation(model: Any) -> bool:
+    """Whether any param on a non-body model could produce a 422."""
+    decorators = getattr(model, "__pydantic_decorators__", None)
+    if decorators is not None and (
+        decorators.field_validators
+        or decorators.model_validators
+        or decorators.validators
+    ):
+        # A validator can reject anything; we can't reason about its body.
+        return True
+
+    source = model.__hattori_param_source__
+    for field in model.model_fields.values():
+        # A required param that isn't part of the path can simply be omitted.
+        # Path params can't: the URL wouldn't have matched the route at all.
+        if field.is_required() and source != "path":
+            return True
+        if _field_can_fail_validation(field):
+            return True
+    return False
 
 
 class OpenAPISchema(dict):
@@ -339,7 +385,11 @@ class OpenAPISchema(dict):
                     }
             result.update(details)
 
-        if operation.models and 422 not in result:
+        if (
+            operation.models
+            and 422 not in result
+            and self._can_fail_validation(operation)
+        ):
             result[422] = {
                 "description": HTTP_STATUS_PHRASES.get(422, "Unknown Status Code"),
                 "content": {
@@ -354,6 +404,19 @@ class OpenAPISchema(dict):
             }
 
         return result
+
+    def _can_fail_validation(self, operation: Operation) -> bool:
+        """Whether this operation can actually return a 422.
+
+        An operation with only unconstrained ``str`` path params has nothing
+        that can fail to validate, so documenting a 422 on it would promise a
+        response the route can never send.
+        """
+        return any(
+            model.__hattori_param_source__ in BODY_CONTENT_TYPES
+            or _params_can_fail_validation(model)
+            for model in operation.models
+        )
 
     def _get_validation_error_title(self) -> str:
         title = self._validation_error_title

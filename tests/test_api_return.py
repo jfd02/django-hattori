@@ -135,8 +135,10 @@ def test_openapi_schema_lists_all_codes():
         422,
     }
     multi_codes = set(schema["paths"]["/api/multi/{kind}"]["get"]["responses"].keys())
-    # Conflict1 and Conflict2 collapse to a single 409 entry.
-    assert multi_codes == {200, 404, 409, 422}
+    # Conflict1 and Conflict2 collapse to a single 409 entry. No 422 either:
+    # `kind` is an unconstrained `str` path param, so nothing can fail to
+    # validate — unlike /with-error/{id}, whose `int` param can.
+    assert multi_codes == {200, 404, 409}
 
 
 def test_openapi_409_body_is_union_of_error_codes():

@@ -242,7 +242,8 @@ def test_openapi_schema():
                             }
                         },
                     },
-                    422: VALIDATION_ERROR_422,
+                    # No 422: the only param is an optional, unconstrained `str`
+                    # header, so no input can fail validation here.
                 },
             }
         },
