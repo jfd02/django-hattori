@@ -39,7 +39,9 @@ from typing import TypeAlias
 
 from django.contrib.auth.models import User
 
-from hattori import ApiError, BadRequest, Conflict, Created, HattoriAPI, Schema
+from hattori import (
+    ApiError, AuthedRequest, BadRequest, Conflict, Created, HattoriAPI, Schema,
+)
 from hattori.security import HttpBearer
 
 
@@ -131,8 +133,8 @@ def signup(
 
 
 @api.get("/me", auth=BearerAuth())
-def me(request) -> UserOut:
-    user: User = request.auth
+def me(request: AuthedRequest[User]) -> UserOut:
+    user = request.auth              # typed as User, no cast needed
     return UserOut(id=user.id, username=user.username)
 ```
 
@@ -216,6 +218,28 @@ class BearerAuth(HttpBearer):
 ```
 
 Every operation using `auth=BearerAuth()` auto-documents `401` (with the union of `BadToken` + `ExpiredToken` bodies) and `403` (`AccountLocked`) in its OpenAPI response map — no per-endpoint wiring.
+
+## Typing `request.auth`
+
+Successful authentication stashes its result on `request.auth`, but Django's `HttpRequest` doesn't declare that attribute — so annotating the parameter honestly makes every `request.auth` read a type error, and leaving it unannotated makes `request.auth` an untyped `Any`. `AuthedRequest[T]` is the annotation for it, parameterized on whatever your auth class returns:
+
+```python
+from hattori import AuthedRequest
+
+@api.get("/me", auth=BearerAuth())
+def me(request: AuthedRequest[User]) -> UserOut:
+    return UserOut(id=request.auth.id, username=request.auth.username)
+```
+
+Permissions take the same annotation, since they run after authentication. Declare exactly the path params the check needs — the framework passes only those:
+
+```python
+class IsHouseholdAdmin(BasePermission):
+    def check(self, request: AuthedRequest[User], household_id: str) -> bool:
+        return is_admin(request.auth, household_id)
+```
+
+`AuthedRequest` is annotation-only: the object your view actually receives is Django's own `WSGIRequest`/`ASGIRequest`, so don't use it with `isinstance`. Only operations with `auth=` set populate `auth` — annotating an unauthenticated view with it claims an attribute that won't be there.
 
 ## Response types reference
 

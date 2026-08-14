@@ -54,11 +54,13 @@ from hattori.router import Router
 from hattori.schema import Schema
 from hattori.security import BasePermission
 from hattori.streaming import JSONL, SSE
+from hattori.types import AuthedRequest
 
 __all__ = [
     "Field",
     "UploadedFile",
     "HattoriAPI",
+    "AuthedRequest",
     "Body",
     "Cookie",
     "File",

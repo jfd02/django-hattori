@@ -3,8 +3,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
 
-from django.http import HttpRequest
-
 from hattori.responses import APIReturn
 from hattori.security.base import parse_api_return_responses
 from hattori.utils import is_async_callable
@@ -84,11 +82,20 @@ class BasePermission(ABC):
             self.check, f"{type(self).__name__}.check"
         )
 
+    # Declared as (*args, **kwargs) rather than (request, **path_params) so that
+    # narrower overrides naming their own path params — the documented pattern
+    # above — don't trip the type checkers' override-compatibility rule. Both
+    # mypy and pyright treat a `*args: Any, **kwargs: Any` supertype signature as
+    # accepting any override, which is exactly the contract here: the framework
+    # calls `check` with `request` plus whichever path params it declares.
     @abstractmethod
-    def check(
-        self, request: HttpRequest, **path_params: Any
-    ) -> bool | APIReturn | None:
-        pass  # pragma: no cover
+    def check(self, *args: Any, **kwargs: Any) -> bool | APIReturn | None:
+        """Return ``True`` to pass, a falsy value for a ``403``, or an ``APIReturn``.
+
+        Implementations take ``(self, request)`` plus any subset of the route's
+        path parameters — see the class docstring for the full contract.
+        """
+        ...  # pragma: no cover
 
     def select_path_kwargs(self, path_params: Mapping[str, Any]) -> dict[str, Any]:
         """Pick the subset of ``path_params`` that ``check`` actually accepts.
