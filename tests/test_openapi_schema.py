@@ -303,6 +303,7 @@ def test_schema(schema):
             "type": "object",
         },
         "ValidationErrorDetail": {
+            "additionalProperties": True,
             "properties": {
                 "loc": {
                     "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
@@ -452,6 +453,7 @@ def test_schema_list(schema):
             "type": "object",
         },
         "ValidationErrorDetail": {
+            "additionalProperties": True,
             "properties": {
                 "loc": {
                     "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},

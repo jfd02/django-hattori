@@ -10,7 +10,13 @@ except PackageNotFoundError:  # pragma: no cover
 
 from pydantic import Field
 
-from hattori.errors import ApiError, ErrorBody
+from hattori.errors import (
+    ApiError,
+    ErrorBody,
+    ValidationErrorBody,
+    get_validation_error_model,
+    set_validation_error_model,
+)
 from hattori.files import UploadedFile
 from hattori.filter_schema import FilterConfigDict, FilterLookup, FilterSchema
 from hattori.http_errors import (
@@ -99,6 +105,7 @@ __all__ = [
     "NoContent",
     "ApiError",
     "ErrorBody",
+    "ValidationErrorBody",
     "EnumT",
     "HTTPError",
     "BadRequest",
@@ -118,4 +125,6 @@ __all__ = [
     "GatewayTimeout",
     "set_default_error_body",
     "get_default_error_body",
+    "set_validation_error_model",
+    "get_validation_error_model",
 ]

@@ -1,10 +1,18 @@
 from typing import Any
 
+import pydantic
 import pytest
 from pydantic import field_validator
 
 from hattori import Body, Form, HattoriAPI, Schema
-from hattori.errors import ConfigError, ValidationError, ValidationErrorContext
+from hattori.errors import (
+    ConfigError,
+    ValidationError,
+    ValidationErrorBody,
+    ValidationErrorContext,
+    get_validation_error_model,
+    set_validation_error_model,
+)
 from hattori.testing import TestClient
 
 api = HattoriAPI()
@@ -115,15 +123,46 @@ def create_user2(request, payload: UserIn) -> UserIn:
 custom_error_client = TestClient(custom_error_api)
 
 
-def test_body_custom_validation_error():
-    resp = custom_error_client.post("/users", json={"email": "valid@email.com"})
-    assert resp.status_code == 200
+class SourceMessage(pydantic.BaseModel):
+    source: str
+    message: str
 
-    resp = custom_error_client.post("/users", json={"email": "invalid.com"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"] == [
-        {
-            "source": "body",
-            "message": "Value error, invalid email",
-        }
-    ]
+
+class SourceMessageErrors(ValidationErrorBody):
+    """The 422 body matching CustomErrorAPI's reshaped error entries."""
+
+    detail: list[SourceMessage]
+
+    @classmethod
+    def from_errors(cls, errors: list[dict[str, Any]]):
+        return cls.model_validate({"detail": errors})
+
+
+def test_body_custom_validation_error():
+    """Reshaping the error entries requires declaring the body that carries
+    them, and that one declaration drives both the response and the spec."""
+    original = get_validation_error_model()
+    set_validation_error_model(SourceMessageErrors)
+    try:
+        resp = custom_error_client.post("/users", json={"email": "valid@email.com"})
+        assert resp.status_code == 200
+
+        resp = custom_error_client.post("/users", json={"email": "invalid.com"})
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == [
+            {
+                "source": "body",
+                "message": "Value error, invalid email",
+            }
+        ]
+
+        schema = custom_error_api.get_openapi_schema()
+        ref = schema["paths"]["/api/users"]["post"]["responses"][422]["content"][
+            "application/json"
+        ]["schema"]["$ref"]
+        documented = schema["components"]["schemas"][ref.rsplit("/", 1)[-1]]
+        entry_ref = documented["properties"]["detail"]["items"]["$ref"]
+        entry = schema["components"]["schemas"][entry_ref.rsplit("/", 1)[-1]]
+        assert set(entry["properties"]) == {"source", "message"}
+    finally:
+        set_validation_error_model(original)

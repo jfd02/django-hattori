@@ -1,7 +1,7 @@
 import logging
 import traceback
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Self, TypeVar
 
 import pydantic
 from django.conf import settings
@@ -18,8 +18,11 @@ __all__ = [
     "AuthenticationError",
     "AuthorizationError",
     "ValidationError",
+    "ValidationErrorBody",
     "ValidationErrorDetail",
     "ValidationErrorResponse",
+    "set_validation_error_model",
+    "get_validation_error_model",
     "HttpError",
     "ErrorBody",
     "ApiError",
@@ -84,14 +87,77 @@ class AuthorizationError(HttpError):
         super().__init__(status_code=status_code, message=message)
 
 
+class ValidationErrorBody(pydantic.BaseModel):
+    """Base for the body of a 422 response.
+
+    One model drives both sides of the contract: the OpenAPI 422 schema is
+    generated from it, and the default ``ValidationError`` handler builds the
+    response by calling :meth:`from_errors`. Subclass it and install the
+    subclass with :func:`set_validation_error_model` to change the shape
+    without the spec and the wire drifting apart::
+
+        class Problem(ValidationErrorBody):
+            code: Literal["validation_error"] = "validation_error"
+            fields: list[FieldProblem]
+
+            @classmethod
+            def from_errors(cls, errors):
+                return cls(fields=[FieldProblem.of(e) for e in errors])
+
+        set_validation_error_model(Problem)
+    """
+
+    @classmethod
+    def from_errors(cls, errors: list[dict[str, Any]]) -> Self:
+        """Build the response body from a :class:`ValidationError`'s errors.
+
+        Each entry has ``loc`` (a tuple, request-relative — see
+        ``HattoriAPI.validation_error_from_error_contexts``), ``msg``, ``type``,
+        and for some error types a ``ctx``.
+        """
+        raise NotImplementedError
+
+
 class ValidationErrorDetail(pydantic.BaseModel):
+    # pydantic attaches a ``ctx`` to many error types, and it is part of what
+    # the API actually sends. Carrying it through keeps the documented shape
+    # honest instead of quietly narrower than the response.
+    model_config = pydantic.ConfigDict(extra="allow")
+
     loc: list[str | int]
     msg: str
     type: str
 
 
-class ValidationErrorResponse(pydantic.BaseModel):
+# The default 422 body: ``{"detail": [{loc, msg, type}, ...]}``.
+class ValidationErrorResponse(ValidationErrorBody):
     detail: list[ValidationErrorDetail]
+
+    @classmethod
+    def from_errors(cls, errors: list[dict[str, Any]]) -> Self:
+        return cls.model_validate({"detail": errors})
+
+
+_validation_error_model: type[ValidationErrorBody] = ValidationErrorResponse
+
+
+def set_validation_error_model(model: type[ValidationErrorBody]) -> None:
+    """Set the project-wide 422 response body model.
+
+    Drives the OpenAPI 422 schema and the default ``ValidationError`` handler
+    together. Call once at startup, e.g. from an ``AppConfig.ready()`` hook.
+    """
+    if not (isinstance(model, type) and issubclass(model, ValidationErrorBody)):
+        raise ConfigError(
+            f"{model!r} must subclass hattori.ValidationErrorBody and implement "
+            "from_errors()."
+        )
+    global _validation_error_model
+    _validation_error_model = model
+
+
+def get_validation_error_model() -> type[ValidationErrorBody]:
+    return _validation_error_model
 
 
 class ErrorBody(pydantic.BaseModel):
@@ -252,7 +318,8 @@ def _default_http_error(
 def _default_validation_error(
     request: HttpRequest, exc: ValidationError, api: HattoriAPI
 ) -> HttpResponse:
-    return api.create_response(request, {"detail": exc.errors}, status=422)
+    body = get_validation_error_model().from_errors(exc.errors)
+    return api.create_response(request, body, status=422)
 
 
 def _default_exception(

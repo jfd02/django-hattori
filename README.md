@@ -326,6 +326,26 @@ class Gone(APIReturn[ProblemDetail]):
         ))
 ```
 
+### Validation errors (422)
+
+The 422 body is one model: its schema is what OpenAPI documents, and its `from_errors` is what the default handler sends. Swap it to change the shape without the spec and the response drifting apart:
+
+```python
+from hattori import ValidationErrorBody, set_validation_error_model
+
+class Problem(ValidationErrorBody):
+    code: Literal["validation_error"] = "validation_error"
+    problems: list[FieldProblem]
+
+    @classmethod
+    def from_errors(cls, errors):
+        return cls(problems=[FieldProblem(path=e["loc"], reason=e["msg"]) for e in errors])
+
+set_validation_error_model(Problem)   # e.g. from AppConfig.ready()
+```
+
+The default is `{"detail": [{"loc": [...], "msg": ..., "type": ...}]}`. `loc` describes the request — `["body", "email"]`, `["query", "count"]` — never the handler's argument names.
+
 ## Testing
 
 Hattori ships a lightweight test client that calls your endpoints in-process —

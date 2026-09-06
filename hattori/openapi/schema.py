@@ -8,7 +8,7 @@ from pydantic.fields import FieldInfo
 from pydantic.json_schema import JsonSchemaMode
 
 from hattori.compatibility.util import UNION_TYPES
-from hattori.errors import ConfigError, ValidationErrorResponse
+from hattori.errors import ConfigError, get_validation_error_model
 from hattori.operation import Operation
 from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
@@ -421,13 +421,12 @@ class OpenAPISchema(dict):
     def _get_validation_error_title(self) -> str:
         title = self._validation_error_title
         if title is None:
-            schema = self._create_schema_from_model(
-                ValidationErrorResponse, remove_level=False
-            )[0]
-            base_title = schema.get("title", "ValidationErrorResponse")
+            model = get_validation_error_model()
+            schema = self._create_schema_from_model(model, remove_level=False)[0]
+            base_title = schema.get("title", model.__name__)
             # Register through the collision-aware path (rather than writing
-            # self.schemas[title] directly) so a user model that happens to be
-            # named "ValidationErrorResponse" is never clobbered by — and never
+            # self.schemas[title] directly) so a user model that happens to
+            # share the 422 body model's name is never clobbered by — and never
             # clobbers — the framework's auto-generated 422 schema.
             renames = self.add_schema_definitions({base_title: schema})
             title = renames.get(base_title, base_title)
