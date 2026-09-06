@@ -39,9 +39,11 @@ from hattori.errors import (
 )
 
 __all__ = [
+    "EnumT",
     "HTTPError",
     "BadRequest",
     "Unauthorized",
+    "PaymentRequired",
     "Forbidden",
     "NotFound",
     "MethodNotAllowed",
@@ -51,12 +53,22 @@ __all__ = [
     "UnprocessableEntity",
     "TooManyRequests",
     "InternalServerError",
+    "BadGateway",
+    "ServiceUnavailable",
+    "GatewayTimeout",
     "set_default_error_body",
     "get_default_error_body",
 ]
 
 
 EnumT = TypeVar("EnumT", bound=Enum)
+"""The enum-member TypeVar the semantic bases are generic over.
+
+Exported so you can declare a status base hattori doesn't ship::
+
+    class NotImplementedYet(HTTPError[EnumT]):
+        code: ClassVar[int] = 501
+"""
 
 
 def _resolve_enum_member(cls: type) -> Enum | None:
@@ -127,6 +139,10 @@ class Unauthorized(HTTPError[EnumT]):
     code: ClassVar[int] = 401
 
 
+class PaymentRequired(HTTPError[EnumT]):
+    code: ClassVar[int] = 402
+
+
 class Forbidden(HTTPError[EnumT]):
     code: ClassVar[int] = 403
 
@@ -161,3 +177,15 @@ class TooManyRequests(HTTPError[EnumT]):
 
 class InternalServerError(HTTPError[EnumT]):
     code: ClassVar[int] = 500
+
+
+class BadGateway(HTTPError[EnumT]):
+    code: ClassVar[int] = 502
+
+
+class ServiceUnavailable(HTTPError[EnumT]):
+    code: ClassVar[int] = 503
+
+
+class GatewayTimeout(HTTPError[EnumT]):
+    code: ClassVar[int] = 504

@@ -1,15 +1,18 @@
 """Enum-keyed HTTP error responses (HTTPError + semantic status bases)."""
 
 from enum import Enum
-from typing import Literal
+from typing import ClassVar, Literal
 
 import pytest
 
 from hattori import (
+    BadGateway,
     BadRequest,
     Conflict,
+    EnumT,
     ErrorBody,
     Forbidden,
+    GatewayTimeout,
     Gone,
     HattoriAPI,
     HTTPError,
@@ -17,7 +20,9 @@ from hattori import (
     MethodNotAllowed,
     NotFound,
     PayloadTooLarge,
+    PaymentRequired,
     Schema,
+    ServiceUnavailable,
     TooManyRequests,
     Unauthorized,
     UnprocessableEntity,
@@ -102,6 +107,7 @@ def test_error_code_set_at_class_creation():
 def test_status_codes_set_on_semantic_bases():
     assert BadRequest.code == 400
     assert Unauthorized.code == 401
+    assert PaymentRequired.code == 402
     assert Forbidden.code == 403
     assert NotFound.code == 404
     assert MethodNotAllowed.code == 405
@@ -111,6 +117,9 @@ def test_status_codes_set_on_semantic_bases():
     assert UnprocessableEntity.code == 422
     assert TooManyRequests.code == 429
     assert InternalServerError.code == 500
+    assert BadGateway.code == 502
+    assert ServiceUnavailable.code == 503
+    assert GatewayTimeout.code == 504
 
 
 def test_openapi_includes_each_status():
@@ -357,3 +366,96 @@ def test_explicit_body_overrides_module_default():
         }
     finally:
         set_default_error_body(original)
+
+
+# --- Semantic bases for 402 / 5xx upstream failures ---
+
+
+class UpstreamError(Enum):
+    PAYMENT_REQUIRED = "payment_required"
+    UPSTREAM_BAD = "upstream_bad"
+    UPSTREAM_DOWN = "upstream_down"
+    UPSTREAM_SLOW = "upstream_slow"
+
+
+class PaymentNeeded(PaymentRequired[Literal[UpstreamError.PAYMENT_REQUIRED]]):
+    message = "Subscription required"
+
+
+class UpstreamBad(BadGateway[Literal[UpstreamError.UPSTREAM_BAD]]):
+    message = "Upstream returned garbage"
+
+
+class UpstreamDown(ServiceUnavailable[Literal[UpstreamError.UPSTREAM_DOWN]]):
+    message = "Upstream unavailable"
+
+
+class UpstreamSlow(GatewayTimeout[Literal[UpstreamError.UPSTREAM_SLOW]]):
+    message = "Upstream timed out"
+
+
+upstream_api = HattoriAPI()
+
+
+@upstream_api.get("/sync/{n}")
+def sync_view(
+    request, n: int
+) -> UserOut | PaymentNeeded | UpstreamBad | UpstreamDown | UpstreamSlow:
+    if n == 402:
+        return PaymentNeeded()
+    if n == 502:
+        return UpstreamBad()
+    if n == 503:
+        return UpstreamDown()
+    if n == 504:
+        return UpstreamSlow()
+    return UserOut(id=n, name="x")
+
+
+upstream_client = TestClient(upstream_api)
+
+
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        (402, "payment_required"),
+        (502, "upstream_bad"),
+        (503, "upstream_down"),
+        (504, "upstream_slow"),
+    ],
+)
+def test_upstream_semantic_bases_end_to_end(status, code):
+    r = upstream_client.get(f"/sync/{status}")
+    assert r.status_code == status
+    assert r.json()["code"] == code
+
+
+@pytest.mark.parametrize("status", [402, 502, 503, 504])
+def test_upstream_semantic_bases_documented_with_const_code(status):
+    schema = upstream_api.get_openapi_schema()
+    body = schema["paths"]["/api/sync/{n}"]["get"]["responses"][status]["content"][
+        "application/json"
+    ]["schema"]
+    ref = body["$ref"].rsplit("/", 1)[-1]
+    assert "const" in schema["components"]["schemas"][ref]["properties"]["code"]
+
+
+def test_enum_typevar_is_exported_for_custom_bases():
+    """EnumT is public, so a status hattori doesn't ship can be declared
+    without re-declaring the TypeVar."""
+
+    class NotImplementedYet(HTTPError[EnumT]):
+        code: ClassVar[int] = 501
+
+    class _E(Enum):
+        NOPE = "not_implemented"
+
+    class Nope(NotImplementedYet[Literal[_E.NOPE]]):
+        message = "later"
+
+    assert Nope.code == 501
+    assert Nope.error_code == "not_implemented"
+    assert Nope().value.model_dump() == {
+        "code": "not_implemented",
+        "message": "later",
+    }

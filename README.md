@@ -79,10 +79,11 @@ def signup_user(username: str, password: str) -> SignupResult:
 # --- HTTP responses ---
 #
 # Bind each failure variant to a semantic status base (Conflict, NotFound,
-# BadRequest, Unauthorized, Forbidden, Gone, PayloadTooLarge,
-# UnprocessableEntity, TooManyRequests, InternalServerError, MethodNotAllowed)
-# parameterized on the enum member it represents. The wire `code` is derived
-# from the member's `.value` — no string duplication.
+# BadRequest, Unauthorized, PaymentRequired, Forbidden, Gone, PayloadTooLarge,
+# UnprocessableEntity, TooManyRequests, InternalServerError, BadGateway,
+# ServiceUnavailable, GatewayTimeout, MethodNotAllowed) parameterized on the
+# enum member it represents. The wire `code` is derived from the member's
+# `.value` — no string duplication.
 
 class UsernameTaken(Conflict[SignupFailure.USERNAME_TAKEN]):
     message = "Username already exists"
@@ -262,6 +263,7 @@ Subclass parameterized on a service enum member; the wire `code` is derived from
 |---|---|
 | `BadRequest[E]` | 400 |
 | `Unauthorized[E]` | 401 |
+| `PaymentRequired[E]` | 402 |
 | `Forbidden[E]` | 403 |
 | `NotFound[E]` | 404 |
 | `MethodNotAllowed[E]` | 405 |
@@ -271,6 +273,9 @@ Subclass parameterized on a service enum member; the wire `code` is derived from
 | `UnprocessableEntity[E]` | 422 |
 | `TooManyRequests[E]` | 429 |
 | `InternalServerError[E]` | 500 |
+| `BadGateway[E]` | 502 |
+| `ServiceUnavailable[E]` | 503 |
+| `GatewayTimeout[E]` | 504 |
 
 ```python
 class DuplicateName(Conflict[CreateError.DUPLICATE_NAME]):
@@ -278,6 +283,15 @@ class DuplicateName(Conflict[CreateError.DUPLICATE_NAME]):
 ```
 
 `Conflict[E.X]` and `Conflict[Literal[E.X]]` are interchangeable — pyright auto-promotes a bare enum member to a `Literal`.
+
+For a status hattori doesn't ship a base for, declare your own with the exported `EnumT`:
+
+```python
+from hattori import EnumT, HTTPError
+
+class NotImplementedYet(HTTPError[EnumT]):
+    code: ClassVar[int] = 501
+```
 
 ### Escape hatches
 
