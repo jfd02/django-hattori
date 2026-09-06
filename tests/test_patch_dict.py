@@ -1,7 +1,9 @@
+from typing import Annotated
+
 import pytest
 
 from hattori import Field, HattoriAPI, Schema
-from hattori.patch_dict import PatchDict
+from hattori.patch_dict import PatchDict, PatchName, create_patch_schema
 from hattori.testing import TestClient
 
 
@@ -205,3 +207,67 @@ def test_patch_constrained_partial_update():
     response = constrained_client.patch("/patch-constrained", json={})
     assert response.status_code == 200
     assert response.json() == {"payload": {}}
+
+
+# --- Naming the generated patch schema independently of the source class ---
+
+
+class FlagsSchema(Schema):
+    dark_mode: bool
+    beta_features: bool
+
+
+named_api = HattoriAPI()
+named_client = TestClient(named_api)
+
+
+@named_api.patch("/patch-default-name")
+def patch_default_name(request, payload: PatchDict[FlagsSchema]) -> PatchPayloadResult:
+    return {"payload": payload}
+
+
+@named_api.patch("/patch-custom-name")
+def patch_custom_name(
+    request, payload: PatchDict[Annotated[FlagsSchema, PatchName("UserFlags")]]
+) -> PatchPayloadResult:
+    return {"payload": payload}
+
+
+def test_patch_schema_name_defaults_to_source_class():
+    schema = named_api.get_openapi_schema()
+    body = schema["paths"]["/api/patch-default-name"]["patch"]["requestBody"]
+    ref = body["content"]["application/json"]["schema"]["$ref"]
+    assert ref.rsplit("/", 1)[-1] == "FlagsSchemaPatch"
+
+
+def test_patch_name_overrides_generated_schema_name():
+    """The client-facing name is decoupled from the internal class name, and is
+    used verbatim — no "Patch" suffix is appended."""
+    schema = named_api.get_openapi_schema()
+    body = schema["paths"]["/api/patch-custom-name"]["patch"]["requestBody"]
+    ref = body["content"]["application/json"]["schema"]["$ref"]
+    assert ref.rsplit("/", 1)[-1] == "UserFlags"
+    assert schema["components"]["schemas"]["UserFlags"]["title"] == "UserFlags"
+
+
+def test_patch_name_does_not_change_patch_semantics():
+    response = named_client.patch("/patch-custom-name", json={"beta_features": True})
+    assert response.status_code == 200
+    assert response.json() == {"payload": {"beta_features": True}}
+
+    response = named_client.patch("/patch-custom-name", json={})
+    assert response.status_code == 200
+    assert response.json() == {"payload": {}}
+
+
+def test_patch_name_leaves_the_source_schema_alone():
+    assert FlagsSchema.__name__ == "FlagsSchema"
+
+
+def test_create_patch_schema_accepts_a_name_directly():
+    assert create_patch_schema(FlagsSchema)._wrapped_model.__name__ == (
+        "FlagsSchemaPatch"
+    )
+    assert create_patch_schema(
+        FlagsSchema, name="Explicit"
+    )._wrapped_model.__name__ == ("Explicit")

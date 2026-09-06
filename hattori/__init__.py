@@ -53,7 +53,7 @@ from hattori.params import (
     Query,
     QueryEx,
 )
-from hattori.patch_dict import PatchDict
+from hattori.patch_dict import PatchDict, PatchName
 from hattori.responses import Accepted, APIReturn, Created, NoContent
 from hattori.router import Router
 from hattori.schema import Schema
@@ -90,6 +90,7 @@ __all__ = [
     "Swagger",
     "Redoc",
     "PatchDict",
+    "PatchName",
     "SSE",
     "JSONL",
     "APIReturn",
