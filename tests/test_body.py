@@ -65,7 +65,7 @@ def test_body_validation_error():
     assert resp.json()["detail"] == [
         {
             "type": "value_error",
-            "loc": ["body", "payload", "email"],
+            "loc": ["body", "email"],
             "msg": "Value error, invalid email",
             "ctx": {"error": "invalid email"},
         }

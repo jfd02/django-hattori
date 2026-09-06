@@ -108,7 +108,7 @@ def test_headers(path, expected_status, expected_response):
                 "detail": [
                     {
                         "type": "extra_forbidden",
-                        "loc": ["body", "payload", "extra_name"],
+                        "loc": ["body", "extra_name"],
                         "msg": "Extra inputs are not permitted",
                     }
                 ]
@@ -121,7 +121,7 @@ def test_headers(path, expected_status, expected_response):
             {
                 "detail": [
                     {
-                        "loc": ["body", "payload", "metadata", "extra_name"],
+                        "loc": ["body", "metadata", "extra_name"],
                         "msg": "Extra inputs are not permitted",
                         "type": "extra_forbidden",
                     }
@@ -136,7 +136,7 @@ def test_headers(path, expected_status, expected_response):
                 "detail": [
                     {
                         "type": "model_type",
-                        "loc": ["body", "payload", "metadata"],
+                        "loc": ["body", "metadata"],
                         "msg": "Input should be a valid dictionary or instance of OptionalEmptySchema",
                         "ctx": {"class_name": "OptionalEmptySchema"},
                     }

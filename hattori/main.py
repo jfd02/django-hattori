@@ -670,9 +670,8 @@ class HattoriAPI:
             model = context.model
             e = context.pydantic_validation_error
             for i in e.errors(include_url=False):
-                i["loc"] = (
-                    model.__hattori_param_source__,
-                ) + model.__hattori_flatten_map_reverse__.get(i["loc"], i["loc"])
+                loc = self._public_error_loc(model, i["loc"])
+                i["loc"] = (model.__hattori_param_source__,) + loc
                 # removing pydantic hints
                 i.pop("input", None)  # type: ignore
                 if (
@@ -683,6 +682,23 @@ class HattoriAPI:
                     i["ctx"]["error"] = str(i["ctx"]["error"])
                 errors.append(dict(i))
         return ValidationError(errors)
+
+    @staticmethod
+    def _public_error_loc(model: Any, loc: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Translate a pydantic ``loc`` into the client-facing path.
+
+        Names that only exist inside the param model are removed, so ``loc``
+        describes the request as the client sent it. A single body param is
+        wrapped under the handler's argument name (see
+        ``BodyModel.get_request_data``) even though the payload sits at the top
+        level of the body — that argument is an implementation detail of the
+        handler, and renaming it must not change the wire contract.
+        """
+        wrapper = getattr(model, "__read_from_single_attr__", None)
+        if wrapper and loc[:1] == (wrapper,):
+            loc = loc[1:]
+        flattened: tuple[Any, ...] = model.__hattori_flatten_map_reverse__.get(loc, loc)
+        return flattened
 
     def _lookup_exception_handler(self, exc: Exc[_E]) -> ExcHandler[_E] | None:
         for cls in type(exc).__mro__:
