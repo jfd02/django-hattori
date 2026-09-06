@@ -2,9 +2,11 @@
 
 from typing import ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from hattori import ApiError, APIReturn, ErrorBody, HattoriAPI, Schema
+from hattori.http_errors import get_default_error_body, set_default_error_body
 from hattori.testing import TestClient
 
 
@@ -201,3 +203,167 @@ def test_errorbody_shape_is_exported_and_usable_directly():
         "code": "x",
         "message": "y",
     }
+
+
+# --- error_code is narrowed in the schema, same as HTTPError's enum member ---
+
+
+def test_apierror_code_is_const_in_openapi():
+    """A plain ApiError must be switchable on by a generated client: its
+    ``code`` is a const, not an open string."""
+    schema = api.get_openapi_schema()
+    body = schema["paths"]["/api/users/{id}"]["get"]["responses"][404]["content"][
+        "application/json"
+    ]["schema"]
+    ref = body["$ref"].rsplit("/", 1)[-1]
+    body_schema = schema["components"]["schemas"][ref]
+    assert body_schema["properties"]["code"]["const"] == "user_not_found"
+    assert body_schema["properties"]["message"]["type"] == "string"
+
+
+def test_apierror_each_subclass_gets_its_own_body_model():
+    assert UserNotFound.__hattori_response_body__ is not ErrorBody
+    assert PaymentFailed.__hattori_response_body__ is not ErrorBody
+    assert (
+        UserNotFound.__hattori_response_body__
+        is not PaymentFailed.__hattori_response_body__
+    )
+
+
+def test_apierror_same_status_union_is_discriminated():
+    """Two ApiErrors on one status become a oneOf keyed on code."""
+
+    class TokenExpired(ApiError):
+        code = 401
+        error_code = "token_expired"
+        message = "Expired"
+
+    class TokenInvalid(ApiError):
+        code = 401
+        error_code = "token_invalid"
+        message = "Invalid"
+
+    disc_api = HattoriAPI()
+
+    @disc_api.get("/auth/{n}")
+    def auth_view(request, n: int) -> UserOut | TokenExpired | TokenInvalid:
+        if n == 0:
+            return TokenExpired()
+        if n == 1:
+            return TokenInvalid()
+        return UserOut(id=n, name="x")
+
+    schema = disc_api.get_openapi_schema()
+    body_401 = schema["paths"]["/api/auth/{n}"]["get"]["responses"][401]["content"][
+        "application/json"
+    ]["schema"]
+    assert "anyOf" not in body_401
+    assert body_401["discriminator"] == {
+        "propertyName": "code",
+        "mapping": {
+            "token_expired": "#/components/schemas/TokenExpired",
+            "token_invalid": "#/components/schemas/TokenInvalid",
+        },
+    }
+
+
+def test_apierror_wire_shape_unchanged_by_narrowing():
+    """Narrowing is a schema-level change only; the JSON body is untouched."""
+    r = client.get("/users/0")
+    assert r.json() == {"code": "user_not_found", "message": "No user with that id"}
+
+
+def test_apierror_abstract_intermediate_is_not_narrowed():
+    """A base that pins only ``code`` has nothing to narrow and stays generic;
+    its leaves narrow independently."""
+
+    class AppNotFound(ApiError):
+        code = 404
+
+    class WidgetNotFound(AppNotFound):
+        error_code = "widget_not_found"
+
+    assert AppNotFound.__hattori_response_body__ is ErrorBody
+    assert (
+        WidgetNotFound.__hattori_response_body__.model_fields["code"].annotation
+        is not str
+    )
+    assert WidgetNotFound().value.model_dump() == {
+        "code": "widget_not_found",
+        "message": "",
+    }
+
+
+def test_apierror_inherited_error_code_keeps_parent_body():
+    """A subclass that doesn't redeclare error_code inherits the narrowed body."""
+
+    class Specialized(UserNotFound):
+        message = "different wording"
+
+    assert Specialized.__hattori_response_body__ is (
+        UserNotFound.__hattori_response_body__
+    )
+    assert Specialized().value.model_dump() == {
+        "code": "user_not_found",
+        "message": "different wording",
+    }
+
+
+# --- Body shape customization, matching HTTPError's contract ---
+
+
+class RetryableBody(ErrorBody):
+    retry_after: int
+
+
+def test_apierror_body_kwarg_extends_shape():
+    class RateLimited(ApiError, body=RetryableBody):
+        code = 429
+        error_code = "rate_limited"
+        message = "Slow down"
+
+    assert RateLimited(retry_after=30).value.model_dump() == {
+        "code": "rate_limited",
+        "message": "Slow down",
+        "retry_after": 30,
+    }
+    with pytest.raises(Exception):
+        RateLimited()  # retry_after is required
+
+
+def test_apierror_body_kwarg_inherited_from_intermediate():
+    class AppError(ApiError, body=RetryableBody):
+        pass
+
+    class Throttled(AppError):
+        code = 429
+        error_code = "throttled"
+        message = "wait"
+
+    assert Throttled(retry_after=1).value.model_dump() == {
+        "code": "throttled",
+        "message": "wait",
+        "retry_after": 1,
+    }
+
+
+def test_apierror_uses_module_level_default_body():
+    class DefaultBody(ErrorBody):
+        request_id: str
+
+    original = get_default_error_body()
+    set_default_error_body(DefaultBody)
+    try:
+
+        class UsesDefault(ApiError):
+            code = 400
+            error_code = "uses_default"
+            message = "d"
+
+        assert UsesDefault(request_id="abc").value.model_dump() == {
+            "code": "uses_default",
+            "message": "d",
+            "request_id": "abc",
+        }
+    finally:
+        set_default_error_body(original)

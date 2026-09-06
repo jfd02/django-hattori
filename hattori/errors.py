@@ -1,7 +1,7 @@
 import logging
 import traceback
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar
 
 import pydantic
 from django.conf import settings
@@ -23,6 +23,8 @@ __all__ = [
     "HttpError",
     "ErrorBody",
     "ApiError",
+    "set_default_error_body",
+    "get_default_error_body",
     "set_default_exc_handlers",
 ]
 
@@ -104,6 +106,36 @@ class ErrorBody(pydantic.BaseModel):
     message: str
 
 
+_default_error_body: type[ErrorBody] = ErrorBody
+
+
+def set_default_error_body(body: type[ErrorBody]) -> None:
+    """Set the project-wide default body shape for error responses.
+
+    Used as the final fallback when an :class:`ApiError` (or
+    :class:`~hattori.HTTPError`) subclass — and none of its parents — declares
+    its own body via the ``body=`` class kwarg. Call once at startup, e.g. from
+    an ``AppConfig.ready()`` hook.
+    """
+    global _default_error_body
+    _default_error_body = body
+
+
+def get_default_error_body() -> type[ErrorBody]:
+    return _default_error_body
+
+
+def resolve_error_body_base(cls: type) -> type[ErrorBody]:
+    """The body shape ``cls`` builds on: nearest ``body=`` kwarg, else the default."""
+    for klass in cls.__mro__:
+        base: type[ErrorBody] | None = klass.__dict__.get(
+            "__hattori_response_body_base__"
+        )
+        if base is not None:
+            return base
+    return _default_error_body
+
+
 class ApiError(APIReturn[ErrorBody]):
     """Default error-response base.
 
@@ -125,8 +157,19 @@ class ApiError(APIReturn[ErrorBody]):
 
         return UserNotFound(f"No user with id {id}")
 
-    To use a different error body shape, skip ``ApiError`` and subclass
-    :class:`~hattori.APIReturn` directly::
+    Every subclass that declares an ``error_code`` gets a body model of its own
+    whose ``code`` is narrowed to ``Literal["<error_code>"]``, so a generated
+    client can discriminate on it. To extend the body with extra fields, pass a
+    ``body=`` base::
+
+        class RateLimited(ApiError, body=RetryableErrorBody):
+            code = 429
+            error_code = "rate_limited"
+
+        return RateLimited("Slow down", retry_after=30)
+
+    To use a completely different error body shape, skip ``ApiError`` and
+    subclass :class:`~hattori.APIReturn` directly::
 
         class MyError(APIReturn[MyErrorShape]):
             code: ClassVar[int]
@@ -137,11 +180,39 @@ class ApiError(APIReturn[ErrorBody]):
     error_code: ClassVar[str]
     message: ClassVar[str] = ""
 
-    def __init__(self, message: str | None = None) -> None:
+    # Pinned so the schema resolver short-circuits its MRO walk. Subclasses that
+    # declare an ``error_code`` replace this with a generated ErrorBody subclass
+    # whose ``code`` field is narrowed to that code.
+    __hattori_response_body__ = ErrorBody
+    __hattori_response_body_base__: ClassVar[type[ErrorBody] | None] = None
+
+    def __init_subclass__(
+        cls, *, body: type[ErrorBody] | None = None, **kwargs: Any
+    ) -> None:
+        super().__init_subclass__(**kwargs)
+        if body is not None:
+            cls.__hattori_response_body_base__ = body
+        # Only classes that declare their own ``error_code`` get a narrowed
+        # body. An abstract intermediate that just pins ``code`` keeps whatever
+        # its parent resolved to, and HTTPError subclasses are left alone —
+        # HTTPError assigns ``error_code`` from its enum member *after* this
+        # runs, and synthesizes the narrowed body itself.
+        error_code = cls.__dict__.get("error_code")
+        if isinstance(error_code, str):
+            cls.__hattori_response_body__ = pydantic.create_model(
+                cls.__name__,
+                __base__=resolve_error_body_base(cls),
+                __module__=cls.__module__,
+                code=(Literal[error_code], ...),
+            )
+
+    def __init__(self, message: str | None = None, **body_fields: Any) -> None:
+        body_type = self.__hattori_response_body__
         super().__init__(
-            ErrorBody(
+            body_type(
                 code=self.error_code,
                 message=message if message is not None else self.message,
+                **body_fields,
             )
         )
 

@@ -290,6 +290,8 @@ class InvalidToken(ApiError):
     message = "Invalid or missing token"
 ```
 
+`ApiError` narrows `code` the same way the enum-keyed bases do: each subclass declaring an `error_code` gets its own OpenAPI schema with `code: Literal["invalid_token"]`, so generated clients can switch on it.
+
 For a different wire shape than `{code, message}`, subclass `APIReturn[YourBody]` directly:
 
 ```python
