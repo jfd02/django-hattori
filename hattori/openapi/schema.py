@@ -8,7 +8,7 @@ from pydantic.fields import FieldInfo
 from pydantic.json_schema import JsonSchemaMode
 
 from hattori.compatibility.util import UNION_TYPES
-from hattori.errors import ConfigError, get_validation_error_model
+from hattori.errors import ConfigError, ErrorBody, get_validation_error_model
 from hattori.operation import Operation
 from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
@@ -87,6 +87,10 @@ class OpenAPISchema(dict):
         self.securitySchemes: dict[str, Any] = {}
         self.all_operation_ids: set = set()
         self._validation_error_title: str | None = None
+        # component name -> the name its model declared, before any renaming
+        self._declared_names: dict[str, str] = {}
+        # (declared name, error code) -> the message that error class declares
+        self._error_messages: dict[tuple[str, str], str] = {}
         extra_info = api.openapi_extra.get("info", {})
         super().__init__([
             ("openapi", "3.1.0"),
@@ -362,6 +366,7 @@ class OpenAPISchema(dict):
             description = HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
+                self._note_error_messages(model.model_fields["response"].annotation)
                 # ::TODO:: test this: by_alias == True
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""
                 schema = self._create_schema_from_model(
@@ -465,7 +470,35 @@ class OpenAPISchema(dict):
             candidate = f"{name}_{index}"
         return candidate
 
+    def _note_error_messages(self, annotation: Any) -> None:
+        if isinstance(annotation, type) and issubclass(annotation, ErrorBody):
+            error = annotation.__hattori_error__
+            message = getattr(error, "message", "")
+            if error is not None and message:
+                key = (annotation.__name__, error.error_code)
+                self._error_messages.setdefault(key, message)
+        for arg in get_args(annotation):
+            self._note_error_messages(arg)
+
+    def _document_error_messages(self) -> None:
+        """Show each error's declared message as the example of its ``message``.
+
+        Applied once every schema is registered. An example inside the body
+        model itself would make two same-named errors that differ only in
+        wording into different schemas, and one of them would be renamed.
+        """
+        for name, schema in self.schemas.items():
+            code = self._schema_const_property_value(schema, "code")
+            if code is None:
+                continue
+            declared_name = self._declared_names.get(name, name)
+            message = self._error_messages.get((declared_name, code))
+            message_schema = schema["properties"].get("message")
+            if message and isinstance(message_schema, dict):
+                message_schema.setdefault("examples", [message])
+
     def get_components(self) -> dict[str, Any]:
+        self._document_error_messages()
         result = {"schemas": self.schemas}
         if self.securitySchemes:
             result["securitySchemes"] = self.securitySchemes
@@ -578,6 +611,7 @@ class OpenAPISchema(dict):
         for name, schema in incoming.items():
             final_name = ref_renames[name] if name in ref_renames else name
             self.schemas[final_name] = schema
+            self._declared_names[final_name] = name
 
         return ref_renames
 

@@ -1,7 +1,16 @@
 import logging
 import traceback
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Self, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    Self,
+    TypeVar,
+)
 
 import pydantic
 from django.conf import settings
@@ -168,8 +177,22 @@ class ErrorBody(pydantic.BaseModel):
     your own body type instead.
     """
 
-    code: str
-    message: str
+    code: str = pydantic.Field(
+        description=(
+            "Stable, machine-readable error code. Branch on this value rather than "
+            "on `message`."
+        )
+    )
+    message: str = pydantic.Field(
+        description=(
+            "Human-readable explanation of the error. The wording can change, so "
+            "don't parse it."
+        )
+    )
+
+    # The error class a narrowed body was generated for, so the OpenAPI schema
+    # can show that class's declared message as the example.
+    __hattori_error__: ClassVar[type[Any] | None] = None
 
 
 _default_error_body: type[ErrorBody] = ErrorBody
@@ -200,6 +223,21 @@ def resolve_error_body_base(cls: type) -> type[ErrorBody]:
         if base is not None:
             return base
     return _default_error_body
+
+
+def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
+    """A body model for ``error`` whose ``code`` is the constant ``error_code``."""
+    base = resolve_error_body_base(error)
+    body: type[ErrorBody] = pydantic.create_model(
+        error.__name__,
+        __base__=base,
+        __module__=error.__module__,
+        # The base's own field rides along, so a description declared on it is
+        # still there once the type is narrowed.
+        code=(Annotated[Literal[error_code], base.model_fields["code"]], ...),
+    )
+    body.__hattori_error__ = error
+    return body
 
 
 class ApiError(APIReturn[ErrorBody]):
@@ -265,12 +303,7 @@ class ApiError(APIReturn[ErrorBody]):
         # runs, and synthesizes the narrowed body itself.
         error_code = cls.__dict__.get("error_code")
         if isinstance(error_code, str):
-            cls.__hattori_response_body__ = pydantic.create_model(
-                cls.__name__,
-                __base__=resolve_error_body_base(cls),
-                __module__=cls.__module__,
-                code=(Literal[error_code], ...),
-            )
+            cls.__hattori_response_body__ = narrowed_error_body(cls, error_code)
 
     def __init__(self, message: str | None = None, **body_fields: Any) -> None:
         body_type = self.__hattori_response_body__
