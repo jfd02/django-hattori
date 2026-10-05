@@ -1,7 +1,18 @@
 import logging
 import traceback
+from copy import deepcopy
+from dataclasses import replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Self, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    Self,
+    TypeVar,
+)
 
 import pydantic
 from django.conf import settings
@@ -168,8 +179,22 @@ class ErrorBody(pydantic.BaseModel):
     your own body type instead.
     """
 
-    code: str
-    message: str
+    code: str = pydantic.Field(
+        description=(
+            "Stable, machine-readable error code. Branch on this value rather than "
+            "on `message`."
+        )
+    )
+    message: str = pydantic.Field(
+        description=(
+            "Human-readable explanation of the error. The wording can change, so "
+            "don't parse it."
+        )
+    )
+
+    # The error class a narrowed body was generated for, so the OpenAPI schema
+    # can show that class's declared message as the example.
+    __hattori_error__: ClassVar[type[Any] | None] = None
 
 
 _default_error_body: type[ErrorBody] = ErrorBody
@@ -200,6 +225,38 @@ def resolve_error_body_base(cls: type) -> type[ErrorBody]:
         if base is not None:
             return base
     return _default_error_body
+
+
+def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
+    """A body model for ``error`` whose ``code`` is the constant ``error_code``."""
+    base = resolve_error_body_base(error)
+    code_field = deepcopy(base.model_fields["code"])
+    # Literal already restricts both the value and its type; Pydantic cannot
+    # apply a str field's Strict metadata to a literal schema. A fixed code
+    # must also bypass string normalization, which could change its value.
+    code_field.metadata = [
+        replace(item, strict=None, to_upper=None, to_lower=None, strip_whitespace=None)
+        if isinstance(item, pydantic.StringConstraints)
+        else item
+        for item in code_field.metadata
+        if not isinstance(item, pydantic.Strict)
+    ]
+    body: type[ErrorBody] = pydantic.create_model(
+        error.__name__,
+        __base__=base,
+        __module__=error.__module__,
+        # The base's own field rides along, so a description declared on it is
+        # still there once the type is narrowed.
+        code=(Annotated[Literal[error_code], code_field], ...),
+    )
+    # ApiError supplies code and message by their Python names. Accept names
+    # on this generated model while retaining aliases and the base's validators.
+    # populate_by_name covers Pydantic <2.11; validate_by_name overrides an
+    # explicit alias-only configuration on newer versions.
+    body.model_config.update({"populate_by_name": True, "validate_by_name": True})
+    body.model_rebuild(force=True)
+    body.__hattori_error__ = error
+    return body
 
 
 class ApiError(APIReturn[ErrorBody]):
@@ -265,12 +322,7 @@ class ApiError(APIReturn[ErrorBody]):
         # runs, and synthesizes the narrowed body itself.
         error_code = cls.__dict__.get("error_code")
         if isinstance(error_code, str):
-            cls.__hattori_response_body__ = pydantic.create_model(
-                cls.__name__,
-                __base__=resolve_error_body_base(cls),
-                __module__=cls.__module__,
-                code=(Literal[error_code], ...),
-            )
+            cls.__hattori_response_body__ = narrowed_error_body(cls, error_code)
 
     def __init__(self, message: str | None = None, **body_fields: Any) -> None:
         body_type = self.__hattori_response_body__

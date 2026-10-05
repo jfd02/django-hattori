@@ -39,6 +39,20 @@ VALIDATION_ERROR_422 = {
 }
 
 
+PARSE_ERROR_400 = {
+    "description": "Bad Request",
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {"detail": {"type": "string"}},
+                "required": ["detail"],
+            }
+        }
+    },
+}
+
+
 class Payload(Schema):
     i: int
     f: float
@@ -256,6 +270,7 @@ def test_schema(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
     assert schema.schemas == {
@@ -350,6 +365,7 @@ def test_schema_alias(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
     # ::TODO:: this is currently broken if not all responses for same schema use the same by_alias
@@ -405,6 +421,7 @@ def test_schema_list(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -510,6 +527,7 @@ def test_schema_body(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -532,6 +550,7 @@ def test_schema_body_schema(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -686,7 +705,7 @@ def test_schema_form_body(schema):
                 }
             }
         },
-        "required": True,
+        "required": False,
     }
     assert method_list["responses"] == {
         200: {
@@ -697,6 +716,7 @@ def test_schema_form_body(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -770,6 +790,7 @@ def test_schema_body_file(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -861,17 +882,6 @@ def test_schema_deprecated_example_examples(schema):
                 "maxLength": 5,
                 "title": "Param3",
                 "type": "string",
-                "examples": {
-                    "invalid": {
-                        "summary": "Invalid data is rejected with an error",
-                        "value": "MoreThan5Length",
-                    },
-                    "normal": {
-                        "description": "A **normal** string works correctly.",
-                        "summary": "A normal example",
-                        "value": "Foo",
-                    },
-                },
             },
             "examples": {
                 "invalid": {
@@ -1304,7 +1314,7 @@ def test_422_not_on_parameterless():
     assert 422 not in method["responses"]
 
 
-def test_422_not_overwritten():
+def test_explicit_422_is_combined_with_validation_errors():
     api = HattoriAPI()
 
     class CustomError(Schema):
@@ -1322,5 +1332,8 @@ def test_422_not_overwritten():
     assert 422 in method["responses"]
     resp_422 = method["responses"][422]
     assert resp_422["content"]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/CustomError"
+        "anyOf": [
+            {"$ref": "#/components/schemas/CustomError"},
+            {"$ref": "#/components/schemas/ValidationErrorResponse"},
+        ]
     }

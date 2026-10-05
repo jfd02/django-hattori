@@ -422,3 +422,59 @@ def test_signup(hattori_client):
     client = hattori_client(api)
     assert client.post("/signup", json={"username": "neo", "password": "x"}).status_code == 422
 ```
+
+### Checking OpenAPI changes
+
+For package development, run `make test-openapi` to validate exported documents
+with `openapi-spec-validator` and check representative runtime responses against
+their JSON Schemas. These tests also reject duplicate JSON keys, unresolved local
+references, and discriminator mappings that disagree with their union variants.
+They run as part of the regular test suite in CI.
+
+When adding a schema feature, add a case in `tests/test_openapi_contract.py` using
+`export_contract(api)` and `validate_response(document, path, response)` from
+`tests.openapi_contract`. Include both valid and invalid requests when input
+validation is involved. Snapshots still document intentional output changes;
+contract checks verify that the output is valid and matches runtime behavior.
+
+The same command runs Hypothesis property tests that generate model graphs,
+colliding component names, route orders, nullable query schemas, aliases,
+serialization options, and error unions. Each generated API must export a valid
+contract and its responses must satisfy that contract. The normal profile tries
+40 examples per property; `make test-openapi-deep` raises that to 500 and prints
+search statistics for both the model properties and HTTP tests.
+
+`make test-openapi-http` runs Schemathesis against a stateless fixture API on
+pytest-django's temporary local HTTP server, including middleware and URL routing.
+It reads the served OpenAPI document and generates valid and invalid requests for JSON bodies,
+discriminated unions, path and query parameters, CSV and repeated arrays, forms,
+uploads, typed errors, and async views. Checks cover server errors, documented
+statuses, content types, response schemas, valid-input acceptance, and invalid-input
+rejection. This suite is also included in `make test-openapi` and normal CI runs;
+it starts and stops its own server and needs no external database. Django's request
+lifecycle uses the test database, but the fixture endpoints are stateless.
+The normal fuzzing budget is 40 examples per operation; schema examples and
+boundary cases run in addition.
+
+The fixture's strict JSON models reject coercions, with integral floats accepted
+to match JSON Schema's integer semantics. Multipart invalid-input rejection is
+checked explicitly for missing files: generated non-string fields can become
+valid strings during multipart encoding, so that one automatic check is disabled
+for the upload endpoint. Its response and valid-input checks remain enabled.
+Add representative routes to `tests/schemathesis_app.py` as features grow.
+
+The integer path fixture also accepts Pydantic's numeric text forms such as
+`+0.0`. When that path is the only component generated as invalid and Pydantic
+can parse it, the HTTP test skips the invalid-input rejection check for that
+case. Response checks still run, and explicit cases verify that nonnumeric and
+fractional path values return 422.
+
+Hypothesis shrinks a failure to a small counterexample and saves it locally in
+`.hypothesis/` for replay. Keep newly discovered bugs as explicit regression
+tests after fixing them. To repeat a generated search, pass a fixed seed, for
+example `uv run pytest tests/test_openapi_properties.py --hypothesis-seed=1234`.
+
+Typed responses use Pydantic's JSON serialization when using `JSONRenderer` or
+streaming JSON, including serializers with `when_used="json"`. Custom renderers
+receive Python values by default; set `serialization_mode = "json"` on a custom
+renderer if it needs JSON-compatible values instead.

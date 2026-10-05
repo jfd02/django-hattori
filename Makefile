@@ -23,6 +23,18 @@ fmt format: ## Run code formatters
 test: ## Run tests
 	uv run pytest
 
+.PHONY: test-openapi
+test-openapi: ## Validate exported OpenAPI contracts and representative runtime responses
+	uv run pytest tests/test_openapi_contract.py tests/test_openapi_properties.py tests/test_openapi_http.py
+
+.PHONY: test-openapi-http
+test-openapi-http: ## Fuzz HTTP requests from the served schema with Schemathesis
+	uv run pytest tests/test_openapi_http.py
+
+.PHONY: test-openapi-deep
+test-openapi-deep: ## Search more generated API combinations with Hypothesis
+	uv run pytest tests/test_openapi_properties.py tests/test_openapi_http.py --hypothesis-profile=openapi-deep --hypothesis-show-statistics
+
 .PHONY: test-cov
 test-cov: ## Run tests with coverage
 	uv run pytest --cov=hattori --cov-report term-missing tests

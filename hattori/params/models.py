@@ -209,6 +209,20 @@ class _MultiPartBodyModel(BodyModel):
         return results
 
 
+class CommaSeparated:
+    """Field metadata marking a list as one comma-separated value (``explode=False``).
+
+    ``Query(explode=False)`` leaves this in the field's metadata because that is
+    what survives when the declaration sits on a field of a schema: pydantic
+    rebuilds such a field as a plain ``FieldInfo``, dropping ``Param``'s own
+    attributes but keeping its metadata.
+    """
+
+
+def is_comma_separated(field: FieldInfo) -> bool:
+    return any(isinstance(item, CommaSeparated) for item in field.metadata)
+
+
 class Param(FieldInfo):  # type: ignore[misc]
     def __init__(
         self,
@@ -267,6 +281,8 @@ class Param(FieldInfo):  # type: ignore[misc]
             json_schema_extra=json_schema_extra,
             **extra,
         )
+        if not explode:
+            self.metadata.append(CommaSeparated())
 
     @classmethod
     def _param_source(cls) -> str:

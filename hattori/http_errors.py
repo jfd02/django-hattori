@@ -26,15 +26,13 @@ member's value.
 """
 
 from enum import Enum
-from typing import Any, ClassVar, Generic, Literal, TypeVar, get_args, get_origin
-
-from pydantic import create_model
+from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 
 from hattori.errors import (
     ApiError,
     ErrorBody,
     get_default_error_body,
-    resolve_error_body_base,
+    narrowed_error_body,
     set_default_error_body,
 )
 
@@ -123,12 +121,7 @@ class HTTPError(ApiError, Generic[EnumT]):
         member = _resolve_enum_member(cls)
         if member is not None:
             cls.error_code = member.value
-            cls.__hattori_response_body__ = create_model(
-                cls.__name__,
-                __base__=resolve_error_body_base(cls),
-                __module__=cls.__module__,
-                code=(Literal[member.value], ...),
-            )
+            cls.__hattori_response_body__ = narrowed_error_body(cls, member.value)
 
 
 class BadRequest(HTTPError[EnumT]):

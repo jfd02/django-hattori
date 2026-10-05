@@ -64,7 +64,7 @@ def test_openapi_extra_deep_merges_into_responses():
     schema = api.get_openapi_schema()
     responses = schema["paths"]["/api/x"]["get"]["responses"]
     assert 200 in responses
-    assert responses["500"] == {"description": "Server error"}
+    assert responses[500] == {"description": "Server error"}
 
 
 def test_router_openapi_extra_extends():

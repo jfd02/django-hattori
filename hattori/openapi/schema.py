@@ -1,14 +1,16 @@
 import itertools
 import re
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
+from copy import deepcopy
 from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic.fields import FieldInfo
-from pydantic.json_schema import JsonSchemaMode
+from pydantic.json_schema import JsonSchemaMode, models_json_schema
+from pydantic_core import core_schema
 
 from hattori.compatibility.util import UNION_TYPES
-from hattori.errors import ConfigError, get_validation_error_model
+from hattori.errors import ConfigError, ErrorBody, get_validation_error_model
 from hattori.operation import Operation
 from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
@@ -28,6 +30,96 @@ BODY_CONTENT_TYPES: dict[str, str] = {
     "form": "application/x-www-form-urlencoded",
     "file": "multipart/form-data",
 }
+
+type _SchemaField = (
+    core_schema.ModelField
+    | core_schema.DataclassField
+    | core_schema.TypedDictField
+    | core_schema.ComputedField
+)
+
+
+class ResponseJsonSchema(HattoriGenerateJsonSchema):
+    """Apply an operation's omission rules to its response models only."""
+
+    exclude_none = False
+    exclude_defaults = False
+    exclude_unset = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._core_definitions: dict[str, core_schema.CoreSchema] = {}
+
+    def definitions_schema(
+        self, schema: core_schema.DefinitionsSchema
+    ) -> dict[str, Any]:
+        self._core_definitions.update(
+            (definition["ref"], definition) for definition in schema["definitions"]
+        )
+        return super().definitions_schema(schema)
+
+    def _named_required_fields_schema(
+        self, named_required_fields: Sequence[tuple[str, bool, _SchemaField]]
+    ) -> dict[str, Any]:
+        fields = []
+        for name, required, field in named_required_fields:
+            if self.mode == "serialization":
+                value_schema = (
+                    field["return_schema"]
+                    if field["type"] == "computed-field"
+                    else field["schema"]
+                )
+                if (
+                    value_schema["type"] == "default"
+                    and (self.exclude_defaults or self.exclude_unset)
+                ) or (self.exclude_none and self._allows_none(value_schema)):
+                    required = False
+            fields.append((name, required, field))
+        return super()._named_required_fields_schema(fields)
+
+    def _allows_none(
+        self, schema: core_schema.CoreSchema, seen_refs: frozenset[str] = frozenset()
+    ) -> bool:
+        # Exclusion happens before field serialization. Inspect the input core
+        # schema, including named type aliases, rather than the serialized type.
+        schema_type = schema["type"]
+        if schema_type in ("any", "none", "nullable"):
+            return True
+        if schema_type == "function-plain":
+            # Plain validators replace type validation entirely and may return
+            # None even if a field serializer advertises a non-null result.
+            return True
+        if schema_type == "json":
+            # Json[T] holds the decoded value at serialization time; bare Json
+            # accepts any JSON value, including null.
+            inner = schema.get("schema")
+            return inner is None or self._allows_none(inner, seen_refs)
+        if schema_type == "literal":
+            return None in schema["expected"]
+        if schema_type == "definition-ref":
+            ref = schema["schema_ref"]
+            definition = self._core_definitions.get(ref)
+            return (
+                definition is not None
+                and ref not in seen_refs
+                and self._allows_none(definition, seen_refs | {ref})
+            )
+        if schema_type == "union":
+            return any(
+                self._allows_none(
+                    choice[0] if isinstance(choice, tuple) else choice, seen_refs
+                )
+                for choice in schema["choices"]
+            )
+        if schema_type in (
+            "default",
+            "function-before",
+            "function-after",
+            "function-wrap",
+            "definitions",
+        ):
+            return self._allows_none(schema["schema"], seen_refs)
+        return False
 
 
 def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
@@ -87,6 +179,8 @@ class OpenAPISchema(dict):
         self.securitySchemes: dict[str, Any] = {}
         self.all_operation_ids: set = set()
         self._validation_error_title: str | None = None
+        # (final component name, serialized message field) -> declared message
+        self._error_messages: dict[tuple[str, str], str] = {}
         extra_info = api.openapi_extra.get("info", {})
         super().__init__([
             ("openapi", "3.1.0"),
@@ -131,9 +225,10 @@ class OpenAPISchema(dict):
         result = {}
         for op in operations:
             if op.include_in_schema:
-                operation_details = self.operation_details(op, bound_router)
                 for method in op.methods:
-                    result[method.lower()] = operation_details
+                    result[method.lower()] = self.operation_details(
+                        op, bound_router, method
+                    )
         return result
 
     def deep_dict_update(
@@ -156,18 +251,11 @@ class OpenAPISchema(dict):
                 main_dict[key] = update_dict[key]
 
     def operation_details(
-        self, operation: Operation, bound_router: BoundRouter
+        self, operation: Operation, bound_router: BoundRouter, method: str
     ) -> dict[str, Any]:
         op_id = operation.operation_id or self.api.get_openapi_operation_id(
             operation, bound_router
         )
-        if op_id in self.all_operation_ids:
-            raise ConfigError(
-                f'Duplicate operation_id "{op_id}" '
-                f"(at {operation.view_func.__module__}.{operation.view_func.__name__}). "
-                "Pass an explicit operation_id= or rename the view."
-            )
-        self.all_operation_ids.add(op_id)
         result: dict[str, Any] = {
             "operationId": op_id,
             "parameters": self.operation_parameters(operation),
@@ -195,7 +283,33 @@ class OpenAPISchema(dict):
             result["security"] = security
 
         if operation.openapi_extra:
-            self.deep_dict_update(result, operation.openapi_extra)
+            extra = deepcopy(operation.openapi_extra)
+            # Keep the existing Python API's integer response keys, while
+            # accepting the string keys used in JSON OpenAPI documents.
+            if isinstance(extra.get("responses"), dict):
+                responses: dict[Any, Any] = {}
+                for status, response in extra["responses"].items():
+                    key = (
+                        int(status)
+                        if isinstance(status, str)
+                        and re.fullmatch(r"[1-5][0-9]{2}", status)
+                        else status
+                    )
+                    self.deep_dict_update(responses, {key: response})
+                extra["responses"] = responses
+            self.deep_dict_update(result, extra)
+
+        op_id = result["operationId"]
+        if len(operation.methods) > 1:
+            op_id = f"{op_id}_{method.lower()}"
+            result["operationId"] = op_id
+        if op_id in self.all_operation_ids:
+            raise ConfigError(
+                f'Duplicate operation_id "{op_id}" '
+                f"(at {operation.view_func.__module__}.{operation.view_func.__name__}). "
+                "Pass an explicit operation_id= or rename the view."
+            )
+        self.all_operation_ids.add(op_id)
 
         return result
 
@@ -218,9 +332,6 @@ class OpenAPISchema(dict):
         required = set(schema.get("required", []))
         properties = schema["properties"]
 
-        if "$defs" in schema:
-            self.add_schema_definitions(schema["$defs"])
-
         for name, details in properties.items():
             is_required = name in required
             p_name: str
@@ -236,7 +347,7 @@ class OpenAPISchema(dict):
                     "in": model.__hattori_param_source__,
                     "name": p_name,
                     "schema": p_schema,
-                    "required": p_required,
+                    "required": model.__hattori_param_source__ == "path" or p_required,
                 }
 
                 if p_name in csv_fields:
@@ -246,14 +357,30 @@ class OpenAPISchema(dict):
                 # copy description from schema description to param description
                 if "description" in p_schema:
                     param["description"] = p_schema["description"]
-                if "examples" in p_schema:
+                # A parameter's `examples` is a map of named Example Objects.
+                # JSON Schema's own `examples` is a list of values, which is
+                # valid only where it already is, on the schema.
+                if isinstance(p_schema.get("examples"), dict):
                     param["examples"] = p_schema["examples"]
+                    param["schema"] = {
+                        key: value
+                        for key, value in p_schema.items()
+                        if key != "examples"
+                    }
                 elif "example" in p_schema:
                     param["example"] = p_schema["example"]
                 if "deprecated" in p_schema:
                     param["deprecated"] = p_schema["deprecated"]
 
                 result.append(param)
+
+        # Extract first: named examples may live on fields of shared query
+        # models, which must not retain the parameter-only map either.
+        strip_named_examples(schema)
+        if "$defs" in schema:
+            renames = self.add_schema_definitions(schema["$defs"])
+            for parameter in result:
+                self.rename_schema_refs(parameter["schema"], renames)
 
         return result
 
@@ -276,14 +403,33 @@ class OpenAPISchema(dict):
         remove_level: bool = True,
         mode: JsonSchemaMode = "validation",
         ref_name_suffix: str = "",
+        error_models: tuple[type[ErrorBody], ...] = (),
+        schema_generator: type[HattoriGenerateJsonSchema] = HattoriGenerateJsonSchema,
     ) -> tuple[dict[str, Any], bool]:
+        error_refs: dict[type[ErrorBody], str] = {}
         if hasattr(model, "__hattori_flatten_map__"):
             schema = self._flatten_schema(model)
+        elif error_models:
+            # Generate together to get Pydantic's actual refs, including its
+            # qualified names when multiple models share a Python class name.
+            refs, definitions = models_json_schema(
+                [(model, mode), *((error, mode) for error in error_models)],
+                ref_template=REF_TEMPLATE,
+                by_alias=by_alias,
+                schema_generator=schema_generator,
+            )
+            root_name = refs[(model, mode)]["$ref"].rsplit("/", 1)[-1]
+            schema = definitions["$defs"].pop(root_name)
+            schema["$defs"] = definitions["$defs"]
+            error_refs = {
+                error: refs[(error, mode)]["$ref"].rsplit("/", 1)[-1]
+                for error in error_models
+            }
         else:
             schema = model.model_json_schema(
                 ref_template=REF_TEMPLATE,
                 by_alias=by_alias,
-                schema_generator=HattoriGenerateJsonSchema,
+                schema_generator=schema_generator,
                 mode=mode,
             ).copy()
 
@@ -293,6 +439,18 @@ class OpenAPISchema(dict):
                 schema.pop("$defs"), ref_name_suffix=ref_name_suffix
             )
             self.rename_schema_refs(schema, ref_renames)
+            for body, name in error_refs.items():
+                error = body.__hattori_error__
+                message = getattr(error, "message", "")
+                if message:
+                    field = body.model_fields["message"]
+                    field_name = (
+                        field.serialization_alias or "message"
+                        if by_alias
+                        else "message"
+                    )
+                    key = (ref_renames.get(name, name), field_name)
+                    self._error_messages.setdefault(key, message)
 
         if remove_level and len(schema["properties"]) == 1:
             name, details = list(schema["properties"].items())[0]
@@ -301,7 +459,7 @@ class OpenAPISchema(dict):
             required = name in schema.get("required", {})
             return details, required
         else:
-            return schema, True
+            return schema, bool(schema.get("required"))
 
     def _create_multipart_schema_from_models(
         self,
@@ -341,7 +499,7 @@ class OpenAPISchema(dict):
             schema, content_type = self._create_multipart_schema_from_models(
                 models, mode="validation"
             )
-            required = True
+            required = bool(schema.get("required"))
 
         return {
             "content": {content_type: {"schema": schema}},
@@ -351,6 +509,16 @@ class OpenAPISchema(dict):
     def responses(self, operation: Operation) -> dict[int, dict[str, Any]]:
         assert bool(operation.response_models), f"{operation.response_models} empty"
 
+        generator = type(
+            "OperationResponseJsonSchema",
+            (ResponseJsonSchema,),
+            {
+                "exclude_none": operation.exclude_none,
+                "exclude_defaults": operation.exclude_defaults,
+                "exclude_unset": operation.exclude_unset,
+            },
+        )
+
         result = {}
         for status, model in operation.response_models.items():
             if status == Ellipsis:
@@ -359,13 +527,18 @@ class OpenAPISchema(dict):
             description = HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
-                # ::TODO:: test this: by_alias == True
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""
                 schema = self._create_schema_from_model(
                     model,
                     by_alias=operation.by_alias,
                     mode="serialization",
                     ref_name_suffix=ref_name_suffix,
+                    schema_generator=generator,
+                    error_models=tuple(
+                        self._error_body_models(
+                            model.model_fields["response"].annotation
+                        )
+                    ),
                 )[0]
                 self._prefer_one_of_for_const_property_union(schema, "code")
                 # Only the streamed body carries the stream media type. Other
@@ -385,25 +558,41 @@ class OpenAPISchema(dict):
                     }
             result.update(details)
 
-        if (
-            operation.models
-            and 422 not in result
-            and self._can_fail_validation(operation)
-        ):
-            result[422] = {
-                "description": HTTP_STATUS_PHRASES.get(422, "Unknown Status Code"),
-                "content": {
-                    self.api.renderer.media_type: {
-                        "schema": {
-                            "$ref": REF_TEMPLATE.format(
-                                model=self._get_validation_error_title()
-                            )
-                        }
-                    }
+        if any(m.__hattori_param_source__ == "body" for m in operation.models):
+            # JSON decoding fails before Pydantic validation. Preserve explicitly
+            # declared 400 responses alongside the framework's HttpError body.
+            self._add_response_schema(
+                result,
+                400,
+                {
+                    "type": "object",
+                    "properties": {"detail": {"type": "string"}},
+                    "required": ["detail"],
                 },
+            )
+
+        if operation.models and self._can_fail_validation(operation):
+            validation_schema = {
+                "$ref": REF_TEMPLATE.format(model=self._get_validation_error_title())
             }
+            self._add_response_schema(result, 422, validation_schema)
 
         return result
+
+    def _add_response_schema(self, result: dict, status: int, schema: dict) -> None:
+        response = result.setdefault(
+            status, {"description": HTTP_STATUS_PHRASES[status]}
+        )
+        media = response.setdefault("content", {}).setdefault(
+            self.api.renderer.media_type, {}
+        )
+        existing = media.get("schema")
+        # Keep discriminators local to explicitly declared error unions.
+        media["schema"] = (
+            schema
+            if existing is None or existing == schema
+            else {"anyOf": [existing, schema]}
+        )
 
     def _can_fail_validation(self, operation: Operation) -> bool:
         """Whether this operation can actually return a 422.
@@ -462,7 +651,27 @@ class OpenAPISchema(dict):
             candidate = f"{name}_{index}"
         return candidate
 
+    def _error_body_models(self, annotation: Any) -> Generator[type[ErrorBody]]:
+        if isinstance(annotation, type) and issubclass(annotation, ErrorBody):
+            if annotation.__hattori_error__ is not None:
+                yield annotation
+        for arg in get_args(annotation):
+            yield from self._error_body_models(arg)
+
+    def _document_error_messages(self) -> None:
+        """Show each error's declared message as the example of its ``message``.
+
+        Applied once every schema is registered. An example inside the body
+        model itself would make two same-named errors that differ only in
+        wording into different schemas, and one of them would be renamed.
+        """
+        for (name, field_name), message in self._error_messages.items():
+            message_schema = self.schemas[name].get("properties", {}).get(field_name)
+            if isinstance(message_schema, dict):
+                message_schema.setdefault("examples", [message])
+
     def get_components(self) -> dict[str, Any]:
+        self._document_error_messages()
         result = {"schemas": self.schemas}
         if self.securitySchemes:
             result["securitySchemes"] = self.securitySchemes
@@ -532,17 +741,19 @@ class OpenAPISchema(dict):
         return None
 
     def rename_schema_refs(self, value: Any, ref_renames: dict[str, str]) -> None:
-        if isinstance(value, dict):
-            ref = value.get("$ref")
-            if isinstance(ref, str):
-                name = ref.rsplit("/", 1)[-1]
-                if name in ref_renames:
-                    value["$ref"] = REF_TEMPLATE.format(model=ref_renames[name])
-            for item in value.values():
-                self.rename_schema_refs(item, ref_renames)
-        elif isinstance(value, list):
-            for item in value:
-                self.rename_schema_refs(item, ref_renames)
+        refs = {
+            REF_TEMPLATE.format(model=old): REF_TEMPLATE.format(model=new)
+            for old, new in ref_renames.items()
+        }
+        for schema in schema_nodes(value):
+            for keyword in ("$ref", "$dynamicRef"):
+                ref = schema.get(keyword)
+                if isinstance(ref, str) and ref in refs:
+                    schema[keyword] = refs[ref]
+            mapping = schema.get("discriminator", {}).get("mapping", {})
+            for tag, ref in mapping.items():
+                if ref in refs:
+                    mapping[tag] = refs[ref]
 
     def add_schema_definitions(
         self, definitions: dict[str, Any], ref_name_suffix: str = ""
@@ -551,21 +762,24 @@ class OpenAPISchema(dict):
         # if def B is renamed because it differs from an existing B, any incoming
         # def A that references B must also be rewritten — and that rewrite can
         # in turn cause A to differ from the existing A and need its own rename.
-        incoming = dict(definitions)
         ref_renames: dict[str, str] = {}
         while True:
+            # Always rewrite the originals, so a previous replacement can
+            # never be mistaken for another original component name.
+            incoming = deepcopy(definitions)
             for schema in incoming.values():
                 self.rename_schema_refs(schema, ref_renames)
 
             new_renames = False
             for name, schema in incoming.items():
-                if name in ref_renames:
-                    continue
-                existing = self.schemas.get(name)
+                existing = self.schemas.get(ref_renames.get(name, name))
                 if existing is None or existing == schema:
                     continue
                 ref_renames[name] = self._unique_schema_name(
-                    name, ref_name_suffix, schema
+                    name,
+                    ref_name_suffix,
+                    schema,
+                    reserved_names=set(definitions) | set(ref_renames.values()),
                 )
                 new_renames = True
 
@@ -579,14 +793,50 @@ class OpenAPISchema(dict):
         return ref_renames
 
     def _unique_schema_name(
-        self, name: str, suffix: str, schema: dict[str, Any]
+        self, name: str, suffix: str, schema: dict[str, Any], reserved_names: set[str]
     ) -> str:
         candidate = f"{name}{suffix}" if suffix else f"{name}_2"
         index = 2
-        while candidate in self.schemas and self.schemas[candidate] != schema:
+        while candidate in reserved_names or (
+            candidate in self.schemas and self.schemas[candidate] != schema
+        ):
             index += 1
             candidate = f"{name}{suffix}_{index}" if suffix else f"{name}_{index}"
         return candidate
+
+
+def schema_nodes(schema: Any) -> Generator[dict[str, Any]]:
+    """Walk schemas, treating examples, defaults and extension values as data."""
+    if not isinstance(schema, dict):
+        return
+    yield schema
+    for keyword in ("properties", "patternProperties", "$defs", "dependentSchemas"):
+        for child in schema.get(keyword, {}).values():
+            yield from schema_nodes(child)
+    for keyword in ("allOf", "anyOf", "oneOf", "prefixItems"):
+        for child in schema.get(keyword, []):
+            yield from schema_nodes(child)
+    for keyword in (
+        "items",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    ):
+        child = schema.get(keyword)
+        yield from schema_nodes(child)
+
+
+def strip_named_examples(schema: dict[str, Any]) -> None:
+    """Remove parameter example maps from schemas, without traversing payloads."""
+    for node in schema_nodes(schema):
+        if isinstance(node.get("examples"), dict):
+            del node["examples"]
 
 
 def flatten_properties(
@@ -599,7 +849,24 @@ def flatten_properties(
     extracts all nested model's properties into flat properties
     (used f.e. in GET params with multiple arguments and models)
     """
-    if "allOf" in prop_details:
+    if "anyOf" in prop_details:
+        variants = prop_details["anyOf"]
+        non_null = [variant for variant in variants if variant.get("type") != "null"]
+        if len(variants) == 2 and len(non_null) == 1:
+            variant = non_null[0]
+            definition = variant
+            if "$ref" in variant:
+                definition = definitions[variant["$ref"].rsplit("/", 1)[-1]]
+            if "properties" in definition:
+                # Runtime flattens nullable query models just like required
+                # models. Keep nullable scalar/enum/list schemas intact.
+                yield from flatten_properties(
+                    prop_name, definition, prop_required, definitions
+                )
+                return
+        yield prop_name, prop_details, prop_required
+
+    elif "allOf" in prop_details:
         resolve_allOf(prop_details, definitions)
         if len(prop_details["allOf"]) == 1 and "enum" in prop_details["allOf"][0]:
             # is_required = "default" not in prop_details
@@ -621,6 +888,11 @@ def flatten_properties(
     elif "$ref" in prop_details:
         def_name = prop_details["$ref"].split("/")[-1]
         definition = definitions[def_name]
+        siblings = {k: v for k, v in prop_details.items() if k != "$ref"}
+        if siblings and "properties" not in definition:
+            # An enum (or other non-model) field: what the field declares beside
+            # the reference describes this parameter, not the shared definition.
+            definition = {**definition, **siblings}
         yield from flatten_properties(prop_name, definition, prop_required, definitions)
 
     elif "properties" in prop_details:

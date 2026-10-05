@@ -32,7 +32,31 @@ pydantic_version = list(map(int, pydantic.VERSION.split(".")[:2]))
 __all__ = ["BaseModel", "Field", "Schema"]
 
 
+# Keys whose value is a payload rather than schema, so its own keys are data.
+_PAYLOAD_KEYWORDS = frozenset({"default", "example", "examples"})
+
+
+def _sorted_schema(value: Any, parent_key: str | None) -> Any:
+    if parent_key in _PAYLOAD_KEYWORDS:
+        return value
+    if isinstance(value, dict):
+        keys = value if parent_key == "properties" else sorted(value)
+        return {key: _sorted_schema(value[key], key) for key in keys}
+    if isinstance(value, list):
+        return [_sorted_schema(item, parent_key) for item in value]
+    return value
+
+
 class HattoriGenerateJsonSchema(GenerateJsonSchema):
+    def sort(
+        self, value: JsonSchemaValue, parent_key: str | None = None
+    ) -> JsonSchemaValue:
+        # Pydantic sorts every key alphabetically, sparing only `properties` and
+        # the top level of a `default`. An example object would come out with
+        # its fields in a different order from the model it is an example of.
+        sorted_schema: JsonSchemaValue = _sorted_schema(value, parent_key)
+        return sorted_schema
+
     def default_schema(self, schema: Any) -> JsonSchemaValue:
         # Pydantic default renders null's and default_factory's, which breaks
         # swagger and django model callable defaults. Override accordingly.
