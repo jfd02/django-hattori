@@ -422,3 +422,17 @@ def test_signup(hattori_client):
     client = hattori_client(api)
     assert client.post("/signup", json={"username": "neo", "password": "x"}).status_code == 422
 ```
+
+### Checking OpenAPI changes
+
+For package development, run `make test-openapi` to validate exported documents
+with `openapi-spec-validator` and check representative runtime responses against
+their JSON Schemas. These tests also reject duplicate JSON keys, unresolved local
+references, and discriminator mappings that disagree with their union variants.
+They run as part of the regular test suite in CI.
+
+When adding a schema feature, add a case in `tests/test_openapi_contract.py` using
+`export_contract(api)` and `validate_response(document, path, response)` from
+`tests.openapi_contract`. Include both valid and invalid requests when input
+validation is involved. Snapshots still document intentional output changes;
+contract checks verify that the output is valid and matches runtime behavior.

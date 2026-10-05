@@ -20,7 +20,7 @@
           "title": "S",
           "type": "string"
         },
-        "required": false
+        "required": true
       },
       {
         "in": "path",
@@ -31,7 +31,7 @@
           "title": "Foo4 Title",
           "type": "integer"
         },
-        "required": false,
+        "required": true,
         "description": "Foo4 Desc"
       },
       {
@@ -42,7 +42,7 @@
           "title": "Bar4",
           "type": "string"
         },
-        "required": false
+        "required": true
       },
       {
         "in": "path",
@@ -61,7 +61,7 @@
           "title": "Bar",
           "type": "string"
         },
-        "required": false
+        "required": true
       },
       {
         "in": "path",
@@ -72,7 +72,7 @@
           "title": "Foo2 Title",
           "type": "integer"
         },
-        "required": false,
+        "required": true,
         "description": "Foo2 Desc"
       },
       {
@@ -103,7 +103,7 @@
           "title": "Bar3",
           "type": "string"
         },
-        "required": false
+        "required": true
       }
     ],
     "responses": {

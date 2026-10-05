@@ -686,7 +686,7 @@ def test_schema_form_body(schema):
                 }
             }
         },
-        "required": True,
+        "required": False,
     }
     assert method_list["responses"] == {
         200: {
@@ -1293,7 +1293,7 @@ def test_422_not_on_parameterless():
     assert 422 not in method["responses"]
 
 
-def test_422_not_overwritten():
+def test_explicit_422_is_combined_with_validation_errors():
     api = HattoriAPI()
 
     class CustomError(Schema):
@@ -1311,5 +1311,8 @@ def test_422_not_overwritten():
     assert 422 in method["responses"]
     resp_422 = method["responses"][422]
     assert resp_422["content"]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/CustomError"
+        "anyOf": [
+            {"$ref": "#/components/schemas/CustomError"},
+            {"$ref": "#/components/schemas/ValidationErrorResponse"},
+        ]
     }

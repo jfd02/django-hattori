@@ -23,6 +23,10 @@ fmt format: ## Run code formatters
 test: ## Run tests
 	uv run pytest
 
+.PHONY: test-openapi
+test-openapi: ## Validate exported OpenAPI contracts and representative runtime responses
+	uv run pytest tests/test_openapi_contract.py
+
 .PHONY: test-cov
 test-cov: ## Run tests with coverage
 	uv run pytest --cov=hattori --cov-report term-missing tests

@@ -55,6 +55,8 @@ dev = [
     "mypy>=1.15",
     "ruff>=0.14",
     "pre-commit",
+    "openapi-spec-validator>=0.7,<0.9",
+    "jsonschema>=4.23,<5",
 ]
 
 [tool.uv.build-backend]

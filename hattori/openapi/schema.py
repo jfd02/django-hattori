@@ -1,11 +1,13 @@
 import itertools
 import re
 from collections.abc import Generator
+from copy import deepcopy
 from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic.fields import FieldInfo
 from pydantic.json_schema import JsonSchemaMode, models_json_schema
+from pydantic_core import core_schema
 
 from hattori.compatibility.util import UNION_TYPES
 from hattori.errors import ConfigError, ErrorBody, get_validation_error_model
@@ -28,6 +30,74 @@ BODY_CONTENT_TYPES: dict[str, str] = {
     "form": "application/x-www-form-urlencoded",
     "file": "multipart/form-data",
 }
+
+
+class ResponseJsonSchema(HattoriGenerateJsonSchema):
+    """Apply an operation's omission rules to its response models only."""
+
+    exclude_none = False
+    exclude_defaults = False
+    exclude_unset = False
+
+    def model_schema(self, schema: core_schema.ModelSchema) -> dict[str, Any]:
+        result = super().model_schema(schema)
+        if self.mode != "serialization" or "required" not in result:
+            return result
+        fields = {
+            (field.serialization_alias or name) if self.by_alias else name: field
+            for name, field in schema["cls"].model_fields.items()
+        }
+        required = []
+        for name in result["required"]:
+            field = fields.get(name)
+            if (
+                field is not None
+                and not field.is_required()
+                and (self.exclude_defaults or self.exclude_unset)
+            ):
+                continue
+            # Exclusion checks the original value before a field serializer
+            # runs; a nullable input can therefore disappear even when its
+            # serializer advertises a non-null output type.
+            nullable_field = field is not None and (
+                field.annotation in (Any, object, type(None))
+                or type(None) in get_args(field.annotation)
+                or None in get_args(field.annotation)
+            )
+            if self.exclude_none and (
+                nullable_field or self._allows_none(result["properties"][name])
+            ):
+                continue
+            required.append(name)
+        if required:
+            result["required"] = required
+        else:
+            result.pop("required")
+        return result
+
+    def _allows_none(self, schema: dict[str, Any]) -> bool:
+        if "$ref" in schema:
+            resolved = self.get_schema_from_definitions(schema["$ref"])
+            # A recursive model's definition may still be under construction.
+            # Nullability is carried by its surrounding union, not that ref.
+            if resolved is None:
+                return False
+            schema = resolved
+        if "const" in schema:
+            return schema["const"] is None
+        if "enum" in schema:
+            return None in schema["enum"]
+        for keyword in ("anyOf", "oneOf"):
+            if keyword in schema:
+                return any(self._allows_none(child) for child in schema[keyword])
+        if "allOf" in schema:
+            return all(self._allows_none(child) for child in schema["allOf"])
+        schema_type = schema.get("type")
+        return (
+            schema_type is None
+            or schema_type == "null"
+            or (isinstance(schema_type, list) and "null" in schema_type)
+        )
 
 
 def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
@@ -133,9 +203,10 @@ class OpenAPISchema(dict):
         result = {}
         for op in operations:
             if op.include_in_schema:
-                operation_details = self.operation_details(op, bound_router)
                 for method in op.methods:
-                    result[method.lower()] = operation_details
+                    result[method.lower()] = self.operation_details(
+                        op, bound_router, method
+                    )
         return result
 
     def deep_dict_update(
@@ -158,18 +229,11 @@ class OpenAPISchema(dict):
                 main_dict[key] = update_dict[key]
 
     def operation_details(
-        self, operation: Operation, bound_router: BoundRouter
+        self, operation: Operation, bound_router: BoundRouter, method: str
     ) -> dict[str, Any]:
         op_id = operation.operation_id or self.api.get_openapi_operation_id(
             operation, bound_router
         )
-        if op_id in self.all_operation_ids:
-            raise ConfigError(
-                f'Duplicate operation_id "{op_id}" '
-                f"(at {operation.view_func.__module__}.{operation.view_func.__name__}). "
-                "Pass an explicit operation_id= or rename the view."
-            )
-        self.all_operation_ids.add(op_id)
         result: dict[str, Any] = {
             "operationId": op_id,
             "parameters": self.operation_parameters(operation),
@@ -197,7 +261,33 @@ class OpenAPISchema(dict):
             result["security"] = security
 
         if operation.openapi_extra:
-            self.deep_dict_update(result, operation.openapi_extra)
+            extra = deepcopy(operation.openapi_extra)
+            # Keep the existing Python API's integer response keys, while
+            # accepting the string keys used in JSON OpenAPI documents.
+            if isinstance(extra.get("responses"), dict):
+                responses: dict[Any, Any] = {}
+                for status, response in extra["responses"].items():
+                    key = (
+                        int(status)
+                        if isinstance(status, str)
+                        and re.fullmatch(r"[1-5][0-9]{2}", status)
+                        else status
+                    )
+                    self.deep_dict_update(responses, {key: response})
+                extra["responses"] = responses
+            self.deep_dict_update(result, extra)
+
+        op_id = result["operationId"]
+        if len(operation.methods) > 1:
+            op_id = f"{op_id}_{method.lower()}"
+            result["operationId"] = op_id
+        if op_id in self.all_operation_ids:
+            raise ConfigError(
+                f'Duplicate operation_id "{op_id}" '
+                f"(at {operation.view_func.__module__}.{operation.view_func.__name__}). "
+                "Pass an explicit operation_id= or rename the view."
+            )
+        self.all_operation_ids.add(op_id)
 
         return result
 
@@ -235,7 +325,7 @@ class OpenAPISchema(dict):
                     "in": model.__hattori_param_source__,
                     "name": p_name,
                     "schema": p_schema,
-                    "required": p_required,
+                    "required": model.__hattori_param_source__ == "path" or p_required,
                 }
 
                 if p_name in csv_fields:
@@ -266,7 +356,9 @@ class OpenAPISchema(dict):
         # models, which must not retain the parameter-only map either.
         strip_named_examples(schema)
         if "$defs" in schema:
-            self.add_schema_definitions(schema["$defs"])
+            renames = self.add_schema_definitions(schema["$defs"])
+            for parameter in result:
+                self.rename_schema_refs(parameter["schema"], renames)
 
         return result
 
@@ -290,6 +382,7 @@ class OpenAPISchema(dict):
         mode: JsonSchemaMode = "validation",
         ref_name_suffix: str = "",
         error_models: tuple[type[ErrorBody], ...] = (),
+        schema_generator: type[HattoriGenerateJsonSchema] = HattoriGenerateJsonSchema,
     ) -> tuple[dict[str, Any], bool]:
         error_refs: dict[type[ErrorBody], str] = {}
         if hasattr(model, "__hattori_flatten_map__"):
@@ -301,7 +394,7 @@ class OpenAPISchema(dict):
                 [(model, mode), *((error, mode) for error in error_models)],
                 ref_template=REF_TEMPLATE,
                 by_alias=by_alias,
-                schema_generator=HattoriGenerateJsonSchema,
+                schema_generator=schema_generator,
             )
             root_name = refs[(model, mode)]["$ref"].rsplit("/", 1)[-1]
             schema = definitions["$defs"].pop(root_name)
@@ -314,7 +407,7 @@ class OpenAPISchema(dict):
             schema = model.model_json_schema(
                 ref_template=REF_TEMPLATE,
                 by_alias=by_alias,
-                schema_generator=HattoriGenerateJsonSchema,
+                schema_generator=schema_generator,
                 mode=mode,
             ).copy()
 
@@ -344,7 +437,7 @@ class OpenAPISchema(dict):
             required = name in schema.get("required", {})
             return details, required
         else:
-            return schema, True
+            return schema, bool(schema.get("required"))
 
     def _create_multipart_schema_from_models(
         self,
@@ -384,7 +477,7 @@ class OpenAPISchema(dict):
             schema, content_type = self._create_multipart_schema_from_models(
                 models, mode="validation"
             )
-            required = True
+            required = bool(schema.get("required"))
 
         return {
             "content": {content_type: {"schema": schema}},
@@ -402,13 +495,22 @@ class OpenAPISchema(dict):
             description = HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
-                # ::TODO:: test this: by_alias == True
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""
+                generator = type(
+                    "OperationResponseJsonSchema",
+                    (ResponseJsonSchema,),
+                    {
+                        "exclude_none": operation.exclude_none,
+                        "exclude_defaults": operation.exclude_defaults,
+                        "exclude_unset": operation.exclude_unset,
+                    },
+                )
                 schema = self._create_schema_from_model(
                     model,
                     by_alias=operation.by_alias,
                     mode="serialization",
                     ref_name_suffix=ref_name_suffix,
+                    schema_generator=generator,
                     error_models=tuple(
                         self._error_body_models(
                             model.model_fields["response"].annotation
@@ -433,23 +535,21 @@ class OpenAPISchema(dict):
                     }
             result.update(details)
 
-        if (
-            operation.models
-            and 422 not in result
-            and self._can_fail_validation(operation)
-        ):
-            result[422] = {
-                "description": HTTP_STATUS_PHRASES.get(422, "Unknown Status Code"),
-                "content": {
-                    self.api.renderer.media_type: {
-                        "schema": {
-                            "$ref": REF_TEMPLATE.format(
-                                model=self._get_validation_error_title()
-                            )
-                        }
-                    }
-                },
+        if operation.models and self._can_fail_validation(operation):
+            validation_schema = {
+                "$ref": REF_TEMPLATE.format(model=self._get_validation_error_title())
             }
+            response = result.setdefault(422, {"description": HTTP_STATUS_PHRASES[422]})
+            media = response.setdefault("content", {}).setdefault(
+                self.api.renderer.media_type, {}
+            )
+            existing = media.get("schema")
+            if existing is None or existing == validation_schema:
+                media["schema"] = validation_schema
+            else:
+                # Validation errors need not have a constant `code`, so keep
+                # any discriminator local to the explicitly declared union.
+                media["schema"] = {"anyOf": [existing, validation_schema]}
 
         return result
 
@@ -600,17 +700,19 @@ class OpenAPISchema(dict):
         return None
 
     def rename_schema_refs(self, value: Any, ref_renames: dict[str, str]) -> None:
-        if isinstance(value, dict):
-            ref = value.get("$ref")
-            if isinstance(ref, str):
-                name = ref.rsplit("/", 1)[-1]
-                if name in ref_renames:
-                    value["$ref"] = REF_TEMPLATE.format(model=ref_renames[name])
-            for item in value.values():
-                self.rename_schema_refs(item, ref_renames)
-        elif isinstance(value, list):
-            for item in value:
-                self.rename_schema_refs(item, ref_renames)
+        refs = {
+            REF_TEMPLATE.format(model=old): REF_TEMPLATE.format(model=new)
+            for old, new in ref_renames.items()
+        }
+        for schema in schema_nodes(value):
+            for keyword in ("$ref", "$dynamicRef"):
+                ref = schema.get(keyword)
+                if isinstance(ref, str) and ref in refs:
+                    schema[keyword] = refs[ref]
+            mapping = schema.get("discriminator", {}).get("mapping", {})
+            for tag, ref in mapping.items():
+                if ref in refs:
+                    mapping[tag] = refs[ref]
 
     def add_schema_definitions(
         self, definitions: dict[str, Any], ref_name_suffix: str = ""
@@ -619,21 +721,24 @@ class OpenAPISchema(dict):
         # if def B is renamed because it differs from an existing B, any incoming
         # def A that references B must also be rewritten — and that rewrite can
         # in turn cause A to differ from the existing A and need its own rename.
-        incoming = dict(definitions)
         ref_renames: dict[str, str] = {}
         while True:
+            # Always rewrite the originals, so a previous replacement can
+            # never be mistaken for another original component name.
+            incoming = deepcopy(definitions)
             for schema in incoming.values():
                 self.rename_schema_refs(schema, ref_renames)
 
             new_renames = False
             for name, schema in incoming.items():
-                if name in ref_renames:
-                    continue
-                existing = self.schemas.get(name)
+                existing = self.schemas.get(ref_renames.get(name, name))
                 if existing is None or existing == schema:
                     continue
                 ref_renames[name] = self._unique_schema_name(
-                    name, ref_name_suffix, schema
+                    name,
+                    ref_name_suffix,
+                    schema,
+                    reserved_names=set(definitions) | set(ref_renames.values()),
                 )
                 new_renames = True
 
@@ -647,28 +752,29 @@ class OpenAPISchema(dict):
         return ref_renames
 
     def _unique_schema_name(
-        self, name: str, suffix: str, schema: dict[str, Any]
+        self, name: str, suffix: str, schema: dict[str, Any], reserved_names: set[str]
     ) -> str:
         candidate = f"{name}{suffix}" if suffix else f"{name}_2"
         index = 2
-        while candidate in self.schemas and self.schemas[candidate] != schema:
+        while candidate in reserved_names or (
+            candidate in self.schemas and self.schemas[candidate] != schema
+        ):
             index += 1
             candidate = f"{name}{suffix}_{index}" if suffix else f"{name}_{index}"
         return candidate
 
 
-def strip_named_examples(schema: dict[str, Any]) -> None:
-    """Remove parameter example maps from schemas, without traversing payloads."""
-    if isinstance(schema.get("examples"), dict):
-        del schema["examples"]
+def schema_nodes(schema: Any) -> Generator[dict[str, Any]]:
+    """Walk schemas, treating examples, defaults and extension values as data."""
+    if not isinstance(schema, dict):
+        return
+    yield schema
     for keyword in ("properties", "patternProperties", "$defs", "dependentSchemas"):
         for child in schema.get(keyword, {}).values():
-            if isinstance(child, dict):
-                strip_named_examples(child)
+            yield from schema_nodes(child)
     for keyword in ("allOf", "anyOf", "oneOf", "prefixItems"):
         for child in schema.get(keyword, []):
-            if isinstance(child, dict):
-                strip_named_examples(child)
+            yield from schema_nodes(child)
     for keyword in (
         "items",
         "additionalProperties",
@@ -682,8 +788,14 @@ def strip_named_examples(schema: dict[str, Any]) -> None:
         "else",
     ):
         child = schema.get(keyword)
-        if isinstance(child, dict):
-            strip_named_examples(child)
+        yield from schema_nodes(child)
+
+
+def strip_named_examples(schema: dict[str, Any]) -> None:
+    """Remove parameter example maps from schemas, without traversing payloads."""
+    for node in schema_nodes(schema):
+        if isinstance(node.get("examples"), dict):
+            del node["examples"]
 
 
 def flatten_properties(
