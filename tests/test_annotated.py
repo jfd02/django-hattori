@@ -266,9 +266,7 @@ def test_openapi_schema():
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "type": "object",
-                                    "properties": {"detail": {"type": "string"}},
-                                    "required": ["detail"],
+                                    "$ref": "#/components/schemas/HttpErrorResponse"
                                 }
                             }
                         },

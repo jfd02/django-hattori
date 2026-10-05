@@ -10,7 +10,12 @@ from pydantic.json_schema import JsonSchemaMode, models_json_schema
 from pydantic_core import core_schema
 
 from hattori.compatibility.util import UNION_TYPES
-from hattori.errors import ConfigError, ErrorBody, get_validation_error_model
+from hattori.errors import (
+    ConfigError,
+    ErrorBody,
+    get_http_error_model,
+    get_validation_error_model,
+)
 from hattori.operation import Operation
 from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
@@ -179,6 +184,7 @@ class OpenAPISchema(dict):
         self.securitySchemes: dict[str, Any] = {}
         self.all_operation_ids: set = set()
         self._validation_error_title: str | None = None
+        self._http_error_title: str | None = None
         # (final component name, serialized message field) -> declared message
         self._error_messages: dict[tuple[str, str], str] = {}
         extra_info = api.openapi_extra.get("info", {})
@@ -561,15 +567,10 @@ class OpenAPISchema(dict):
         if any(m.__hattori_param_source__ == "body" for m in operation.models):
             # JSON decoding fails before Pydantic validation. Preserve explicitly
             # declared 400 responses alongside the framework's HttpError body.
-            self._add_response_schema(
-                result,
-                400,
-                {
-                    "type": "object",
-                    "properties": {"detail": {"type": "string"}},
-                    "required": ["detail"],
-                },
-            )
+            http_error_schema = {
+                "$ref": REF_TEMPLATE.format(model=self._get_http_error_title())
+            }
+            self._add_response_schema(result, 400, http_error_schema)
 
         if operation.models and self._can_fail_validation(operation):
             validation_schema = {
@@ -610,16 +611,26 @@ class OpenAPISchema(dict):
     def _get_validation_error_title(self) -> str:
         title = self._validation_error_title
         if title is None:
-            model = get_validation_error_model()
-            schema = self._create_schema_from_model(model, remove_level=False)[0]
-            base_title = schema.get("title", model.__name__)
-            # Register through the collision-aware path (rather than writing
-            # self.schemas[title] directly) so a user model that happens to
-            # share the 422 body model's name is never clobbered by — and never
-            # clobbers — the framework's auto-generated 422 schema.
-            renames = self.add_schema_definitions({base_title: schema})
-            title = renames.get(base_title, base_title)
+            title = self._register_error_model(get_validation_error_model())
             self._validation_error_title = title
+        return title
+
+    def _get_http_error_title(self) -> str:
+        title = self._http_error_title
+        if title is None:
+            title = self._register_error_model(get_http_error_model())
+            self._http_error_title = title
+        return title
+
+    def _register_error_model(self, model: Any) -> str:
+        schema = self._create_schema_from_model(model, remove_level=False)[0]
+        base_title = schema.get("title", model.__name__)
+        # Register through the collision-aware path (rather than writing
+        # self.schemas[title] directly) so a user model that happens to share
+        # the body model's name is never clobbered by — and never clobbers —
+        # the framework's auto-generated schema.
+        renames = self.add_schema_definitions({base_title: schema})
+        title: str = renames.get(base_title, base_title)
         return title
 
     def operation_security(self, operation: Operation) -> list[dict[str, Any]] | None:

@@ -35,6 +35,10 @@ __all__ = [
     "set_validation_error_model",
     "get_validation_error_model",
     "HttpError",
+    "HttpErrorBody",
+    "HttpErrorResponse",
+    "set_http_error_model",
+    "get_http_error_model",
     "ErrorBody",
     "ApiError",
     "set_default_error_body",
@@ -96,6 +100,65 @@ class AuthenticationError(HttpError):
 class AuthorizationError(HttpError):
     def __init__(self, status_code: int = 403, message: str = "Forbidden") -> None:
         super().__init__(status_code=status_code, message=message)
+
+
+class HttpErrorBody(pydantic.BaseModel):
+    """Base for the body of an :class:`HttpError` response.
+
+    One model drives both sides of the contract: the default ``HttpError``
+    handler builds the response by calling :meth:`from_error`, and OpenAPI
+    documents its schema as the 400 every operation with a request body can
+    return (a body that cannot be parsed raises ``HttpError(400)``). Subclass
+    it and install the subclass with :func:`set_http_error_model` to change the
+    shape without the spec and the wire drifting apart::
+
+        class Problem(HttpErrorBody):
+            code: str
+            message: str
+
+            @classmethod
+            def from_error(cls, error):
+                status = HTTPStatus(error.status_code)
+                return cls(code=status.name.lower(), message=str(error))
+
+        set_http_error_model(Problem)
+    """
+
+    @classmethod
+    def from_error(cls, error: HttpError) -> Self:
+        """Build the response body from the :class:`HttpError` that was raised."""
+        raise NotImplementedError
+
+
+# The default body: ``{"detail": "<message>"}``.
+class HttpErrorResponse(HttpErrorBody):
+    detail: str
+
+    @classmethod
+    def from_error(cls, error: HttpError) -> Self:
+        return cls(detail=str(error))
+
+
+_http_error_model: type[HttpErrorBody] = HttpErrorResponse
+
+
+def set_http_error_model(model: type[HttpErrorBody]) -> None:
+    """Set the project-wide :class:`HttpError` response body model.
+
+    Drives the OpenAPI schema of an unparseable request body's 400 and the
+    default ``HttpError`` handler together. Call once at startup, e.g. from an
+    ``AppConfig.ready()`` hook.
+    """
+    if not (isinstance(model, type) and issubclass(model, HttpErrorBody)):
+        raise ConfigError(
+            f"{model!r} must subclass hattori.HttpErrorBody and implement from_error()."
+        )
+    global _http_error_model
+    _http_error_model = model
+
+
+def get_http_error_model() -> type[HttpErrorBody]:
+    return _http_error_model
 
 
 class ValidationErrorBody(pydantic.BaseModel):
@@ -364,7 +427,8 @@ def _default_404(request: HttpRequest, exc: Exception, api: HattoriAPI) -> HttpR
 def _default_http_error(
     request: HttpRequest, exc: HttpError, api: HattoriAPI
 ) -> HttpResponse:
-    return api.create_response(request, {"detail": str(exc)}, status=exc.status_code)
+    body = get_http_error_model().from_error(exc)
+    return api.create_response(request, body, status=exc.status_code)
 
 
 def _default_validation_error(
