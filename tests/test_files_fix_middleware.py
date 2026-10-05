@@ -120,3 +120,36 @@ async def test_async_non_fix_method_passes_through(_wired):
     resp = await AsyncClient().get("/async/ping")
     assert resp.status_code == 200, resp.content
     assert resp.json() == "pong"
+
+
+def test_sync_middleware_observes_settings_overrides_and_restoration(_wired):
+    client = Client()
+
+    def upload():
+        return client.patch(
+            "/sync/upload",
+            data=_multipart(file=SimpleUploadedFile("a.txt", b"data")),
+            content_type=MULTIPART_CONTENT,
+        )
+
+    assert upload().status_code == 200
+    with override_settings(HATTORI_FIX_REQUEST_FILES_METHODS=set()):
+        assert upload().status_code == 422
+    assert upload().status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_async_middleware_observes_settings_overrides_and_restoration(_wired):
+    client = AsyncClient()
+
+    async def upload():
+        return await client.patch(
+            "/async/upload",
+            data=_multipart(file=SimpleUploadedFile("a.txt", b"data")),
+            content_type=MULTIPART_CONTENT,
+        )
+
+    assert (await upload()).status_code == 200
+    with override_settings(HATTORI_FIX_REQUEST_FILES_METHODS=set()):
+        assert (await upload()).status_code == 422
+    assert (await upload()).status_code == 200

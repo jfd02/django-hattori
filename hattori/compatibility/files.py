@@ -11,20 +11,22 @@ from hattori.conf import settings as hattori_settings
 from hattori.params.models import FileModel
 
 FIX_MIDDLEWARE_PATH: str = "hattori.compatibility.files.fix_request_files_middleware"
-FIX_METHODS = hattori_settings.FIX_REQUEST_FILES_METHODS
 
 
 def need_to_fix_request_files(methods: list[str], params_models: list[Any]) -> bool:
     has_files_params = any(
         issubclass(model_class, FileModel) for model_class in params_models
     )
-    method_needs_fix = bool(set(methods) & FIX_METHODS)
+    method_needs_fix = bool(set(methods) & hattori_settings.FIX_REQUEST_FILES_METHODS)
     middleware_installed = FIX_MIDDLEWARE_PATH in settings.MIDDLEWARE
     return has_files_params and method_needs_fix and not middleware_installed
 
 
 def _should_fix(request: HttpRequest) -> bool:
-    return request.method in FIX_METHODS and request.content_type != "application/json"
+    return (
+        request.method in hattori_settings.FIX_REQUEST_FILES_METHODS
+        and request.content_type != "application/json"
+    )
 
 
 @contextmanager

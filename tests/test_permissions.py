@@ -587,11 +587,13 @@ async def test_sync_permission_on_async_view():
     ).status_code == 403
 
 
-def test_async_permission_on_sync_view():
+def test_async_permission_on_sync_view(recwarn):
+    calls = []
     api = HattoriAPI(urls_namespace="perm-async-sync")
 
     class AsyncAdmin(BasePermission):
         async def check(self, request, household_id) -> bool:
+            calls.append(request.auth)
             members = MEMBERSHIPS.get(int(household_id), {})
             return members.get(request.auth) == "admin"
 
@@ -606,3 +608,6 @@ def test_async_permission_on_sync_view():
     client = TestClient(api)
     assert client.get("/households/1/c", headers=_bearer("alice")).status_code == 200
     assert client.get("/households/1/c", headers=_bearer("bob")).status_code == 403
+
+    assert calls == ["alice", "bob"]
+    assert not recwarn

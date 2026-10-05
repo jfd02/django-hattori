@@ -1,6 +1,6 @@
 import collections.abc
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from functools import partial
 from typing import (
     TYPE_CHECKING,
@@ -47,6 +47,11 @@ __all__ = ["Operation", "PathView"]
 
 # Sentinel marking that a streamed generator produced no items at all.
 _NO_FIRST_ITEM = object()
+
+
+async def _await_coroutine(coroutine: Coroutine[Any, Any, Any]) -> Any:
+    """Await the existing result without invoking its callback a second time."""
+    return await coroutine
 
 
 class _ParsedAnnotation:
@@ -653,7 +658,7 @@ class Operation:
             try:
                 result = callback(request)
                 if is_async and inspect.iscoroutine(result):
-                    result = async_to_sync(lambda res=result: res)()
+                    result = async_to_sync(_await_coroutine)(result)
             except Exception as exc:
                 return self.api.on_exception(request, exc)
 
@@ -692,7 +697,7 @@ class Operation:
                 kwargs = permission.select_path_kwargs(path_params)
                 result = permission.check(request, **kwargs)
                 if inspect.iscoroutine(result):
-                    result = async_to_sync(lambda res=result: res)()
+                    result = async_to_sync(_await_coroutine)(result)
             except Exception as exc:
                 return self.api.on_exception(request, exc)
 

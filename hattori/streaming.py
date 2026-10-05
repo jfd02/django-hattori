@@ -1,8 +1,10 @@
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from hattori.responses import json_dumps
 
 __all__ = ["StreamFormat", "SSE", "JSONL"]
+
+_T = TypeVar("_T")
 
 
 def _serialize_item(item: Any) -> str:
@@ -12,12 +14,12 @@ def _serialize_item(item: Any) -> str:
 class _StreamAlias:
     """Marker created by StreamFormat[ItemType]."""
 
-    def __init__(self, format_cls: type, item_type: type) -> None:
+    def __init__(self, format_cls: type[StreamFormat[Any]], item_type: type) -> None:
         self.format_cls = format_cls
         self.item_type = item_type
 
 
-class StreamFormat:
+class StreamFormat(Generic[_T]):
     """Base class for streaming formats. Extensible by users.
 
     Anything affecting the response status line or headers — status code,
@@ -51,7 +53,7 @@ class StreamFormat:
         return {}
 
 
-class JSONL(StreamFormat):
+class JSONL(StreamFormat, Generic[_T]):
     media_type = "application/jsonl"
 
     @classmethod
@@ -59,7 +61,7 @@ class JSONL(StreamFormat):
         return data + "\n"
 
 
-class SSE(StreamFormat):
+class SSE(StreamFormat, Generic[_T]):
     media_type = "text/event-stream"
 
     @classmethod

@@ -15,6 +15,32 @@ class AuthResult(Schema):
     auth: str
 
 
+def test_async_bearer_auth_called_once_without_warnings_in_sync_context(recwarn):
+    calls = []
+
+    class BearerAuth(HttpBearer):
+        def __call__(self, request):
+            calls.append("call")
+            return super().__call__(request)
+
+        async def authenticate(self, request, token):
+            calls.append("authenticate")
+            await asyncio.sleep(0)
+            return token
+
+    api = HattoriAPI(auth=BearerAuth())
+
+    @api.get("/sync")
+    def view(request) -> str:
+        return request.auth
+
+    response = TestClient(api).get("/sync", headers={"Authorization": "Bearer secret"})
+    assert response.status_code == 200
+    assert response.json() == "secret"
+    assert calls == ["call", "authenticate"]
+    assert not recwarn
+
+
 @pytest.mark.asyncio
 async def test_async_view_handles_async_auth_func():
     api = HattoriAPI()
