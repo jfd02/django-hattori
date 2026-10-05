@@ -246,7 +246,10 @@ class OpenAPISchema(dict):
                 # copy description from schema description to param description
                 if "description" in p_schema:
                     param["description"] = p_schema["description"]
-                if "examples" in p_schema:
+                # A parameter's `examples` is a map of named Example Objects.
+                # JSON Schema's own `examples` is a list of values, which is
+                # valid only where it already is, on the schema.
+                if isinstance(p_schema.get("examples"), dict):
                     param["examples"] = p_schema["examples"]
                 elif "example" in p_schema:
                     param["example"] = p_schema["example"]
@@ -621,6 +624,11 @@ def flatten_properties(
     elif "$ref" in prop_details:
         def_name = prop_details["$ref"].split("/")[-1]
         definition = definitions[def_name]
+        siblings = {k: v for k, v in prop_details.items() if k != "$ref"}
+        if siblings and "properties" not in definition:
+            # An enum (or other non-model) field: what the field declares beside
+            # the reference describes this parameter, not the shared definition.
+            definition = {**definition, **siblings}
         yield from flatten_properties(prop_name, definition, prop_required, definitions)
 
     elif "properties" in prop_details:
