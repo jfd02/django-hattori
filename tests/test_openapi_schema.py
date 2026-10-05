@@ -39,14 +39,20 @@ VALIDATION_ERROR_422 = {
 }
 
 
+HTTP_ERROR_RESPONSE = {
+    "properties": {"detail": {"title": "Detail", "type": "string"}},
+    "required": ["detail"],
+    "title": "HttpErrorResponse",
+    "type": "object",
+}
+
+
 PARSE_ERROR_400 = {
     "description": "Bad Request",
     "content": {
         "application/json": {
             "schema": {
-                "type": "object",
-                "properties": {"detail": {"type": "string"}},
-                "required": ["detail"],
+                "$ref": "#/components/schemas/HttpErrorResponse",
             }
         }
     },
@@ -344,6 +350,7 @@ def test_schema(schema):
             "title": "ValidationErrorResponse",
             "type": "object",
         },
+        "HttpErrorResponse": HTTP_ERROR_RESPONSE,
     }
 
 
@@ -496,6 +503,7 @@ def test_schema_list(schema):
             "title": "ValidationErrorResponse",
             "type": "object",
         },
+        "HttpErrorResponse": HTTP_ERROR_RESPONSE,
     }
 
 

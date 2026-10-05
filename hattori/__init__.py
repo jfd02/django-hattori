@@ -13,8 +13,11 @@ from pydantic import Field
 from hattori.errors import (
     ApiError,
     ErrorBody,
+    HttpErrorBody,
     ValidationErrorBody,
+    get_http_error_model,
     get_validation_error_model,
+    set_http_error_model,
     set_validation_error_model,
 )
 from hattori.files import UploadedFile
@@ -105,6 +108,7 @@ __all__ = [
     "NoContent",
     "ApiError",
     "ErrorBody",
+    "HttpErrorBody",
     "ValidationErrorBody",
     "EnumT",
     "HTTPError",
@@ -127,4 +131,6 @@ __all__ = [
     "get_default_error_body",
     "set_validation_error_model",
     "get_validation_error_model",
+    "set_http_error_model",
+    "get_http_error_model",
 ]

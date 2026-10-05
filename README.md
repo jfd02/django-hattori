@@ -346,6 +346,27 @@ set_validation_error_model(Problem)   # e.g. from AppConfig.ready()
 
 The default is `{"detail": [{"loc": [...], "msg": ..., "type": ...}]}`. `loc` describes the request — `["body", "email"]`, `["query", "count"]` — never the handler's argument names.
 
+### `HttpError` responses
+
+`HttpError` is what the framework raises itself; a request body that can't be parsed is an `HttpError(400)`, so every operation with a body documents a 400. That body is one model too: its schema is what OpenAPI documents, and its `from_error` is what the default handler sends.
+
+```python
+from http import HTTPStatus
+from hattori import HttpErrorBody, set_http_error_model
+
+class Problem(HttpErrorBody):
+    code: str
+    message: str
+
+    @classmethod
+    def from_error(cls, error):
+        return cls(code=HTTPStatus(error.status_code).name.lower(), message=str(error))
+
+set_http_error_model(Problem)   # e.g. from AppConfig.ready()
+```
+
+The default is `{"detail": "<message>"}`.
+
 ## Testing
 
 Hattori ships a lightweight test client that calls your endpoints in-process —
