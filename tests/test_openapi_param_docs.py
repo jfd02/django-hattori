@@ -74,3 +74,37 @@ def test_a_list_of_examples_stays_on_the_schema():
         assert parameter["schema"]["examples"] == [example]
         assert "examples" not in parameter
     assert _parameters()["report_id"]["description"] == "ID of the report."
+
+
+def test_named_examples_belong_only_on_the_parameter():
+    named_examples = {"monthly": {"summary": "Monthly report", "value": "monthly"}}
+
+    class Filters(Schema):
+        segment: Segment = Query(..., examples=named_examples)
+        other: Segment
+
+    api = HattoriAPI()
+
+    @api.get("/named")
+    def named(
+        request,
+        filters: Query[Filters],
+        limit: int = Query(1, examples={"one": {"value": 1}}),
+    ) -> str:
+        return ""
+
+    schema = api.get_openapi_schema()
+    parameters = {
+        p["name"]: p for p in schema["paths"]["/api/named"]["get"]["parameters"]
+    }
+    assert parameters["segment"]["examples"] == named_examples
+    assert parameters["limit"]["examples"] == {"one": {"value": 1}}
+    for name in ("segment", "other", "limit"):
+        assert "examples" not in parameters[name]["schema"]
+    # The reusable query model must also remain a valid JSON Schema.
+    assert (
+        "examples"
+        not in schema["components"]["schemas"]["Filters"]["properties"]["segment"]
+    )
+    assert "examples" not in schema["components"]["schemas"]["Segment"]
+    assert api.get_openapi_schema() == schema

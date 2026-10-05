@@ -3,6 +3,7 @@
 from enum import Enum
 from typing import Literal
 
+import pytest
 from pydantic import Field
 
 from hattori import ApiError, ErrorBody, HattoriAPI, NotFound, Router, Schema
@@ -136,3 +137,92 @@ def test_the_message_sent_is_unaffected():
         "message": "Item not found",
     }
     assert OtherItemNotFound().value.message == "No such item."
+
+
+@pytest.mark.parametrize("same_operation", [True, False])
+def test_same_named_errors_keep_their_examples_after_component_renaming(same_operation):
+    def make_error(wire_code, wording):
+        class Conflict(ApiError):
+            code = 409
+            error_code = wire_code
+            message = wording
+
+        return Conflict
+
+    first_error = make_error("first", "First conflict")
+    second_error = make_error("second", "Second conflict")
+    api = HattoriAPI()
+
+    if same_operation:
+
+        @api.get("/both")
+        def both(request) -> first_error | second_error:
+            return first_error()
+
+    else:
+
+        @api.get("/first")
+        def first(request) -> first_error:
+            return first_error()
+
+        @api.get("/second")
+        def second(request) -> second_error:
+            return second_error()
+
+    schemas = api.get_openapi_schema()["components"]["schemas"]
+    assert len(schemas) == 2
+    assert {
+        schema["properties"]["code"]["const"]: schema["properties"]["message"][
+            "examples"
+        ]
+        for schema in schemas.values()
+    } == {"first": ["First conflict"], "second": ["Second conflict"]}
+
+
+@pytest.mark.parametrize("alias_code", [True, False])
+def test_error_examples_follow_serialization_aliases(alias_code):
+    class AliasedBody(ErrorBody):
+        code: str = Field(serialization_alias="errorCode" if alias_code else None)
+        message: str = Field(serialization_alias="detail")
+
+    class AliasedError(ApiError, body=AliasedBody):
+        code = 400
+        error_code = "aliased"
+        message = "Something went wrong"
+
+    api = HattoriAPI()
+
+    @api.get("/plain", by_alias=False)
+    def plain(request) -> AliasedError:
+        return AliasedError()
+
+    @api.get("/aliased", by_alias=True)
+    def aliased(request) -> AliasedError:
+        return AliasedError()
+
+    schema = api.get_openapi_schema()
+    for path, field in (("plain", "message"), ("aliased", "detail")):
+        ref = schema["paths"][f"/api/{path}"]["get"]["responses"][400]["content"][
+            "application/json"
+        ]["schema"]["$ref"]
+        body = schema["components"]["schemas"][ref.rsplit("/", 1)[-1]]
+        assert body["properties"][field]["examples"] == [AliasedError.message]
+
+
+def test_explicit_error_message_examples_take_precedence():
+    class ExampleBody(ErrorBody):
+        message: str = Field(examples=["An explicit example"])
+
+    class ExampleError(ApiError, body=ExampleBody):
+        code = 400
+        error_code = "example"
+        message = "The declared message"
+
+    api = HattoriAPI()
+
+    @api.get("/example")
+    def example(request) -> ExampleError:
+        return ExampleError()
+
+    schema = api.get_openapi_schema()["components"]["schemas"]["ExampleError"]
+    assert schema["properties"]["message"]["examples"] == ["An explicit example"]

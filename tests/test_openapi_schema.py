@@ -861,17 +861,6 @@ def test_schema_deprecated_example_examples(schema):
                 "maxLength": 5,
                 "title": "Param3",
                 "type": "string",
-                "examples": {
-                    "invalid": {
-                        "summary": "Invalid data is rejected with an error",
-                        "value": "MoreThan5Length",
-                    },
-                    "normal": {
-                        "description": "A **normal** string works correctly.",
-                        "summary": "A normal example",
-                        "value": "Foo",
-                    },
-                },
             },
             "examples": {
                 "invalid": {

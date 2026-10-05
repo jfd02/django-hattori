@@ -5,7 +5,7 @@ from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic.fields import FieldInfo
-from pydantic.json_schema import JsonSchemaMode
+from pydantic.json_schema import JsonSchemaMode, models_json_schema
 
 from hattori.compatibility.util import UNION_TYPES
 from hattori.errors import ConfigError, ErrorBody, get_validation_error_model
@@ -87,9 +87,7 @@ class OpenAPISchema(dict):
         self.securitySchemes: dict[str, Any] = {}
         self.all_operation_ids: set = set()
         self._validation_error_title: str | None = None
-        # component name -> the name its model declared, before any renaming
-        self._declared_names: dict[str, str] = {}
-        # (declared name, error code) -> the message that error class declares
+        # (final component name, serialized message field) -> declared message
         self._error_messages: dict[tuple[str, str], str] = {}
         extra_info = api.openapi_extra.get("info", {})
         super().__init__([
@@ -222,9 +220,6 @@ class OpenAPISchema(dict):
         required = set(schema.get("required", []))
         properties = schema["properties"]
 
-        if "$defs" in schema:
-            self.add_schema_definitions(schema["$defs"])
-
         for name, details in properties.items():
             is_required = name in required
             p_name: str
@@ -255,12 +250,23 @@ class OpenAPISchema(dict):
                 # valid only where it already is, on the schema.
                 if isinstance(p_schema.get("examples"), dict):
                     param["examples"] = p_schema["examples"]
+                    param["schema"] = {
+                        key: value
+                        for key, value in p_schema.items()
+                        if key != "examples"
+                    }
                 elif "example" in p_schema:
                     param["example"] = p_schema["example"]
                 if "deprecated" in p_schema:
                     param["deprecated"] = p_schema["deprecated"]
 
                 result.append(param)
+
+        # Extract first: named examples may live on fields of shared query
+        # models, which must not retain the parameter-only map either.
+        strip_named_examples(schema)
+        if "$defs" in schema:
+            self.add_schema_definitions(schema["$defs"])
 
         return result
 
@@ -283,9 +289,27 @@ class OpenAPISchema(dict):
         remove_level: bool = True,
         mode: JsonSchemaMode = "validation",
         ref_name_suffix: str = "",
+        error_models: tuple[type[ErrorBody], ...] = (),
     ) -> tuple[dict[str, Any], bool]:
+        error_refs: dict[type[ErrorBody], str] = {}
         if hasattr(model, "__hattori_flatten_map__"):
             schema = self._flatten_schema(model)
+        elif error_models:
+            # Generate together to get Pydantic's actual refs, including its
+            # qualified names when multiple models share a Python class name.
+            refs, definitions = models_json_schema(
+                [(model, mode), *((error, mode) for error in error_models)],
+                ref_template=REF_TEMPLATE,
+                by_alias=by_alias,
+                schema_generator=HattoriGenerateJsonSchema,
+            )
+            root_name = refs[(model, mode)]["$ref"].rsplit("/", 1)[-1]
+            schema = definitions["$defs"].pop(root_name)
+            schema["$defs"] = definitions["$defs"]
+            error_refs = {
+                error: refs[(error, mode)]["$ref"].rsplit("/", 1)[-1]
+                for error in error_models
+            }
         else:
             schema = model.model_json_schema(
                 ref_template=REF_TEMPLATE,
@@ -300,6 +324,18 @@ class OpenAPISchema(dict):
                 schema.pop("$defs"), ref_name_suffix=ref_name_suffix
             )
             self.rename_schema_refs(schema, ref_renames)
+            for body, name in error_refs.items():
+                error = body.__hattori_error__
+                message = getattr(error, "message", "")
+                if message:
+                    field = body.model_fields["message"]
+                    field_name = (
+                        field.serialization_alias or "message"
+                        if by_alias
+                        else "message"
+                    )
+                    key = (ref_renames.get(name, name), field_name)
+                    self._error_messages.setdefault(key, message)
 
         if remove_level and len(schema["properties"]) == 1:
             name, details = list(schema["properties"].items())[0]
@@ -366,7 +402,6 @@ class OpenAPISchema(dict):
             description = HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
-                self._note_error_messages(model.model_fields["response"].annotation)
                 # ::TODO:: test this: by_alias == True
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""
                 schema = self._create_schema_from_model(
@@ -374,6 +409,11 @@ class OpenAPISchema(dict):
                     by_alias=operation.by_alias,
                     mode="serialization",
                     ref_name_suffix=ref_name_suffix,
+                    error_models=tuple(
+                        self._error_body_models(
+                            model.model_fields["response"].annotation
+                        )
+                    ),
                 )[0]
                 self._prefer_one_of_for_const_property_union(schema, "code")
                 # Only the streamed body carries the stream media type. Other
@@ -470,15 +510,12 @@ class OpenAPISchema(dict):
             candidate = f"{name}_{index}"
         return candidate
 
-    def _note_error_messages(self, annotation: Any) -> None:
+    def _error_body_models(self, annotation: Any) -> Generator[type[ErrorBody]]:
         if isinstance(annotation, type) and issubclass(annotation, ErrorBody):
-            error = annotation.__hattori_error__
-            message = getattr(error, "message", "")
-            if error is not None and message:
-                key = (annotation.__name__, error.error_code)
-                self._error_messages.setdefault(key, message)
+            if annotation.__hattori_error__ is not None:
+                yield annotation
         for arg in get_args(annotation):
-            self._note_error_messages(arg)
+            yield from self._error_body_models(arg)
 
     def _document_error_messages(self) -> None:
         """Show each error's declared message as the example of its ``message``.
@@ -487,14 +524,9 @@ class OpenAPISchema(dict):
         model itself would make two same-named errors that differ only in
         wording into different schemas, and one of them would be renamed.
         """
-        for name, schema in self.schemas.items():
-            code = self._schema_const_property_value(schema, "code")
-            if code is None:
-                continue
-            declared_name = self._declared_names.get(name, name)
-            message = self._error_messages.get((declared_name, code))
-            message_schema = schema["properties"].get("message")
-            if message and isinstance(message_schema, dict):
+        for (name, field_name), message in self._error_messages.items():
+            message_schema = self.schemas[name].get("properties", {}).get(field_name)
+            if isinstance(message_schema, dict):
                 message_schema.setdefault("examples", [message])
 
     def get_components(self) -> dict[str, Any]:
@@ -611,7 +643,6 @@ class OpenAPISchema(dict):
         for name, schema in incoming.items():
             final_name = ref_renames[name] if name in ref_renames else name
             self.schemas[final_name] = schema
-            self._declared_names[final_name] = name
 
         return ref_renames
 
@@ -624,6 +655,35 @@ class OpenAPISchema(dict):
             index += 1
             candidate = f"{name}{suffix}_{index}" if suffix else f"{name}_{index}"
         return candidate
+
+
+def strip_named_examples(schema: dict[str, Any]) -> None:
+    """Remove parameter example maps from schemas, without traversing payloads."""
+    if isinstance(schema.get("examples"), dict):
+        del schema["examples"]
+    for keyword in ("properties", "patternProperties", "$defs", "dependentSchemas"):
+        for child in schema.get(keyword, {}).values():
+            if isinstance(child, dict):
+                strip_named_examples(child)
+    for keyword in ("allOf", "anyOf", "oneOf", "prefixItems"):
+        for child in schema.get(keyword, []):
+            if isinstance(child, dict):
+                strip_named_examples(child)
+    for keyword in (
+        "items",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    ):
+        child = schema.get(keyword)
+        if isinstance(child, dict):
+            strip_named_examples(child)
 
 
 def flatten_properties(
