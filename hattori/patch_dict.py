@@ -11,7 +11,6 @@ from typing import (
 from pydantic_core import core_schema
 
 from hattori import Body
-from hattori.utils import is_optional_type
 
 __all__ = ["PatchDict", "PatchName", "create_patch_schema"]
 
@@ -52,24 +51,26 @@ class ModelToDict(dict):
 def create_patch_schema(
     schema_cls: type[Any], *, name: str | None = None
 ) -> type[ModelToDict]:
-    """Build the all-optional ``dict``-producing model behind ``PatchDict``.
+    """Build the all-omittable ``dict``-producing model behind ``PatchDict``.
 
     ``name`` overrides the generated model's name (and so its OpenAPI
     component name), which otherwise defaults to ``f"{schema_cls.__name__}Patch"``.
     """
     values, annotations = {}, {}
     for f, model_field in schema_cls.model_fields.items():
-        # Use the annotation pydantic already resolved rather than the raw
-        # ``__annotations__`` value, which under ``from __future__ import
-        # annotations`` (PEP 563) is a *string* — and ``"str" | None`` raises.
-        t = model_field.annotation
         field_info = copy(model_field)
+        # A default makes the field omittable without widening its type, so an
+        # explicit ``null`` is still rejected unless the source schema allows
+        # it. The default itself is never validated or seen: it would fail a
+        # non-nullable annotation, and ``exclude_unset`` drops it on dump.
         field_info.default = None
         field_info.default_factory = None
+        field_info.validate_default = False
         values[f] = field_info
-        # Already-nullable fields keep their annotation; non-nullable ones are
-        # widened. Either way the default is cleared so every field is optional.
-        annotations[f] = t if is_optional_type(t) else t | None
+        # Use the annotation pydantic already resolved rather than the raw
+        # ``__annotations__`` value, which under ``from __future__ import
+        # annotations`` (PEP 563) is a *string*.
+        annotations[f] = model_field.annotation
     values["__annotations__"] = annotations
     schema_name = name if name is not None else f"{schema_cls.__name__}Patch"
     OptionalSchema = type(schema_name, (schema_cls,), values)
