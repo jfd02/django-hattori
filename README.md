@@ -385,6 +385,10 @@ client.post("/avatar", FILES={"file": SimpleUploadedFile("a.png", b"...")})
 client.get("/dashboard", user=some_user)
 ```
 
+Requests also include the resolved route in `request.resolver_match`, an async
+`request.auser()` returning `request.user`, and a fresh dictionary for
+`request.session`. Pass `session=` or `auser=` to override those defaults.
+
 The response exposes `.status_code`, `.json()`, `.content`, and proxies header
 access (`resp["Content-Type"]`).
 

@@ -37,55 +37,14 @@ class HattoriClientBase:
         self.router_or_app = router_or_app
         self._factory = RequestFactory()
 
-    def get(
-        self, path: str, data: dict | None = None, **request_params: Any
-    ) -> HattoriTestResponse:
-        return self.request("GET", path, data, **request_params)
-
-    def post(
-        self,
-        path: str,
-        data: dict | None = None,
-        json: Any = None,
-        **request_params: Any,
-    ) -> HattoriTestResponse:
-        return self.request("POST", path, data, json, **request_params)
-
-    def patch(
-        self,
-        path: str,
-        data: dict | None = None,
-        json: Any = None,
-        **request_params: Any,
-    ) -> HattoriTestResponse:
-        return self.request("PATCH", path, data, json, **request_params)
-
-    def put(
-        self,
-        path: str,
-        data: dict | None = None,
-        json: Any = None,
-        **request_params: Any,
-    ) -> HattoriTestResponse:
-        return self.request("PUT", path, data, json, **request_params)
-
-    def delete(
-        self,
-        path: str,
-        data: dict | None = None,
-        json: Any = None,
-        **request_params: Any,
-    ) -> HattoriTestResponse:
-        return self.request("DELETE", path, data, json, **request_params)
-
-    def request(
+    def _prepare_request(
         self,
         method: str,
         path: str,
         data: dict | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> HattoriTestResponse:
+    ) -> tuple[Callable, HttpRequest, dict]:
         if json is not None:
             request_params["body"] = json_dumps(json)
         if data is None:
@@ -100,8 +59,7 @@ class HattoriClientBase:
                 **self.cookies,
                 **request_params.get("COOKIES", {}),
             }
-        func, request, kwargs = self._resolve(method, path, data, request_params)
-        return self._call(func, request, kwargs)  # type: ignore
+        return self._resolve(method, path, data, request_params)
 
     @property
     def urls(self) -> list:
@@ -125,6 +83,7 @@ class HattoriClientBase:
             match = url.resolve(url_path)
             if match:
                 request = self._build_request(method, path, data, request_params)
+                request.resolver_match = match
                 return match.func, request, match.kwargs
         raise Exception(f'Cannot resolve "{path}"')
 
@@ -209,6 +168,12 @@ class HattoriClientBase:
         request.COOKIES = request_params.pop("COOKIES", {})
         request.auth = None  # type: ignore[attr-defined]
         request.user = request_params.pop("user", None) or AnonymousUser()
+        request.session = {}  # type: ignore[assignment]
+
+        async def auser() -> Any:
+            return request.user
+
+        request.auser = auser
         request._dont_enforce_csrf_checks = True  # type: ignore[attr-defined]
         request.build_absolute_uri = build_absolute_uri  # type: ignore[method-assign]
 
@@ -223,6 +188,60 @@ class HattoriClientBase:
 
 
 class TestClient(HattoriClientBase):
+    def get(
+        self, path: str, data: dict | None = None, **request_params: Any
+    ) -> HattoriTestResponse:
+        return self.request("GET", path, data, **request_params)
+
+    def post(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return self.request("POST", path, data, json, **request_params)
+
+    def patch(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return self.request("PATCH", path, data, json, **request_params)
+
+    def put(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return self.request("PUT", path, data, json, **request_params)
+
+    def delete(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return self.request("DELETE", path, data, json, **request_params)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        func, request, kwargs = self._prepare_request(
+            method, path, data, json, **request_params
+        )
+        return self._call(func, request, kwargs)
+
     def _call(
         self, func: Callable, request: HttpRequest, kwargs: dict
     ) -> HattoriTestResponse:
@@ -230,6 +249,60 @@ class TestClient(HattoriClientBase):
 
 
 class TestAsyncClient(HattoriClientBase):
+    async def get(
+        self, path: str, data: dict | None = None, **request_params: Any
+    ) -> HattoriTestResponse:
+        return await self.request("GET", path, data, **request_params)
+
+    async def post(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return await self.request("POST", path, data, json, **request_params)
+
+    async def patch(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return await self.request("PATCH", path, data, json, **request_params)
+
+    async def put(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return await self.request("PUT", path, data, json, **request_params)
+
+    async def delete(
+        self,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        return await self.request("DELETE", path, data, json, **request_params)
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        data: dict | None = None,
+        json: Any = None,
+        **request_params: Any,
+    ) -> HattoriTestResponse:
+        func, request, kwargs = self._prepare_request(
+            method, path, data, json, **request_params
+        )
+        return await self._call(func, request, kwargs)
+
     async def _call(
         self, func: Callable, request: HttpRequest, kwargs: dict
     ) -> HattoriTestResponse:

@@ -1,3 +1,4 @@
+from base64 import b64encode
 from unittest.mock import Mock
 
 import pytest
@@ -18,6 +19,19 @@ from hattori.security import (
 from hattori.security.base import AuthBase
 from hattori.testing import TestClient
 from hattori.testing.client import TestAsyncClient
+
+
+@pytest.mark.parametrize(
+    "username,password",
+    [
+        ("user%20name", "top%20secret"),
+        ("user%40example.com", "abc%2Fxyz"),
+        ("üser", "pass:word+%25"),
+    ],
+)
+def test_basic_auth_preserves_literal_credentials(username, password):
+    encoded = b64encode(f"{username}:{password}".encode()).decode()
+    assert BasicAuth().decode_authorization(f"Basic {encoded}") == (username, password)
 
 
 def callable_auth(request):
