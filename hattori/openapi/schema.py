@@ -535,23 +535,41 @@ class OpenAPISchema(dict):
                     }
             result.update(details)
 
+        if any(m.__hattori_param_source__ == "body" for m in operation.models):
+            # JSON decoding fails before Pydantic validation. Preserve explicitly
+            # declared 400 responses alongside the framework's HttpError body.
+            self._add_response_schema(
+                result,
+                400,
+                {
+                    "type": "object",
+                    "properties": {"detail": {"type": "string"}},
+                    "required": ["detail"],
+                },
+            )
+
         if operation.models and self._can_fail_validation(operation):
             validation_schema = {
                 "$ref": REF_TEMPLATE.format(model=self._get_validation_error_title())
             }
-            response = result.setdefault(422, {"description": HTTP_STATUS_PHRASES[422]})
-            media = response.setdefault("content", {}).setdefault(
-                self.api.renderer.media_type, {}
-            )
-            existing = media.get("schema")
-            if existing is None or existing == validation_schema:
-                media["schema"] = validation_schema
-            else:
-                # Validation errors need not have a constant `code`, so keep
-                # any discriminator local to the explicitly declared union.
-                media["schema"] = {"anyOf": [existing, validation_schema]}
+            self._add_response_schema(result, 422, validation_schema)
 
         return result
+
+    def _add_response_schema(self, result: dict, status: int, schema: dict) -> None:
+        response = result.setdefault(
+            status, {"description": HTTP_STATUS_PHRASES[status]}
+        )
+        media = response.setdefault("content", {}).setdefault(
+            self.api.renderer.media_type, {}
+        )
+        existing = media.get("schema")
+        # Keep discriminators local to explicitly declared error unions.
+        media["schema"] = (
+            schema
+            if existing is None or existing == schema
+            else {"anyOf": [existing, schema]}
+        )
 
     def _can_fail_validation(self, operation: Operation) -> bool:
         """Whether this operation can actually return a 422.

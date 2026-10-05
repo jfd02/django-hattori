@@ -39,6 +39,20 @@ VALIDATION_ERROR_422 = {
 }
 
 
+PARSE_ERROR_400 = {
+    "description": "Bad Request",
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {"detail": {"type": "string"}},
+                "required": ["detail"],
+            }
+        }
+    },
+}
+
+
 class Payload(Schema):
     i: int
     f: float
@@ -256,6 +270,7 @@ def test_schema(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
     assert schema.schemas == {
@@ -350,6 +365,7 @@ def test_schema_alias(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
     # ::TODO:: this is currently broken if not all responses for same schema use the same by_alias
@@ -405,6 +421,7 @@ def test_schema_list(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -510,6 +527,7 @@ def test_schema_body(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -532,6 +550,7 @@ def test_schema_body_schema(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -697,6 +716,7 @@ def test_schema_form_body(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -770,6 +790,7 @@ def test_schema_body_file(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 

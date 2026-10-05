@@ -14,6 +14,40 @@ from hattori.testing import TestClient
 from tests.openapi_contract import export_contract, resolve, validate_response
 
 
+@pytest.mark.parametrize("custom_error", [False, True])
+def test_json_parse_errors_are_documented_alongside_declared_400(custom_error):
+    class BadRequest(ApiError):
+        code = 400
+        error_code = "bad_request"
+        message = "Rejected"
+
+    api = HattoriAPI()
+    response_type = int | BadRequest if custom_error else int
+
+    @api.post("/body")
+    def body(request, value: int = Body(...)) -> response_type:
+        return BadRequest() if custom_error else value
+
+    document = export_contract(api)
+    client = TestClient(api)
+    malformed = client.post("/body", body=b"{")
+    assert malformed.status_code == 400
+    validate_response(document, "/api/body", malformed, method="post")
+    validate_response(
+        document, "/api/body", client.post("/body", json=1), method="post"
+    )
+
+
+def test_non_json_operations_do_not_document_json_parse_errors():
+    api = HattoriAPI()
+
+    @api.post("/form")
+    def form(request, text: str = Form(...)) -> str:
+        return text
+
+    assert "400" not in export_contract(api)["paths"]["/api/form"]["post"]["responses"]
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 def test_nullable_query_enum_collisions(reverse):
     first = Enum("Choice", {"A": "a", "B": "b"}, type=str)

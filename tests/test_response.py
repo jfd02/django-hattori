@@ -1,5 +1,6 @@
 import json
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from ipaddress import IPv4Address, IPv6Address
@@ -12,10 +13,71 @@ from pydantic import BaseModel, HttpUrl, ValidationError
 from pydantic_core import Url
 
 from hattori import Router
-from hattori.responses import JsonResponse, json_default
+from hattori.responses import JsonResponse, json_default, json_dumps
 from hattori.testing import TestClient
 
 router = Router()
+
+
+@pytest.mark.parametrize("value", [-(2**64), -(2**63) - 1, 2**64, 10**100])
+def test_large_integers_preserve_precision_and_other_json_encodings(value):
+    class Model(BaseModel):
+        number: int
+
+    @dataclass
+    class Record:
+        number: int
+        _private: str = "not serialized by orjson"
+
+    payload = {
+        "values": [value, {"nested": value}, (value,)],
+        "model": Model(number=value),
+        "record": Record(number=value),
+        "date": datetime(2026, 1, 1, tzinfo=UTC),
+        "decimal": Decimal("1.25"),
+        "keys": {value: value, True: False},
+    }
+    assert json.loads(json_dumps(payload)) == {
+        "values": [value, {"nested": value}, [value]],
+        "model": {"number": value},
+        "record": {"number": value},
+        "date": "2026-01-01T00:00:00Z",
+        "decimal": "1.25",
+        "keys": {str(value): value, "true": False},
+    }
+
+
+def test_large_integer_response_through_http():
+    from hattori import HattoriAPI
+
+    api = HattoriAPI()
+
+    @api.get("/integer")
+    def integer(request, value: int) -> list[int]:
+        return [value]
+
+    value = 2**80 + 1
+    response = TestClient(api).get(f"/integer?value={value}")
+    assert response.status_code == 200
+    assert json.loads(response.content) == [value]
+
+
+def test_json_encoding_still_rejects_unsupported_objects():
+    with pytest.raises(TypeError):
+        json_dumps(object())
+    with pytest.raises(TypeError):
+        json_dumps([2**80, object()])
+
+
+def test_large_integer_subclasses_cannot_inject_json():
+    class Integer(int):
+        def __str__(self):
+            return "null"
+
+    value = 2**80
+    assert json.loads(json_dumps({Integer(value): Integer(value)})) == {
+        str(value): value
+    }
 
 
 @router.get("/check_int")

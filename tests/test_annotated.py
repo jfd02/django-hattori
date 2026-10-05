@@ -261,6 +261,18 @@ def test_openapi_schema():
                             }
                         },
                     },
+                    400: {
+                        "description": "Bad Request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"detail": {"type": "string"}},
+                                    "required": ["detail"],
+                                }
+                            }
+                        },
+                    },
                     422: VALIDATION_ERROR_422,
                 },
                 "requestBody": {

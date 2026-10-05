@@ -1,3 +1,4 @@
+from dataclasses import fields, is_dataclass
 from datetime import timedelta
 from decimal import Decimal
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
@@ -138,7 +139,42 @@ def json_default(obj: Any) -> Any:
 
 
 def json_dumps(data: Any) -> bytes:
-    return orjson.dumps(data, default=json_default, option=JSON_OPT)
+    try:
+        return orjson.dumps(data, default=json_default, option=JSON_OPT)
+    except TypeError as exc:
+        if str(exc) not in {
+            "Integer exceeds 64-bit range",
+            "Dict integer key must be within 64-bit range",
+        }:
+            raise
+        # JSON Schema integers and Python ints have no 64-bit limit. Retain
+        # orjson's encoding for other values, using raw JSON only for large ints.
+        return orjson.dumps(
+            _preserve_large_integers(data),
+            default=lambda obj: _preserve_large_integers(json_default(obj)),
+            option=JSON_OPT,
+        )
+
+
+def _preserve_large_integers(data: Any) -> Any:
+    if isinstance(data, int) and not -(2**63) <= data < 2**64:
+        return orjson.Fragment(str(int(data)).encode())
+    if isinstance(data, dict):
+        return {
+            str(int(key))
+            if isinstance(key, int) and not -(2**63) <= key < 2**64
+            else key: _preserve_large_integers(value)
+            for key, value in data.items()
+        }
+    if isinstance(data, (list, tuple)):
+        return [_preserve_large_integers(value) for value in data]
+    if is_dataclass(data) and not isinstance(data, type):
+        return {
+            field.name: _preserve_large_integers(getattr(data, field.name))
+            for field in fields(data)
+            if not field.name.startswith("_")
+        }
+    return data
 
 
 def json_loads(data: Any) -> Any:

@@ -442,7 +442,26 @@ colliding component names, route orders, nullable query schemas, aliases,
 serialization options, and error unions. Each generated API must export a valid
 contract and its responses must satisfy that contract. The normal profile tries
 40 examples per property; `make test-openapi-deep` raises that to 500 and prints
-search statistics.
+search statistics for both the model properties and HTTP tests.
+
+`make test-openapi-http` runs Schemathesis against a stateless fixture API on
+pytest-django's temporary local HTTP server, including middleware and URL routing.
+It reads the served OpenAPI document and generates valid and invalid requests for JSON bodies,
+discriminated unions, path and query parameters, CSV and repeated arrays, forms,
+uploads, typed errors, and async views. Checks cover server errors, documented
+statuses, content types, response schemas, valid-input acceptance, and invalid-input
+rejection. This suite is also included in `make test-openapi` and normal CI runs;
+it starts and stops its own server and needs no external database. Django's request
+lifecycle uses the test database, but the fixture endpoints are stateless.
+The normal fuzzing budget is 40 examples per operation; schema examples and
+boundary cases run in addition.
+
+The fixture's strict JSON models reject coercions, with integral floats accepted
+to match JSON Schema's integer semantics. Multipart invalid-input rejection is
+checked explicitly for missing files: generated non-string fields can become
+valid strings during multipart encoding, so that one automatic check is disabled
+for the upload endpoint. Its response and valid-input checks remain enabled.
+Add representative routes to `tests/schemathesis_app.py` as features grow.
 
 Hypothesis shrinks a failure to a small counterexample and saves it locally in
 `.hypothesis/` for replay. Keep newly discovered bugs as explicit regression
