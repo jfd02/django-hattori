@@ -1,6 +1,7 @@
 import logging
 import traceback
 from copy import deepcopy
+from dataclasses import replace
 from functools import partial
 from typing import (
     TYPE_CHECKING,
@@ -231,9 +232,14 @@ def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
     base = resolve_error_body_base(error)
     code_field = deepcopy(base.model_fields["code"])
     # Literal already restricts both the value and its type; Pydantic cannot
-    # apply a str field's Strict metadata to a literal schema.
+    # apply a str field's Strict metadata to a literal schema. A fixed code
+    # must also bypass string normalization, which could change its value.
     code_field.metadata = [
-        item for item in code_field.metadata if not isinstance(item, pydantic.Strict)
+        replace(item, strict=None, to_upper=None, to_lower=None, strip_whitespace=None)
+        if isinstance(item, pydantic.StringConstraints)
+        else item
+        for item in code_field.metadata
+        if not isinstance(item, pydantic.Strict)
     ]
     body: type[ErrorBody] = pydantic.create_model(
         error.__name__,

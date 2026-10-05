@@ -3,12 +3,20 @@
 from decimal import Decimal
 from functools import reduce
 from operator import or_
+from typing import Annotated
 from urllib.parse import urlencode
 
 from hypothesis import given
 from hypothesis import strategies as st
 from jsonschema import Draft202012Validator
-from pydantic import ConfigDict, Field, create_model, field_serializer
+from pydantic import (
+    ConfigDict,
+    Field,
+    StringConstraints,
+    create_model,
+    field_serializer,
+    field_validator,
+)
 
 from hattori import ApiError, ErrorBody, HattoriAPI, Query, Schema
 from hattori.testing import TestClient
@@ -138,6 +146,7 @@ def test_query_schema_parameters_describe_the_values_runtime_accepts(
     defaulted=st.booleans(),
     omit_default=st.booleans(),
     json_serializer=st.booleans(),
+    plain_validator=st.booleans(),
     by_alias=st.booleans(),
     alias=WIRE_NAMES,
     flags=st.tuples(st.booleans(), st.booleans(), st.booleans()),
@@ -151,6 +160,7 @@ def test_serialized_responses_match_their_schema(
     defaulted,
     omit_default,
     json_serializer,
+    plain_validator,
     by_alias,
     alias,
     flags,
@@ -167,6 +177,14 @@ def test_serialized_responses_match_their_schema(
         if use_null:
             sample = None
     validators = {}
+    if plain_validator and kind == "integer":
+
+        @field_validator("value", mode="plain")
+        @classmethod
+        def validate_value(cls, value):
+            return value
+
+        validators["validate_value"] = validate_value
     if json_serializer:
 
         @field_serializer("value", when_used="json")
@@ -210,15 +228,16 @@ def test_serialized_responses_match_their_schema(
     alias=WIRE_NAMES,
     strict=st.booleans(),
     validation_alias=st.booleans(),
+    normalize=st.booleans(),
 )
 def test_error_unions_document_every_runtime_variant(
-    errors, by_alias, alias, strict, validation_alias
+    errors, by_alias, alias, strict, validation_alias, normalize
 ):
     body = create_model(
         "Body",
         __base__=ErrorBody,
         code=(
-            str,
+            Annotated[str, StringConstraints(strict=strict, to_upper=normalize)],
             Field(strict=strict, alias="error_code" if validation_alias else None),
         ),
         message=(
@@ -249,5 +268,8 @@ def test_error_unions_document_every_runtime_variant(
     document = export_contract(api)
     client = TestClient(api)
     for index in range(len(variants)):
-        validate_response(document, "/api/error", client.get(f"/error?index={index}"))
+        response = client.get(f"/error?index={index}")
+        code_field = "error_code" if by_alias and validation_alias else "code"
+        assert response.json()[code_field] == f"error_{index}"
+        validate_response(document, "/api/error", response)
     validate_response(document, "/api/error", client.get("/error?index=invalid"))

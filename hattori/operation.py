@@ -1,6 +1,7 @@
 import collections.abc
 import inspect
 from collections.abc import Callable
+from functools import partial
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -33,8 +34,8 @@ from hattori.errors import (
     ValidationErrorContext,
 )
 from hattori.params.models import TModels
-from hattori.responses import APIReturn, resolve_api_return_schema
-from hattori.schema import Schema
+from hattori.responses import APIReturn, json_default, resolve_api_return_schema
+from hattori.schema import Schema, pydantic_version
 from hattori.signature import ViewSignature
 from hattori.streaming import StreamFormat, _serialize_item, _StreamAlias
 from hattori.utils import is_async_callable
@@ -454,18 +455,44 @@ class Operation:
             if db.settings_dict.get("ATOMIC_REQUESTS") and db.in_atomic_block:
                 transaction.set_rollback(True, using=db.alias)
 
-    def _dump_model(self, model: BaseModel, ctx: dict[str, Any]) -> dict[str, Any]:
-        return model.model_dump(
-            mode=(
-                "json"
-                if self.stream_format is not None
-                else getattr(self.api.renderer, "serialization_mode", "python")
-            ),
+    def _dump_model(
+        self, model: BaseModel, ctx: dict[str, Any], *, stream: bool = False
+    ) -> dict[str, Any]:
+        mode = (
+            "json"
+            if stream
+            else getattr(self.api.renderer, "serialization_mode", "python")
+        )
+        dump = model.model_dump
+        extra: dict[str, Any] = {}
+        default_dump = type(model).model_dump is BaseModel.model_dump
+        if mode == "json":
+            if pydantic_version >= [2, 11]:
+                parameters = (
+                    inspect.signature(dump).parameters if not default_dump else {}
+                )
+                if (
+                    default_dump
+                    or "fallback" in parameters
+                    or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in parameters.values()
+                    )
+                ):
+                    extra["fallback"] = json_default
+            elif default_dump:
+                # Older model_dump versions do not expose fallback. Only use
+                # the core serializer when there is no user override to honor.
+                dump = partial(model.__pydantic_serializer__.to_python, model)
+                extra["fallback"] = json_default
+        return dump(
+            mode=mode,
             context=ctx,
             by_alias=self.by_alias,
             exclude_unset=self.exclude_unset,
             exclude_defaults=self.exclude_defaults,
             exclude_none=self.exclude_none,
+            **extra,
         )
 
     def _copy_temporal_response(
@@ -499,7 +526,7 @@ class Operation:
             {"response": item}, context=ctx
         )
 
-        result = self._dump_model(validated, ctx)["response"]
+        result = self._dump_model(validated, ctx, stream=True)["response"]
         return _serialize_item(result)
 
     def _stream_response(

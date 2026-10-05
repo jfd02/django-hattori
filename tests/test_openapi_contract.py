@@ -1,17 +1,119 @@
 """Validate exported OpenAPI and exercise the contracts against actual responses."""
 
+from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import ConfigDict, Field, computed_field, create_model, field_serializer
+from pydantic import (
+    ConfigDict,
+    Field,
+    Json,
+    computed_field,
+    create_model,
+    field_serializer,
+    field_validator,
+)
 
 from hattori import ApiError, Body, File, Form, HattoriAPI, Path, Query, Schema
 from hattori.errors import ConfigError
 from hattori.files import UploadedFile
 from hattori.testing import TestClient
 from tests.openapi_contract import export_contract, resolve, validate_response
+
+
+@pytest.mark.parametrize("annotation", [Json, Json[str | None]])
+def test_exclude_none_with_decoded_json_field(annotation):
+    class Payload(Schema):
+        value: annotation
+
+    api = HattoriAPI()
+
+    @api.get("/value", exclude_none=True)
+    def view(request) -> Payload:
+        return Payload(value="null")
+
+    document = export_contract(api)
+    response = TestClient(api).get("/value")
+    assert response.json() == {}
+    validate_response(document, "/api/value", response)
+
+
+@pytest.mark.parametrize("serialize_field", [False, True])
+@pytest.mark.parametrize("as_instance", [False, True])
+def test_exclude_none_with_plain_field_validator(serialize_field, as_instance):
+    class Payload(Schema):
+        value: str | None
+
+        @field_validator("value", mode="plain")
+        @classmethod
+        def parse(cls, value):
+            return None if value == "" else value
+
+        if serialize_field:
+
+            @field_serializer("value")
+            def serialize_value(self, value) -> str:
+                return value or "missing"
+
+    api = HattoriAPI()
+
+    @api.get("/value", exclude_none=True)
+    def view(request) -> Payload:
+        return Payload(value="") if as_instance else {"value": ""}
+
+    document = export_contract(api)
+    response = TestClient(api).get("/value")
+    assert response.json() == {}
+    validate_response(document, "/api/value", response)
+
+
+@pytest.mark.parametrize("as_dataclass", [False, True])
+@pytest.mark.parametrize("by_alias", [False, True])
+@pytest.mark.parametrize("serialize_field", [False, True])
+def test_exclude_none_with_nullable_type_aliases(
+    as_dataclass, by_alias, serialize_field
+):
+    type Nullable = str | None
+
+    class Fields:
+        value: Nullable = Field(serialization_alias="wireValue")
+
+        if serialize_field:
+
+            @field_serializer("value")
+            def serialize_value(self, value) -> str:
+                return value or "missing"
+
+    if as_dataclass:
+        Payload = dataclass(Fields)
+    else:
+
+        class Payload(Fields, Schema):
+            pass
+
+    api = HattoriAPI()
+
+    @api.get("/full", by_alias=by_alias)
+    def full(request) -> Payload:
+        return Payload(value=None)
+
+    @api.get("/excluded", exclude_none=True, by_alias=by_alias)
+    def excluded(request) -> Payload:
+        return Payload(value=None)
+
+    document = export_contract(api)
+    client = TestClient(api)
+    for path in ("full", "excluded"):
+        response = client.get(f"/{path}")
+        expected = "missing" if serialize_field else None
+        assert response.json() == (
+            {}
+            if path == "excluded"
+            else {"wireValue" if by_alias else "value": expected}
+        )
+        validate_response(document, f"/api/{path}", response)
 
 
 @pytest.mark.parametrize("custom_error", [False, True])

@@ -7,7 +7,9 @@ the renderer's media type — not ``application/jsonl`` / ``text/event-stream``.
 from collections.abc import Iterator
 
 from hattori import JSONL, APIReturn, HattoriAPI, Schema
+from hattori.renderers import BaseRenderer
 from hattori.security import HttpBearer
+from hattori.testing import TestClient
 
 
 class Item(Schema):
@@ -25,6 +27,40 @@ class BadToken(APIReturn[AuthErr]):
 class Bearer(HttpBearer):
     def authenticate(self, request, token) -> object | BadToken:
         return {"u": 1}
+
+
+def test_streaming_auth_errors_use_the_renderers_serialization_mode():
+    class ErrorPayload(Schema):
+        values: set[int]
+
+    class Rejected(APIReturn[ErrorPayload]):
+        code = 401
+
+    class Auth(HttpBearer):
+        def authenticate(self, request, token) -> object | Rejected:
+            return object() if token == "ok" else Rejected(ErrorPayload(values={1}))
+
+    class PythonRenderer(BaseRenderer):
+        media_type = "text/plain"
+
+        def render(self, request, data, *, response_status):
+            assert response_status == 401
+            assert data == {"values": {1}}
+            return "Rejected"
+
+    api = HattoriAPI(renderer=PythonRenderer())
+
+    @api.get("/stream", auth=Auth())
+    def stream(request) -> JSONL[set[int]]:
+        yield {1}
+
+    client = TestClient(api)
+    rejected = client.get("/stream", headers={"Authorization": "Bearer bad"})
+    assert rejected.status_code == 401
+    assert rejected.content == b"Rejected"
+    success = client.get("/stream", headers={"Authorization": "Bearer ok"})
+    assert success.status_code == 200
+    assert success.content == b"[1]\n"
 
 
 def test_streaming_error_response_is_json_not_stream():

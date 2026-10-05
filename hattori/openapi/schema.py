@@ -1,6 +1,6 @@
 import itertools
 import re
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from copy import deepcopy
 from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any, get_args, get_origin
@@ -31,6 +31,13 @@ BODY_CONTENT_TYPES: dict[str, str] = {
     "file": "multipart/form-data",
 }
 
+type _SchemaField = (
+    core_schema.ModelField
+    | core_schema.DataclassField
+    | core_schema.TypedDictField
+    | core_schema.ComputedField
+)
+
 
 class ResponseJsonSchema(HattoriGenerateJsonSchema):
     """Apply an operation's omission rules to its response models only."""
@@ -39,65 +46,80 @@ class ResponseJsonSchema(HattoriGenerateJsonSchema):
     exclude_defaults = False
     exclude_unset = False
 
-    def model_schema(self, schema: core_schema.ModelSchema) -> dict[str, Any]:
-        result = super().model_schema(schema)
-        if self.mode != "serialization" or "required" not in result:
-            return result
-        fields = {
-            (field.serialization_alias or name) if self.by_alias else name: field
-            for name, field in schema["cls"].model_fields.items()
-        }
-        required = []
-        for name in result["required"]:
-            field = fields.get(name)
-            if (
-                field is not None
-                and not field.is_required()
-                and (self.exclude_defaults or self.exclude_unset)
-            ):
-                continue
-            # Exclusion checks the original value before a field serializer
-            # runs; a nullable input can therefore disappear even when its
-            # serializer advertises a non-null output type.
-            nullable_field = field is not None and (
-                field.annotation in (Any, object, type(None))
-                or type(None) in get_args(field.annotation)
-                or None in get_args(field.annotation)
-            )
-            if self.exclude_none and (
-                nullable_field or self._allows_none(result["properties"][name])
-            ):
-                continue
-            required.append(name)
-        if required:
-            result["required"] = required
-        else:
-            result.pop("required")
-        return result
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._core_definitions: dict[str, core_schema.CoreSchema] = {}
 
-    def _allows_none(self, schema: dict[str, Any]) -> bool:
-        if "$ref" in schema:
-            resolved = self.get_schema_from_definitions(schema["$ref"])
-            # A recursive model's definition may still be under construction.
-            # Nullability is carried by its surrounding union, not that ref.
-            if resolved is None:
-                return False
-            schema = resolved
-        if "const" in schema:
-            return schema["const"] is None
-        if "enum" in schema:
-            return None in schema["enum"]
-        for keyword in ("anyOf", "oneOf"):
-            if keyword in schema:
-                return any(self._allows_none(child) for child in schema[keyword])
-        if "allOf" in schema:
-            return all(self._allows_none(child) for child in schema["allOf"])
-        schema_type = schema.get("type")
-        return (
-            schema_type is None
-            or schema_type == "null"
-            or (isinstance(schema_type, list) and "null" in schema_type)
+    def definitions_schema(
+        self, schema: core_schema.DefinitionsSchema
+    ) -> dict[str, Any]:
+        self._core_definitions.update(
+            (definition["ref"], definition) for definition in schema["definitions"]
         )
+        return super().definitions_schema(schema)
+
+    def _named_required_fields_schema(
+        self, named_required_fields: Sequence[tuple[str, bool, _SchemaField]]
+    ) -> dict[str, Any]:
+        fields = []
+        for name, required, field in named_required_fields:
+            if self.mode == "serialization":
+                value_schema = (
+                    field["return_schema"]
+                    if field["type"] == "computed-field"
+                    else field["schema"]
+                )
+                if (
+                    value_schema["type"] == "default"
+                    and (self.exclude_defaults or self.exclude_unset)
+                ) or (self.exclude_none and self._allows_none(value_schema)):
+                    required = False
+            fields.append((name, required, field))
+        return super()._named_required_fields_schema(fields)
+
+    def _allows_none(
+        self, schema: core_schema.CoreSchema, seen_refs: frozenset[str] = frozenset()
+    ) -> bool:
+        # Exclusion happens before field serialization. Inspect the input core
+        # schema, including named type aliases, rather than the serialized type.
+        schema_type = schema["type"]
+        if schema_type in ("any", "none", "nullable"):
+            return True
+        if schema_type == "function-plain":
+            # Plain validators replace type validation entirely and may return
+            # None even if a field serializer advertises a non-null result.
+            return True
+        if schema_type == "json":
+            # Json[T] holds the decoded value at serialization time; bare Json
+            # accepts any JSON value, including null.
+            inner = schema.get("schema")
+            return inner is None or self._allows_none(inner, seen_refs)
+        if schema_type == "literal":
+            return None in schema["expected"]
+        if schema_type == "definition-ref":
+            ref = schema["schema_ref"]
+            definition = self._core_definitions.get(ref)
+            return (
+                definition is not None
+                and ref not in seen_refs
+                and self._allows_none(definition, seen_refs | {ref})
+            )
+        if schema_type == "union":
+            return any(
+                self._allows_none(
+                    choice[0] if isinstance(choice, tuple) else choice, seen_refs
+                )
+                for choice in schema["choices"]
+            )
+        if schema_type in (
+            "default",
+            "function-before",
+            "function-after",
+            "function-wrap",
+            "definitions",
+        ):
+            return self._allows_none(schema["schema"], seen_refs)
+        return False
 
 
 def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
@@ -487,6 +509,16 @@ class OpenAPISchema(dict):
     def responses(self, operation: Operation) -> dict[int, dict[str, Any]]:
         assert bool(operation.response_models), f"{operation.response_models} empty"
 
+        generator = type(
+            "OperationResponseJsonSchema",
+            (ResponseJsonSchema,),
+            {
+                "exclude_none": operation.exclude_none,
+                "exclude_defaults": operation.exclude_defaults,
+                "exclude_unset": operation.exclude_unset,
+            },
+        )
+
         result = {}
         for status, model in operation.response_models.items():
             if status == Ellipsis:
@@ -496,15 +528,6 @@ class OpenAPISchema(dict):
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""
-                generator = type(
-                    "OperationResponseJsonSchema",
-                    (ResponseJsonSchema,),
-                    {
-                        "exclude_none": operation.exclude_none,
-                        "exclude_defaults": operation.exclude_defaults,
-                        "exclude_unset": operation.exclude_unset,
-                    },
-                )
                 schema = self._create_schema_from_model(
                     model,
                     by_alias=operation.by_alias,

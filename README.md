@@ -463,6 +463,12 @@ valid strings during multipart encoding, so that one automatic check is disabled
 for the upload endpoint. Its response and valid-input checks remain enabled.
 Add representative routes to `tests/schemathesis_app.py` as features grow.
 
+The integer path fixture also accepts Pydantic's numeric text forms such as
+`+0.0`. When that path is the only component generated as invalid and Pydantic
+can parse it, the HTTP test skips the invalid-input rejection check for that
+case. Response checks still run, and explicit cases verify that nonnumeric and
+fractional path values return 422.
+
 Hypothesis shrinks a failure to a small counterexample and saves it locally in
 `.hypothesis/` for replay. Keep newly discovered bugs as explicit regression
 tests after fixing them. To repeat a generated search, pass a fixed seed, for

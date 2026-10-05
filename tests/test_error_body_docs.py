@@ -1,10 +1,18 @@
 """How error response bodies are documented in the OpenAPI schema."""
 
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 import pytest
-from pydantic import AliasChoices, AliasPath, ConfigDict, Field, ValidationError
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    constr,
+)
 
 from hattori import ApiError, ErrorBody, HattoriAPI, NotFound, Router, Schema
 from hattori.testing import TestClient
@@ -14,6 +22,87 @@ from tests.openapi_contract import export_contract, resolve, validate_response
 class ItemError(Enum):
     NOT_FOUND = "item_not_found"
     GONE = "item_gone"
+
+
+@pytest.mark.parametrize("enum_error", [False, True])
+@pytest.mark.parametrize(
+    ("constraints", "wire_code", "normalized"),
+    [
+        (StringConstraints(to_upper=True), "not_found", "NOT_FOUND"),
+        (StringConstraints(to_lower=True), "NOT_FOUND", "not_found"),
+        (StringConstraints(strip_whitespace=True), " not_found ", "not_found"),
+    ],
+)
+def test_error_codes_are_not_normalized(constraints, wire_code, normalized, enum_error):
+    class CustomBody(ErrorBody):
+        code: Annotated[str, constraints] = Field(alias="errorCode", min_length=2)
+
+    assert CustomBody(errorCode=wire_code, message="Error").code == normalized
+    codes = Enum("Codes", {"ERROR": wire_code})
+    parent = NotFound[Literal[codes.ERROR]] if enum_error else ApiError
+
+    class CustomError(parent, body=CustomBody):
+        code = 404
+        error_code = wire_code
+        message = "Not found"
+
+    api = HattoriAPI()
+
+    @api.get("/error", by_alias=True)
+    def error(request) -> CustomError:
+        return CustomError()
+
+    document = export_contract(api)
+    response = TestClient(api).get("/error")
+    assert response.json()["errorCode"] == wire_code
+    validate_response(document, "/api/error", response)
+    code = document["components"]["schemas"]["CustomError"]["properties"]["errorCode"]
+    assert code["const"] == wire_code
+    assert code["minLength"] == 2
+    assert CustomBody(errorCode=wire_code, message="Error").code == normalized
+    with pytest.raises(ValidationError):
+        CustomError.__hattori_response_body__(errorCode=normalized, message="Error")
+
+
+@pytest.mark.parametrize("enum_error", [False, True])
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Annotated[str, StringConstraints(strict=True, min_length=2)],
+        constr(strict=True, min_length=2),
+    ],
+)
+def test_grouped_strict_constraints_on_error_codes(annotation, enum_error):
+    class CustomBody(ErrorBody):
+        code: annotation = Field(alias="errorCode", description="Catalog code")
+
+    parent = NotFound[Literal[ItemError.NOT_FOUND]] if enum_error else ApiError
+
+    class CustomError(parent, body=CustomBody):
+        code = 404
+        error_code = "item_not_found"
+        message = "Item not found"
+
+    assert CustomBody.model_fields["code"].metadata[0].strict is True
+    with pytest.raises(ValidationError):
+        CustomBody(errorCode=1, message="Invalid")
+    with pytest.raises(ValidationError):
+        CustomError.__hattori_response_body__(errorCode="wrong", message="Invalid")
+
+    api = HattoriAPI()
+
+    @api.get("/error", by_alias=True)
+    def error(request) -> CustomError:
+        return CustomError()
+
+    document = export_contract(api)
+    response = TestClient(api).get("/error")
+    assert response.json()["errorCode"] == "item_not_found"
+    validate_response(document, "/api/error", response)
+    code = document["components"]["schemas"]["CustomError"]["properties"]["errorCode"]
+    assert code["const"] == "item_not_found"
+    assert code["minLength"] == 2
+    assert code["description"] == "Catalog code"
 
 
 @pytest.mark.parametrize("enum_error", [False, True])
