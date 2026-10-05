@@ -86,7 +86,7 @@ def patch_inherited(request, payload: PatchDict[OtherSchema]) -> PatchPayloadTyp
         ({"age": "1"}, {"age": 1}),
         ({}, {}),
         ({"wrong_param": 1}, {}),
-        ({"age": None}, {"age": None}),
+        ({"category": None}, {"category": None}),
     ],
 )
 def test_patch_calls(input: dict, output: dict):
@@ -94,21 +94,23 @@ def test_patch_calls(input: dict, output: dict):
     assert response.json() == {"payload": output, "type": "<class 'dict'>"}
 
 
+@pytest.mark.parametrize("input", [{"name": None}, {"age": None}])
+def test_patch_rejects_null_for_non_nullable_field(input: dict):
+    """Omittable is not nullable: only fields the source schema declares
+    nullable may be set to null."""
+    response = client.patch("/patch", json=input)
+    assert response.status_code == 422
+
+
 def test_schema():
-    "Checking that json schema properties are all optional"
+    "Checking that json schema properties are all optional, but not nullable"
     schema = api.get_openapi_schema()
     assert schema["components"]["schemas"]["SomeSchemaPatch"] == {
         "title": "SomeSchemaPatch",
         "type": "object",
         "properties": {
-            "name": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "title": "Name",
-            },
-            "age": {
-                "anyOf": [{"type": "integer"}, {"type": "null"}],
-                "title": "Age",
-            },
+            "name": {"type": "string", "title": "Name"},
+            "age": {"type": "integer", "title": "Age"},
             "category": {
                 "anyOf": [{"type": "string"}, {"type": "null"}],
                 "title": "Category",
@@ -132,18 +134,9 @@ def test_inherited_schema():
         "title": "OtherSchemaPatch",
         "type": "object",
         "properties": {
-            "name": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "title": "Name",
-            },
-            "age": {
-                "anyOf": [{"type": "integer"}, {"type": "null"}],
-                "title": "Age",
-            },
-            "other": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "title": "Other",
-            },
+            "name": {"type": "string", "title": "Name"},
+            "age": {"type": "integer", "title": "Age"},
+            "other": {"type": "string", "title": "Other"},
             "category": {
                 "anyOf": [
                     {
@@ -196,6 +189,32 @@ def test_patch_nullable_without_default_is_optional():
     response = nullable_client.patch("/patch-nullable", json={"note": "hi"})
     assert response.status_code == 200
     assert response.json() == {"payload": {"note": "hi"}}
+
+
+def test_patch_ignores_validate_default():
+    """Omitting a field must work even when the source schema validates its
+    defaults — the placeholder default is not a value of the field's type."""
+
+    class StrictSchema(Schema):
+        model_config = {"validate_default": True}
+
+        name: str
+        count: int = Field(0, validate_default=True)
+
+    strict_api = HattoriAPI()
+
+    @strict_api.patch("/patch-strict")
+    def patch_strict(request, payload: PatchDict[StrictSchema]) -> PatchPayloadResult:
+        return {"payload": payload}
+
+    strict_client = TestClient(strict_api)
+
+    response = strict_client.patch("/patch-strict", json={})
+    assert response.status_code == 200
+    assert response.json() == {"payload": {}}
+
+    response = strict_client.patch("/patch-strict", json={"count": None})
+    assert response.status_code == 422
 
 
 def test_patch_constrained_partial_update():
