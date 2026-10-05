@@ -57,6 +57,7 @@ dev = [
     "pre-commit",
     "openapi-spec-validator>=0.7,<0.9",
     "jsonschema>=4.23,<5",
+    "hypothesis>=6.130,<7",
 ]
 
 [tool.uv.build-backend]

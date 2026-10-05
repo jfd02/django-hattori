@@ -436,3 +436,20 @@ When adding a schema feature, add a case in `tests/test_openapi_contract.py` usi
 `tests.openapi_contract`. Include both valid and invalid requests when input
 validation is involved. Snapshots still document intentional output changes;
 contract checks verify that the output is valid and matches runtime behavior.
+
+The same command runs Hypothesis property tests that generate model graphs,
+colliding component names, route orders, nullable query schemas, aliases,
+serialization options, and error unions. Each generated API must export a valid
+contract and its responses must satisfy that contract. The normal profile tries
+40 examples per property; `make test-openapi-deep` raises that to 500 and prints
+search statistics.
+
+Hypothesis shrinks a failure to a small counterexample and saves it locally in
+`.hypothesis/` for replay. Keep newly discovered bugs as explicit regression
+tests after fixing them. To repeat a generated search, pass a fixed seed, for
+example `uv run pytest tests/test_openapi_properties.py --hypothesis-seed=1234`.
+
+Typed responses use Pydantic's JSON serialization when using `JSONRenderer` or
+streaming JSON, including serializers with `when_used="json"`. Custom renderers
+receive Python values by default; set `serialization_mode = "json"` on a custom
+renderer if it needs JSON-compatible values instead.

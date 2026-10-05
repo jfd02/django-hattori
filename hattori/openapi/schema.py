@@ -808,7 +808,24 @@ def flatten_properties(
     extracts all nested model's properties into flat properties
     (used f.e. in GET params with multiple arguments and models)
     """
-    if "allOf" in prop_details:
+    if "anyOf" in prop_details:
+        variants = prop_details["anyOf"]
+        non_null = [variant for variant in variants if variant.get("type") != "null"]
+        if len(variants) == 2 and len(non_null) == 1:
+            variant = non_null[0]
+            definition = variant
+            if "$ref" in variant:
+                definition = definitions[variant["$ref"].rsplit("/", 1)[-1]]
+            if "properties" in definition:
+                # Runtime flattens nullable query models just like required
+                # models. Keep nullable scalar/enum/list schemas intact.
+                yield from flatten_properties(
+                    prop_name, definition, prop_required, definitions
+                )
+                return
+        yield prop_name, prop_details, prop_required
+
+    elif "allOf" in prop_details:
         resolve_allOf(prop_details, definitions)
         if len(prop_details["allOf"]) == 1 and "enum" in prop_details["allOf"][0]:
             # is_required = "default" not in prop_details

@@ -366,6 +366,62 @@ def test_optional_form_json_and_multipart_bodies():
     assert client.post("/required").status_code == 422
 
 
+def test_nullable_query_model_documents_its_flattened_fields():
+    # Minimal counterexample found by Hypothesis.
+    class Filters(Schema):
+        value: int
+
+    api = HattoriAPI()
+
+    @api.get("/query")
+    def query(request, filters: Filters | None = Query(None)) -> int:
+        return filters.value
+
+    document = export_contract(api)
+    assert document["paths"]["/api/query"]["get"]["parameters"][0]["name"] == "value"
+    response = TestClient(api).get("/query?value=0")
+    assert response.json() == 0
+    validate_response(document, "/api/query", response)
+
+
+@pytest.mark.parametrize("as_instance", [False, True])
+def test_json_only_serializers_match_the_documented_response(as_instance):
+    class Payload(Schema):
+        value: int
+
+        @field_serializer("value", when_used="json")
+        def as_text(self, value) -> str:
+            return str(value)
+
+    api = HattoriAPI()
+
+    @api.get("/payload")
+    def payload(request) -> Payload:
+        return Payload(value=0) if as_instance else {"value": 0}
+
+    document = export_contract(api)
+    response = TestClient(api).get("/payload")
+    assert response.json() == {"value": "0"}
+    validate_response(document, "/api/payload", response)
+
+
+def test_sets_and_bytes_use_pydantic_json_serialization():
+    class Payload(Schema):
+        values: set[int]
+        text: bytes
+
+    api = HattoriAPI()
+
+    @api.get("/payload")
+    def payload(request) -> Payload:
+        return Payload(values={0}, text=b"0")
+
+    document = export_contract(api)
+    response = TestClient(api).get("/payload")
+    assert response.json() == {"values": [0], "text": "0"}
+    validate_response(document, "/api/payload", response)
+
+
 @pytest.mark.parametrize(
     "module",
     [

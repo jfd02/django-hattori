@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from django.http import HttpRequest
 
@@ -10,6 +10,7 @@ __all__ = ["BaseRenderer", "JSONRenderer"]
 class BaseRenderer:
     media_type: str | None = None
     charset: str = "utf-8"
+    serialization_mode: Literal["python", "json"] = "python"
 
     def render(self, request: HttpRequest, data: Any, *, response_status: int) -> Any:
         raise NotImplementedError("Please implement .render() method")
@@ -17,6 +18,7 @@ class BaseRenderer:
 
 class JSONRenderer(BaseRenderer):
     media_type = "application/json"
+    serialization_mode: Literal["python", "json"] = "json"
 
     def render(self, request: HttpRequest, data: Any, *, response_status: int) -> bytes:
         return json_dumps(data)

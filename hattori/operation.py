@@ -456,6 +456,11 @@ class Operation:
 
     def _dump_model(self, model: BaseModel, ctx: dict[str, Any]) -> dict[str, Any]:
         return model.model_dump(
+            mode=(
+                "json"
+                if self.stream_format is not None
+                else getattr(self.api.renderer, "serialization_mode", "python")
+            ),
             context=ctx,
             by_alias=self.by_alias,
             exclude_unset=self.exclude_unset,
