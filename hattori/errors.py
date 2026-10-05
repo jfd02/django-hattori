@@ -1,5 +1,6 @@
 import logging
 import traceback
+from copy import deepcopy
 from functools import partial
 from typing import (
     TYPE_CHECKING,
@@ -228,14 +229,26 @@ def resolve_error_body_base(cls: type) -> type[ErrorBody]:
 def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
     """A body model for ``error`` whose ``code`` is the constant ``error_code``."""
     base = resolve_error_body_base(error)
+    code_field = deepcopy(base.model_fields["code"])
+    # Literal already restricts both the value and its type; Pydantic cannot
+    # apply a str field's Strict metadata to a literal schema.
+    code_field.metadata = [
+        item for item in code_field.metadata if not isinstance(item, pydantic.Strict)
+    ]
     body: type[ErrorBody] = pydantic.create_model(
         error.__name__,
         __base__=base,
         __module__=error.__module__,
         # The base's own field rides along, so a description declared on it is
         # still there once the type is narrowed.
-        code=(Annotated[Literal[error_code], base.model_fields["code"]], ...),
+        code=(Annotated[Literal[error_code], code_field], ...),
     )
+    # ApiError supplies code and message by their Python names. Accept names
+    # on this generated model while retaining aliases and the base's validators.
+    # populate_by_name covers Pydantic <2.11; validate_by_name overrides an
+    # explicit alias-only configuration on newer versions.
+    body.model_config.update({"populate_by_name": True, "validate_by_name": True})
+    body.model_rebuild(force=True)
     body.__hattori_error__ = error
     return body
 

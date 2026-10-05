@@ -208,10 +208,23 @@ def test_serialized_responses_match_their_schema(
     ),
     by_alias=st.booleans(),
     alias=WIRE_NAMES,
+    strict=st.booleans(),
+    validation_alias=st.booleans(),
 )
-def test_error_unions_document_every_runtime_variant(errors, by_alias, alias):
+def test_error_unions_document_every_runtime_variant(
+    errors, by_alias, alias, strict, validation_alias
+):
     body = create_model(
-        "Body", __base__=ErrorBody, message=(str, Field(serialization_alias=alias))
+        "Body",
+        __base__=ErrorBody,
+        code=(
+            str,
+            Field(strict=strict, alias="error_code" if validation_alias else None),
+        ),
+        message=(
+            str,
+            Field(alias=alias if validation_alias else None, serialization_alias=alias),
+        ),
     )
     variants = [
         type(

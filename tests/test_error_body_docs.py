@@ -4,14 +4,94 @@ from enum import Enum
 from typing import Literal
 
 import pytest
-from pydantic import Field
+from pydantic import AliasChoices, AliasPath, ConfigDict, Field, ValidationError
 
 from hattori import ApiError, ErrorBody, HattoriAPI, NotFound, Router, Schema
+from hattori.testing import TestClient
+from tests.openapi_contract import export_contract, resolve, validate_response
 
 
 class ItemError(Enum):
     NOT_FOUND = "item_not_found"
     GONE = "item_gone"
+
+
+@pytest.mark.parametrize("enum_error", [False, True])
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("by_alias", [False, True])
+def test_custom_error_fields_keep_validation_and_wire_contract(
+    enum_error, strict, by_alias
+):
+    class CustomBody(ErrorBody):
+        model_config = ConfigDict(extra="forbid", validate_by_name=False)
+        code: str = Field(strict=strict, alias="error_code", description="Catalog code")
+        message: str = Field(alias="detail", min_length=2)
+        retry_after: int = Field(alias="retryAfter", gt=0)
+
+    parent = NotFound[Literal[ItemError.NOT_FOUND]] if enum_error else ApiError
+
+    class CustomError(parent, body=CustomBody):
+        code = 404
+        error_code = "item_not_found"
+        message = "Item not found"
+
+    body_type = CustomError.__hattori_response_body__
+    original_metadata = CustomBody.model_fields["code"].metadata
+    assert any(getattr(item, "strict", None) is strict for item in original_metadata)
+    assert CustomBody.model_config["validate_by_name"] is False
+    with pytest.raises(ValidationError):
+        body_type(error_code="wrong", detail="Invalid", retryAfter=1)
+    with pytest.raises(ValidationError):
+        CustomError("x", retryAfter=1)
+    with pytest.raises(ValidationError):
+        CustomError(retryAfter=0)
+
+    api = HattoriAPI()
+
+    @api.get("/error", by_alias=by_alias)
+    def error(request) -> CustomError:
+        return CustomError(retryAfter=1)
+
+    document = export_contract(api)
+    response = TestClient(api).get("/error")
+    assert response.status_code == 404
+    expected = (
+        {"error_code": "item_not_found", "detail": "Item not found", "retryAfter": 1}
+        if by_alias
+        else {"code": "item_not_found", "message": "Item not found", "retry_after": 1}
+    )
+    assert response.json() == expected
+    validate_response(document, "/api/error", response)
+    ref = document["paths"]["/api/error"]["get"]["responses"]["404"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    properties = resolve(document, ref)["properties"]
+    code_field = properties["error_code" if by_alias else "code"]
+    assert code_field["const"] == "item_not_found"
+    assert code_field["description"] == "Catalog code"
+    assert properties["detail" if by_alias else "message"]["examples"] == [
+        "Item not found"
+    ]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["input_code", AliasChoices("input_code", "legacy"), AliasPath("error", "code")],
+)
+def test_error_construction_supports_validation_aliases(alias):
+    class CustomBody(ErrorBody):
+        code: str = Field(validation_alias=alias, serialization_alias="errorCode")
+        message: str = Field(validation_alias=AliasPath("error", "message"))
+
+    class CustomError(ApiError, body=CustomBody):
+        code = 400
+        error_code = "custom"
+        message = "Custom error"
+
+    assert CustomError().value.model_dump(by_alias=True) == {
+        "errorCode": "custom",
+        "message": "Custom error",
+    }
 
 
 class Item(Schema):
