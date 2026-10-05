@@ -22,6 +22,7 @@ from hattori.params.models import (
     TModel,
     TModels,
     _MultiPartBody,
+    is_comma_separated,
 )
 from hattori.signature.utils import get_path_param_names, get_typed_signature
 from hattori.utils import is_optional_type
@@ -171,15 +172,21 @@ class ViewSignature:
             attrs["__annotations__"] = {i.name: i.annotation for i in args}
 
             # collection fields:
+            flatten_map = attrs.get("__hattori_flatten_map__", {})
             attrs["__hattori_collection_fields__"] = detect_collection_fields(
-                args, attrs.get("__hattori_flatten_map__", {})
+                args, flatten_map
             )
 
-            # csv fields (explode=False):
+            # csv fields (explode=False), declared on the argument itself or on
+            # a field of a schema argument:
             attrs["__hattori_csv_fields__"] = [
                 i.alias or i.name
                 for i in args
-                if i.is_collection and getattr(i.source, "explode", True) is False
+                if i.is_collection and is_comma_separated(i.source)
+            ] + [
+                name
+                for name, field in _flattened_fields(args, flatten_map)
+                if is_collection_type(field.annotation) and is_comma_separated(field)
             ]
 
             base_cls = param_cls._model
@@ -355,31 +362,36 @@ def detect_collection_fields(
     This method detects attributes that should be treated by hattori as lists and returns this list as a result
     """
     result = [i.alias or i.name for i in args if i.is_collection]
-
-    if flatten_map:
-        args_d = {arg.alias: arg for arg in args}
-        for path in (p for p in flatten_map.values() if len(p) > 1):
-            annotation_or_field: Any = args_d[path[0]].annotation
-            for attr in path[1:]:
-                if hasattr(annotation_or_field, "annotation"):
-                    annotation_or_field = annotation_or_field.annotation
-                annotation_or_field = _unwrap_union_model(annotation_or_field)
-                annotation_or_field = next(
-                    (
-                        a
-                        for a in annotation_or_field.model_fields.values()
-                        if a.alias == attr
-                    ),
-                    annotation_or_field.model_fields.get(attr),
-                )  # pragma: no cover
-
-                annotation_or_field = getattr(
-                    annotation_or_field, "outer_type_", annotation_or_field
-                )
-
-            # if hasattr(annotation_or_field, "annotation"):
-            annotation_or_field = annotation_or_field.annotation
-
-            if is_collection_type(annotation_or_field):
-                result.append(path[-1])
+    result.extend(
+        name
+        for name, field in _flattened_fields(args, flatten_map)
+        if is_collection_type(field.annotation)
+    )
     return result
+
+
+def _flattened_fields(
+    args: list[FuncParam], flatten_map: dict[str, tuple[str, ...]]
+) -> Generator[tuple[str, FieldInfo]]:
+    """The schema fields a flatten map reaches, by the parameter name each takes."""
+    args_d = {arg.alias: arg for arg in args}
+    for path in (p for p in flatten_map.values() if len(p) > 1):
+        annotation_or_field: Any = args_d[path[0]].annotation
+        for attr in path[1:]:
+            if hasattr(annotation_or_field, "annotation"):
+                annotation_or_field = annotation_or_field.annotation
+            annotation_or_field = _unwrap_union_model(annotation_or_field)
+            annotation_or_field = next(
+                (
+                    a
+                    for a in annotation_or_field.model_fields.values()
+                    if a.alias == attr
+                ),
+                annotation_or_field.model_fields.get(attr),
+            )  # pragma: no cover
+
+            annotation_or_field = getattr(
+                annotation_or_field, "outer_type_", annotation_or_field
+            )
+
+        yield path[-1], annotation_or_field
