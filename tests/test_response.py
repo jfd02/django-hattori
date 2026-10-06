@@ -181,6 +181,16 @@ def check_subclass_in_other_generic(request) -> Page[UserModel]:
     return Page[UserInternal](items=[_internal_user()])
 
 
+@router.get("/check_dicts_in_bare_generic")
+def check_dicts_in_bare_generic(request) -> Page[UserModel]:
+    return Page(items=[{"id": 1, "user_name": "John", "password_hash": "secret"}])
+
+
+@router.get("/check_invalid_bare_generic")
+def check_invalid_bare_generic(request) -> Page[UserModel]:
+    return Page(items=["invalid"])
+
+
 @router.get("/check_set_header")
 def check_set_header(request, response: HttpResponse) -> int:
     response["Cache-Control"] = "no-cache"
@@ -232,6 +242,10 @@ def test_validates():
     with pytest.raises(ValidationError):
         client.get("/check_union?q=2")
 
+    # A generic that isn't the declared parameterization is validated against it.
+    with pytest.raises(ValidationError):
+        client.get("/check_invalid_bare_generic")
+
 
 @pytest.mark.parametrize(
     "method,path,status,expected_response",
@@ -257,9 +271,15 @@ def test_validates():
             200,
             {"items": [{"id": 1, "user_name": "John"}]},
         ),
+        (
+            "get",
+            "/check_dicts_in_bare_generic",
+            200,
+            {"items": [{"id": 1, "user_name": "John"}]},
+        ),
     ],
 )
-def test_subclass_fields_are_not_leaked(method, path, status, expected_response):
+def test_only_declared_fields_are_sent(method, path, status, expected_response):
     # Only the declared response type's fields go out, however the returned
     # instance was built.
     response = getattr(client, method)(path)

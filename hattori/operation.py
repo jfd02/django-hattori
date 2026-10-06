@@ -280,8 +280,6 @@ class Operation:
         # so response_models can be rebuilt whenever auth/permissions are attached
         # after __init__ (e.g. inherited from a router or the API at bind time).
         self._annotated_responses: dict[Any, Any] = dict(parsed.response_models)
-        self._resp_annotations: dict[int, Any] = {}
-        self._resp_types: dict[int, Any] = {}
         self._build_response_models()
 
         if need_to_fix_request_files(methods, self.models):
@@ -345,21 +343,6 @@ class Operation:
             first_model = next(iter(self.response_models.values()))
             self.stream_item_model = first_model
 
-        self._resp_annotations = {
-            id(model): model.model_fields["response"].annotation
-            for model in self.response_models.values()
-            if model is not None
-        }
-        # The origin type used for the revalidation-skip isinstance() check is
-        # invariant per response model; resolve it once instead of unwrapping the
-        # pydantic generic metadata on every response.
-        self._resp_types = {}
-        for model_id, ann in self._resp_annotations.items():
-            meta = getattr(ann, "__pydantic_generic_metadata__", None)
-            self._resp_types[model_id] = (
-                meta["origin"] if meta and meta.get("origin") else ann
-            )
-
     def clone(self) -> Operation:
         """
         Create a fresh copy of this operation for binding to an API.
@@ -401,8 +384,6 @@ class Operation:
 
         # Copy response models (dict copy for isolation)
         cloned.response_models = dict(self.response_models)
-        cloned._resp_annotations = self._resp_annotations
-        cloned._resp_types = self._resp_types
         # Return-annotation responses, so the clone can rebuild response_models
         # if auth/permissions are attached during binding (read-only, safe to share).
         cloned._annotated_responses = self._annotated_responses
@@ -742,29 +723,15 @@ class Operation:
 
         ctx = {"request": request, "response_status": status}
 
-        # Skip re-validation for pydantic model instances matching the response type.
-        # For parameterized generics (e.g. ErrorResponse[Literal["not_found"]]),
-        # check against the origin type since isinstance() doesn't work with
-        # parameterized generics directly.
-        resp_annotation = self._resp_annotations[id(response_model)]
-        resp_type = self._resp_types[id(response_model)]
-        if (
-            resp_annotation is not Any
-            and isinstance(resp_type, type)
-            and isinstance(result, BaseModel)
-            and isinstance(result, resp_type)
-        ):
-            # Wrapped unvalidated, never dumped by its own model_dump: a
-            # subclass, or the same generic parameterized differently (Page or
-            # Page[UserInternal] for Page[UserOut]), would dump the fields of its
-            # own class. Dumping through the declared type drops the rest.
-            response_object = response_model.model_construct(response=result)
-        else:
-            response_object = response_model.model_validate(
-                {"response": result}, context=ctx
-            )
+        # Whatever the view returned is validated against the declared type and
+        # dumped through it, so only the fields that type declares go out. An
+        # instance of the declared model, or of a subclass, passes validation
+        # as is; it is never dumped by its own class.
+        validated_object = response_model.model_validate(
+            {"response": result}, context=ctx
+        )
 
-        result = self._dump_model(response_object, ctx)["response"]
+        result = self._dump_model(validated_object, ctx)["response"]
         return self.api.create_response(
             request, result, temporal_response=temporal_response
         )
