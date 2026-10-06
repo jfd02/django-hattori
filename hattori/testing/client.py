@@ -4,6 +4,7 @@ from typing import Any, ClassVar
 from urllib.parse import urljoin
 
 from django.contrib.auth.models import AnonymousUser
+from django.core.handlers.base import BaseHandler
 from django.http import HttpRequest, QueryDict, StreamingHttpResponse
 from django.test import RequestFactory
 
@@ -84,7 +85,10 @@ class HattoriClientBase:
             if match:
                 request = self._build_request(method, path, data, request_params)
                 request.resolver_match = match
-                return match.func, request, match.kwargs
+                # Django's handler is bypassed here, so open the ATOMIC_REQUESTS
+                # transaction it would have run the view in.
+                func = BaseHandler().make_view_atomic(match.func)
+                return func, request, match.kwargs
         raise Exception(f'Cannot resolve "{path}"')
 
     def _build_request(
