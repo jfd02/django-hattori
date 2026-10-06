@@ -7,6 +7,9 @@ preserving per-code narrowing in the OpenAPI spec.
 from enum import Enum
 from typing import Generic, Literal, TypeVar
 
+import pytest
+from pydantic import ValidationError
+
 from hattori import APIReturn, HattoriAPI, Schema
 from hattori.testing import TestClient
 
@@ -55,16 +58,31 @@ api = HattoriAPI()
 
 @api.get("/items/{item_id}")
 def get_item(request, item_id: int) -> dict | NotFound | Forbidden:
+    # The body is built as the declared parameterization: a bare ErrorResponse
+    # types `code` as str, which is not the enum member the response declares.
     if item_id == 0:
-        return NotFound(ErrorResponse(code=GetError.NOT_FOUND, message="Not found"))
+        return NotFound(
+            ErrorResponse[Literal[GetError.NOT_FOUND]](
+                code=GetError.NOT_FOUND, message="Not found"
+            )
+        )
     if item_id == -1:
-        return Forbidden(ErrorResponse(code=GetError.FORBIDDEN, message="Forbidden"))
+        return Forbidden(
+            ErrorResponse[Literal[GetError.FORBIDDEN]](
+                code=GetError.FORBIDDEN, message="Forbidden"
+            )
+        )
     return {"id": item_id}
 
 
 @api.get("/string-literal")
 def string_literal(request) -> dict | CustomError:
     return CustomError(ErrorResponse(code="custom_error", message="Bad"))
+
+
+@api.get("/wrong-code")
+def wrong_code(request) -> dict | CustomError:
+    return CustomError(ErrorResponse(code="something_else", message="Bad"))
 
 
 @api.post("/sync")
@@ -97,6 +115,10 @@ class TestParameterizedGenericResponses:
         response = client.get("/string-literal")
         assert response.status_code == 400
         assert response.json() == {"code": "custom_error", "message": "Bad"}
+
+    def test_body_not_matching_the_parameterization_is_rejected(self):
+        with pytest.raises(ValidationError):
+            client.get("/wrong-code")
 
 
 class TestSchemaCleanNaming:

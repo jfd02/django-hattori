@@ -6,80 +6,94 @@ from django.utils.translation import gettext_lazy
 from pydantic import field_serializer, model_serializer
 
 from hattori import JSONL, HattoriAPI, Router, Schema
+from hattori.errors import ConfigError
 from hattori.renderers import BaseRenderer
 from hattori.testing import TestClient
 
+RESPONSE_SHAPES = ["instance", "dict", "list", "optional"]
 
-@pytest.mark.parametrize("legacy_pydantic", [False, True])
-def test_response_model_dump_overrides_are_honored(monkeypatch, legacy_pydantic):
-    if legacy_pydantic:
-        monkeypatch.setattr(
-            "hattori.operation.pydantic_version", [2, 10], raising=False
-        )
 
+def _respond(model: type[Schema], values: dict[str, Any], shape: str) -> Any:
+    """What an endpoint sends for ``values`` returned as ``shape`` of ``model``."""
+    annotation, value = {
+        "instance": (model, model(**values)),
+        "dict": (model, values),
+        "list": (list[model], [model(**values)]),
+        "optional": (model | None, model(**values)),
+    }[shape]
+    api = HattoriAPI()
+
+    @api.get("/payload")
+    def payload(request) -> annotation:
+        return value
+
+    response = TestClient(api).get("/payload")
+    assert response.status_code == 200
+    body = response.json()
+    return body[0] if shape == "list" else body
+
+
+@pytest.mark.parametrize("shape", RESPONSE_SHAPES)
+def test_model_serializer_shapes_every_response(shape):
     class Payload(Schema):
         public: str
         secret: str
 
+        @model_serializer(mode="wrap")
+        def redact(self, handler, info):
+            assert info.context["request"].path == "/payload"
+            data = handler(self)
+            del data["secret"]
+            return data
+
+    values = {"public": "hello", "secret": "hidden"}
+    assert _respond(Payload, values, shape) == {"public": "hello"}
+
+
+@pytest.mark.parametrize("shape", ["bare", "list", "optional", "nested"])
+def test_model_dump_override_on_a_response_schema_is_rejected(shape):
+    # A response is dumped by the declared type's pydantic serializer, which
+    # never calls model_dump, so an override could only be silently ignored.
+    class Payload(Schema):
+        public: str
+
         def model_dump(self, **kwargs):
-            assert kwargs["context"]["request"].path == "/payload"
-            return super().model_dump(exclude={"secret"}, **kwargs)
+            return super().model_dump(**kwargs)
+
+    class Envelope(Schema):
+        payload: Payload
+
+    annotation = {
+        "bare": Payload,
+        "list": list[Payload],
+        "optional": Payload | None,
+        "nested": Envelope,
+    }[shape]
+    api = HattoriAPI()
+
+    with pytest.raises(ConfigError, match="Payload, which overrides model_dump"):
+
+        @api.get("/payload")
+        def payload(request) -> annotation:
+            return None
+
+
+def test_model_dump_override_on_a_request_schema_is_allowed():
+    class Payload(Schema):
+        public: str
+
+        def model_dump(self, **kwargs):
+            return super().model_dump(**kwargs)
 
     api = HattoriAPI()
 
-    @api.get("/payload")
-    def payload(request) -> Payload:
-        return Payload(public="hello", secret="hidden")
+    @api.post("/payload")
+    def payload(request, data: Payload) -> dict:
+        return {"public": data.public}
 
-    response = TestClient(api).get("/payload")
+    response = TestClient(api).post("/payload", json={"public": "hello"})
     assert response.status_code == 200
     assert response.json() == {"public": "hello"}
-
-
-def test_model_dump_override_can_combine_redaction_and_lazy_values():
-    class Payload(Schema):
-        message: Any
-        secret: str
-
-        def model_dump(self, **kwargs):
-            return super().model_dump(exclude={"secret"}, **kwargs)
-
-    api = HattoriAPI()
-
-    @api.get("/payload")
-    def payload(request) -> Payload:
-        return Payload(message=gettext_lazy("Hello"), secret="hidden")
-
-    response = TestClient(api).get("/payload")
-    assert response.status_code == 200
-    assert response.json() == {"message": "Hello"}
-
-
-def test_model_dump_override_without_fallback_argument():
-    class Payload(Schema):
-        secret: str
-
-        def model_dump(
-            self,
-            *,
-            mode,
-            context,
-            by_alias,
-            exclude_unset,
-            exclude_defaults,
-            exclude_none,
-        ):
-            return {"redacted": True}
-
-    api = HattoriAPI()
-
-    @api.get("/payload")
-    def payload(request) -> Payload:
-        return Payload(secret="hidden")
-
-    response = TestClient(api).get("/payload")
-    assert response.status_code == 200
-    assert response.json() == {"redacted": True}
 
 
 @pytest.mark.parametrize("as_model", [False, True])

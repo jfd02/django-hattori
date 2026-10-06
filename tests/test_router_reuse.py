@@ -586,8 +586,6 @@ class TestCloneCompleteness:
             "models",
             "response_models",
             "_annotated_responses",
-            "_resp_annotations",
-            "_resp_types",
             # Streaming
             "stream_format",
             "stream_item_model",

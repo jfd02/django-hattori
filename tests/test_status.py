@@ -184,38 +184,39 @@ class _ValidateTracker:
             del Schema.model_validate
 
 
-class TestSkipRevalidation:
-    """Test that the fast path skips response model_validate for matching model instances."""
+class TestResponseValidation:
+    """Every return value is validated against the declared type, whatever its form."""
 
-    def test_model_instance_skips_validation(self):
+    def test_model_instance_is_validated(self):
         with _ValidateTracker() as t:
             response = client.get("/model_instance")
             assert response.status_code == 200
             assert response.json() == {"id": 1, "name": "John"}
-            assert t.call_count == 0
+            assert t.call_count == 1
 
-    def test_subclass_skips_validation(self):
+    def test_subclass_is_validated(self):
         with _ValidateTracker() as t:
             response = client.get("/model_subclass")
             assert response.status_code == 200
-            assert response.json() == {"id": 1, "name": "John", "extra": "bonus"}
-            assert t.call_count == 0
+            # Dumped as the declared UserOut: the subclass's own field stays out.
+            assert response.json() == {"id": 1, "name": "John"}
+            assert t.call_count == 1
 
-    def test_dict_goes_through_validation(self):
+    def test_dict_is_validated(self):
         with _ValidateTracker() as t:
             response = client.get("/dict_result")
             assert response.status_code == 200
             assert response.json() == {"id": 1, "name": "John"}
             assert t.call_count == 1
 
-    def test_union_no_skip(self):
+    def test_union_is_validated(self):
         with _ValidateTracker() as t:
             response = client.get("/union_response?q=1")
             assert response.status_code == 200
             assert response.json() == {"id": 1, "name": "John"}
             assert t.call_count == 1
 
-    def test_list_no_skip(self):
+    def test_list_is_validated(self):
         with _ValidateTracker() as t:
             response = client.get("/list_response")
             assert response.status_code == 200
@@ -227,9 +228,9 @@ class TestSkipRevalidation:
         assert response.status_code == 200
         assert response.json() == {"userName": "Alice"}
 
-    def test_status_wrapping_model_skips_validation(self):
+    def test_status_wrapping_model_is_validated(self):
         with _ValidateTracker() as t:
             response = client.get("/status_model_instance")
             assert response.status_code == 200
             assert response.json() == {"id": 1, "name": "John"}
-            assert t.call_count == 0
+            assert t.call_count == 1

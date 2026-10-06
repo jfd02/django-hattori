@@ -96,6 +96,25 @@ def _substitute_typevars(tp: Any, mapping: dict) -> Any:
     return origin[new_args] if len(new_args) > 1 else origin[new_args[0]]
 
 
+def _find_model_dump_override(schema: Any) -> type | None:
+    """The first model in a pydantic core schema that overrides ``model_dump``."""
+    if isinstance(schema, dict):
+        cls = schema.get("cls")
+        if (
+            schema.get("type") == "model"
+            and isinstance(cls, type)
+            and getattr(cls, "model_dump", None) is not BaseModel.model_dump
+        ):
+            return cls
+        schema = list(schema.values())
+    if isinstance(schema, (list, tuple)):
+        for item in schema:
+            found = _find_model_dump_override(item)
+            if found is not None:
+                return found
+    return None
+
+
 def _is_api_return_subclass(arm: Any) -> bool:
     if isinstance(arm, type) and issubclass(arm, APIReturn):
         return True
@@ -280,8 +299,6 @@ class Operation:
         # so response_models can be rebuilt whenever auth/permissions are attached
         # after __init__ (e.g. inherited from a router or the API at bind time).
         self._annotated_responses: dict[Any, Any] = dict(parsed.response_models)
-        self._resp_annotations: dict[int, Any] = {}
-        self._resp_types: dict[int, Any] = {}
         self._build_response_models()
 
         if need_to_fix_request_files(methods, self.models):
@@ -345,21 +362,6 @@ class Operation:
             first_model = next(iter(self.response_models.values()))
             self.stream_item_model = first_model
 
-        self._resp_annotations = {
-            id(model): model.model_fields["response"].annotation
-            for model in self.response_models.values()
-            if model is not None
-        }
-        # The origin type used for the revalidation-skip isinstance() check is
-        # invariant per response model; resolve it once instead of unwrapping the
-        # pydantic generic metadata on every response.
-        self._resp_types = {}
-        for model_id, ann in self._resp_annotations.items():
-            meta = getattr(ann, "__pydantic_generic_metadata__", None)
-            self._resp_types[model_id] = (
-                meta["origin"] if meta and meta.get("origin") else ann
-            )
-
     def clone(self) -> Operation:
         """
         Create a fresh copy of this operation for binding to an API.
@@ -401,8 +403,6 @@ class Operation:
 
         # Copy response models (dict copy for isolation)
         cloned.response_models = dict(self.response_models)
-        cloned._resp_annotations = self._resp_annotations
-        cloned._resp_types = self._resp_types
         # Return-annotation responses, so the clone can rebuild response_models
         # if auth/permissions are attached during binding (read-only, safe to share).
         cloned._annotated_responses = self._annotated_responses
@@ -470,26 +470,11 @@ class Operation:
         )
         dump = model.model_dump
         extra: dict[str, Any] = {}
-        default_dump = type(model).model_dump is BaseModel.model_dump
         if mode == "json":
-            if pydantic_version >= [2, 11]:
-                parameters = (
-                    inspect.signature(dump).parameters if not default_dump else {}
-                )
-                if (
-                    default_dump
-                    or "fallback" in parameters
-                    or any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD
-                        for p in parameters.values()
-                    )
-                ):
-                    extra["fallback"] = json_default
-            elif default_dump:
-                # Older model_dump versions do not expose fallback. Only use
-                # the core serializer when there is no user override to honor.
+            if pydantic_version < [2, 11]:
+                # Older model_dump versions do not expose fallback.
                 dump = partial(model.__pydantic_serializer__.to_python, model)
-                extra["fallback"] = json_default
+            extra["fallback"] = json_default
         return dump(
             mode=mode,
             context=ctx,
@@ -757,23 +742,10 @@ class Operation:
 
         ctx = {"request": request, "response_status": status}
 
-        # Skip re-validation for pydantic model instances matching the response type.
-        # For parameterized generics (e.g. ErrorResponse[Literal["not_found"]]),
-        # check against the origin type since isinstance() doesn't work with
-        # parameterized generics directly.
-        resp_annotation = self._resp_annotations[id(response_model)]
-        resp_type = self._resp_types[id(response_model)]
-        if (
-            resp_annotation is not Any
-            and isinstance(resp_type, type)
-            and isinstance(result, BaseModel)
-            and isinstance(result, resp_type)
-        ):
-            result = self._dump_model(result, ctx)
-            return self.api.create_response(
-                request, result, temporal_response=temporal_response
-            )
-
+        # Whatever the view returned is validated against the declared type and
+        # dumped through it, so only the fields that type declares go out. An
+        # instance of the declared model, or of a subclass, passes validation
+        # as is; it is never dumped by its own class.
         validated_object = response_model.model_validate(
             {"response": result}, context=ctx
         )
@@ -809,7 +781,19 @@ class Operation:
         if response_param is None:
             return None
         attrs = {"__annotations__": {"response": response_param}}
-        return type("HattoriResponseSchema", (Schema,), attrs)
+        model: type[Schema] = type("HattoriResponseSchema", (Schema,), attrs)
+        # Responses are dumped by the declared type's pydantic serializer, which
+        # never calls model_dump. Refuse an override rather than ignore it.
+        overriding = _find_model_dump_override(model.__pydantic_core_schema__)
+        if overriding is not None:
+            raise ConfigError(
+                f"View {self.view_func.__name__} responds with "
+                f"{overriding.__name__}, which overrides model_dump. Responses "
+                f"are serialized without calling model_dump, so the override "
+                f"would be ignored. Use @model_serializer or Field(exclude=True) "
+                f"to shape the output instead."
+            )
+        return model
 
 
 class AsyncOperation(Operation):
