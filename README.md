@@ -367,6 +367,25 @@ set_http_error_model(Problem)   # e.g. from AppConfig.ready()
 
 The default is `{"detail": "<message>"}`.
 
+## Transactions
+
+A returned error fails the request as fully as a raised one. With Django's
+`ATOMIC_REQUESTS` on, any response of 400 or above that hattori produces —
+returned or raised, from the endpoint, its auth or its permissions — rolls the
+request's transaction back:
+
+```python
+@api.post("/signup")
+def signup(request, data: SignupIn) -> Created[UserOut] | UsernameTaken:
+    user = User.objects.create(username=data.username)
+    if is_reserved(user):
+        return UsernameTaken()       # the insert above is rolled back
+    return Created(UserOut(id=user.id, username=user.username))
+```
+
+Only a hand-built `HttpResponse` is passed through on Django's own terms, which
+commit unless an exception escapes.
+
 ## Testing
 
 Hattori ships a lightweight test client that calls your endpoints in-process —

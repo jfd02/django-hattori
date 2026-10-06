@@ -445,15 +445,18 @@ class Operation:
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
             self._add_wraps_hint(e)
-            response = self.api.on_exception(request, e)
-            self._rollback_atomic_requests()
-            return response
+            return self._on_exception(request, e)
 
     def _add_wraps_hint(self, exc: Exception) -> None:
         if isinstance(exc, TypeError) and "required positional argument" in str(exc):
             msg = "Did you fail to use functools.wraps() in a decorator?"
             msg = f"{exc.args[0]}: {msg}" if exc.args else msg
             exc.args = (msg,) + exc.args[1:]
+
+    def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
+        response = self.api.on_exception(request, exc)
+        self._rollback_atomic_requests()
+        return response
 
     def _rollback_atomic_requests(self) -> None:
         for db in connections.all():
@@ -645,12 +648,12 @@ class Operation:
                 if is_async and inspect.iscoroutine(result):
                     result = async_to_sync(_await_coroutine)(result)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome, handled = self._auth_outcome(request, result, temporal_response)
             if handled:
                 return outcome
-        return self.api.on_exception(request, AuthenticationError())
+        return self._on_exception(request, AuthenticationError())
 
     def _permission_outcome(
         self,
@@ -669,7 +672,7 @@ class Operation:
         if result:
             return None
         message = getattr(permission, "message", "Forbidden")
-        return self.api.on_exception(request, AuthorizationError(message=message))
+        return self._on_exception(request, AuthorizationError(message=message))
 
     def _run_permissions(
         self,
@@ -684,7 +687,7 @@ class Operation:
                 if inspect.iscoroutine(result):
                     result = async_to_sync(_await_coroutine)(result)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome = self._permission_outcome(
                 request, result, temporal_response, permission
@@ -708,6 +711,9 @@ class Operation:
         status: int
         if isinstance(result, APIReturn):
             status = type(result).code
+            if status >= 400:
+                # A returned error fails the request just as a raised one does.
+                self._rollback_atomic_requests()
             result = result.value
         else:
             # Bare return value - dispatch as the declared success code (200).
@@ -817,9 +823,7 @@ class AsyncOperation(Operation):
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
             self._add_wraps_hint(e)
-            response = self.api.on_exception(request, e)
-            self._rollback_atomic_requests()
-            return response
+            return self._on_exception(request, e)
 
     async def _async_stream_response(
         self,
@@ -896,12 +900,12 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(callback)(request)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome, handled = self._auth_outcome(request, result, temporal_response)
             if handled:
                 return outcome
-        return self.api.on_exception(request, AuthenticationError())
+        return self._on_exception(request, AuthenticationError())
 
     async def _run_permissions(  # type: ignore
         self,
@@ -917,7 +921,7 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(permission.check)(request, **kwargs)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome = self._permission_outcome(
                 request, result, temporal_response, permission
