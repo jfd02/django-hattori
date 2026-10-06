@@ -96,6 +96,25 @@ def _substitute_typevars(tp: Any, mapping: dict) -> Any:
     return origin[new_args] if len(new_args) > 1 else origin[new_args[0]]
 
 
+def _find_model_dump_override(schema: Any) -> type | None:
+    """The first model in a pydantic core schema that overrides ``model_dump``."""
+    if isinstance(schema, dict):
+        cls = schema.get("cls")
+        if (
+            schema.get("type") == "model"
+            and isinstance(cls, type)
+            and getattr(cls, "model_dump", None) is not BaseModel.model_dump
+        ):
+            return cls
+        schema = list(schema.values())
+    if isinstance(schema, (list, tuple)):
+        for item in schema:
+            found = _find_model_dump_override(item)
+            if found is not None:
+                return found
+    return None
+
+
 def _is_api_return_subclass(arm: Any) -> bool:
     if isinstance(arm, type) and issubclass(arm, APIReturn):
         return True
@@ -762,7 +781,19 @@ class Operation:
         if response_param is None:
             return None
         attrs = {"__annotations__": {"response": response_param}}
-        return type("HattoriResponseSchema", (Schema,), attrs)
+        model: type[Schema] = type("HattoriResponseSchema", (Schema,), attrs)
+        # Responses are dumped by the declared type's pydantic serializer, which
+        # never calls model_dump. Refuse an override rather than ignore it.
+        overriding = _find_model_dump_override(model.__pydantic_core_schema__)
+        if overriding is not None:
+            raise ConfigError(
+                f"View {self.view_func.__name__} responds with "
+                f"{overriding.__name__}, which overrides model_dump. Responses "
+                f"are serialized without calling model_dump, so the override "
+                f"would be ignored. Use @model_serializer or Field(exclude=True) "
+                f"to shape the output instead."
+            )
+        return model
 
 
 class AsyncOperation(Operation):

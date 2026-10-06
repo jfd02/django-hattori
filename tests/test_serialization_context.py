@@ -6,6 +6,7 @@ from django.utils.translation import gettext_lazy
 from pydantic import field_serializer, model_serializer
 
 from hattori import JSONL, HattoriAPI, Router, Schema
+from hattori.errors import ConfigError
 from hattori.renderers import BaseRenderer
 from hattori.testing import TestClient
 
@@ -49,17 +50,50 @@ def test_model_serializer_shapes_every_response(shape):
     assert _respond(Payload, values, shape) == {"public": "hello"}
 
 
-@pytest.mark.parametrize("shape", RESPONSE_SHAPES)
-def test_model_dump_override_is_never_called(shape):
-    # A response is dumped by the declared type's pydantic serializer, the same
-    # way for every shape. model_dump is not a hook into that.
+@pytest.mark.parametrize("shape", ["bare", "list", "optional", "nested"])
+def test_model_dump_override_on_a_response_schema_is_rejected(shape):
+    # A response is dumped by the declared type's pydantic serializer, which
+    # never calls model_dump, so an override could only be silently ignored.
     class Payload(Schema):
         public: str
 
         def model_dump(self, **kwargs):
-            raise AssertionError("model_dump must not be called")
+            return super().model_dump(**kwargs)
 
-    assert _respond(Payload, {"public": "hello"}, shape) == {"public": "hello"}
+    class Envelope(Schema):
+        payload: Payload
+
+    annotation = {
+        "bare": Payload,
+        "list": list[Payload],
+        "optional": Payload | None,
+        "nested": Envelope,
+    }[shape]
+    api = HattoriAPI()
+
+    with pytest.raises(ConfigError, match="Payload, which overrides model_dump"):
+
+        @api.get("/payload")
+        def payload(request) -> annotation:
+            return None
+
+
+def test_model_dump_override_on_a_request_schema_is_allowed():
+    class Payload(Schema):
+        public: str
+
+        def model_dump(self, **kwargs):
+            return super().model_dump(**kwargs)
+
+    api = HattoriAPI()
+
+    @api.post("/payload")
+    def payload(request, data: Payload) -> dict:
+        return {"public": data.public}
+
+    response = TestClient(api).post("/payload", json={"public": "hello"})
+    assert response.status_code == 200
+    assert response.json() == {"public": "hello"}
 
 
 @pytest.mark.parametrize("as_model", [False, True])
