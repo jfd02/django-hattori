@@ -10,7 +10,7 @@ from http import HTTPStatus
 from typing import Self
 
 import pytest
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import BadRequest, PermissionDenied, SuspiciousOperation
 from django.http import Http404
 from openapi_contract import export_contract, validate_response
 
@@ -73,6 +73,14 @@ def _api() -> HattoriAPI:
     @api.get("/private")
     def private(request) -> Item:
         raise PermissionDenied("Staff only")
+
+    @api.get("/malformed")
+    def malformed(request) -> Item:
+        raise BadRequest("Unreadable")
+
+    @api.get("/suspicious")
+    def suspicious(request) -> Item:
+        raise SuspiciousOperation("Tampered")
 
     return api
 
@@ -147,11 +155,14 @@ def test_every_http_error_uses_the_model(problem_model):
     [
         ("GET", "/missing", 404, {"code": "not_found", "message": "Not Found"}),
         ("GET", "/private", 403, {"code": "forbidden", "message": "Forbidden"}),
+        ("GET", "/malformed", 400, {"code": "bad_request", "message": "Bad Request"}),
+        ("GET", "/suspicious", 400, {"code": "bad_request", "message": "Bad Request"}),
+        ("GET", "/", 404, {"code": "not_found", "message": "Not Found"}),
         (
             "PUT",
             "/teapot",
             405,
-            {"code": "method_not_allowed", "message": "Method not allowed"},
+            {"code": "method_not_allowed", "message": "Method Not Allowed"},
         ),
     ],
 )
@@ -179,8 +190,10 @@ def test_errors_the_framework_answers_reach_an_http_error_handler():
 
     assert client.get("/missing").json() == {"error": 404}
     assert client.get("/private").json() == {"error": 403}
+    assert client.get("/malformed").json() == {"error": 400}
+    assert client.get("/").json() == {"error": 404}
     assert client.put("/teapot").json() == {"error": 405}
-    assert client.put("/teapot")["Allow"] == "GET, HEAD"
+    assert client.put("/teapot")["Allow"] == "GET, HEAD, OPTIONS"
 
 
 def test_operations_without_a_body_document_no_400(problem_model):

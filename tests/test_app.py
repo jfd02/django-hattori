@@ -5,7 +5,7 @@ from tempfile import NamedTemporaryFile
 import pytest
 from django.http import FileResponse, HttpResponse
 
-from hattori import HattoriAPI
+from hattori import SSE, HattoriAPI
 from hattori.errors import ConfigError
 from hattori.testing import TestClient
 
@@ -84,7 +84,7 @@ def file_response(request) -> str:
         ("delete", "/delete", 200, "this is DELETE", False),
         ("get", "/multi", 200, "this is GET", False),
         ("post", "/multi", 200, "this is POST", False),
-        ("patch", "/multi", 405, {"detail": "Method not allowed"}, False),
+        ("patch", "/multi", 405, {"detail": "Method Not Allowed"}, False),
         ("get", "/html", 200, b"html", False),
         ("get", "/file", 200, b"this is a file", True),
     ],
@@ -105,8 +105,8 @@ def test_method_not_allowed_names_the_allowed_methods():
     response = client.patch("/multi")
 
     assert response["Content-Type"] == "application/json; charset=utf-8"
-    assert response["Allow"] == "GET, POST, HEAD"
-    assert client.get("/post")["Allow"] == "POST"
+    assert response["Allow"] == "GET, POST, HEAD, OPTIONS"
+    assert client.get("/post")["Allow"] == "POST, OPTIONS"
 
 
 def test_head_is_answered_by_the_get_operation():
@@ -131,7 +131,45 @@ def test_declared_head_operation_is_not_replaced_by_get():
     client = TestClient(api)
 
     assert client.request("HEAD", "/resource").json() == "HEAD"
-    assert client.put("/resource")["Allow"] == "GET, HEAD"
+    assert client.put("/resource")["Allow"] == "GET, HEAD, OPTIONS"
+
+
+def test_head_does_not_start_a_stream():
+    api = HattoriAPI()
+    started = []
+
+    @api.get("/events")
+    def events(request) -> SSE[str]:
+        started.append(True)
+        yield "tick"
+
+    response = TestClient(api).request("HEAD", "/events")
+
+    assert response.status_code == 405
+    assert response["Allow"] == "GET, OPTIONS"
+    assert started == []
+
+
+def test_options_lists_the_methods_without_running_an_operation():
+    response = client.request("OPTIONS", "/multi")
+
+    assert response.status_code == 200
+    assert response.content == b""
+    assert response["Content-Length"] == "0"
+    assert response["Allow"] == "GET, POST, HEAD, OPTIONS"
+
+
+def test_declared_options_operation_is_not_replaced():
+    api = HattoriAPI()
+
+    @api.api_operation(["OPTIONS"], "/resource")
+    def describe(request) -> str:
+        return "described"
+
+    client = TestClient(api)
+
+    assert client.request("OPTIONS", "/resource").json() == "described"
+    assert client.get("/resource")["Allow"] == "OPTIONS"
 
 
 def test_validates():

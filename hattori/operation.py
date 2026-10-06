@@ -445,9 +445,17 @@ class Operation:
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
             self._add_wraps_hint(e)
-            response = self.api.on_exception(request, e)
-            self._rollback_atomic_requests()
-            return response
+            return self._on_exception(request, e)
+
+    def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
+        """The API's answer to an exception raised while handling ``request``.
+
+        Django rolls an ATOMIC_REQUESTS transaction back when an exception
+        reaches it, so answering in its place rolls back as well.
+        """
+        response = self.api.on_exception(request, exc)
+        self._rollback_atomic_requests()
+        return response
 
     def _add_wraps_hint(self, exc: Exception) -> None:
         if isinstance(exc, TypeError) and "required positional argument" in str(exc):
@@ -645,7 +653,7 @@ class Operation:
                 if is_async and inspect.iscoroutine(result):
                     result = async_to_sync(_await_coroutine)(result)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome, handled = self._auth_outcome(request, result, temporal_response)
             if handled:
@@ -684,7 +692,7 @@ class Operation:
                 if inspect.iscoroutine(result):
                     result = async_to_sync(_await_coroutine)(result)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome = self._permission_outcome(
                 request, result, temporal_response, permission
@@ -817,9 +825,7 @@ class AsyncOperation(Operation):
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
             self._add_wraps_hint(e)
-            response = self.api.on_exception(request, e)
-            self._rollback_atomic_requests()
-            return response
+            return self._on_exception(request, e)
 
     async def _async_stream_response(
         self,
@@ -896,7 +902,7 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(callback)(request)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome, handled = self._auth_outcome(request, result, temporal_response)
             if handled:
@@ -917,7 +923,7 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(permission.check)(request, **kwargs)
             except Exception as exc:
-                return self.api.on_exception(request, exc)
+                return self._on_exception(request, exc)
 
             outcome = self._permission_outcome(
                 request, result, temporal_response, permission
@@ -929,6 +935,7 @@ class AsyncOperation(Operation):
 
 class PathView:
     def __init__(self) -> None:
+        self.api: HattoriAPI = cast("HattoriAPI", None)
         self.operations: list[Operation] = []
         self._method_map: dict[str, Operation] = {}
         self.is_async = False  # if at least one operation is async - will become True
@@ -1049,36 +1056,77 @@ class PathView:
     def _sync_view(self, request: HttpRequest, *a: Any, **kw: Any) -> HttpResponseBase:
         operation = self._find_operation(request)
         if operation is None:
-            return self._not_allowed(request)
-        return operation.run(request, *a, **kw)
+            return self._undeclared_method(request)
+        try:
+            return operation.run(request, *a, **kw)
+        except Exception as exc:
+            return self._escaped_exception(request, operation, exc)
 
     async def _async_view(
         self, request: HttpRequest, *a: Any, **kw: Any
     ) -> HttpResponseBase:
         operation = self._find_operation(request)
         if operation is None:
-            return self._not_allowed(request)
-        if operation.is_async:
-            return await cast(AsyncOperation, operation).run(request, *a, **kw)
-        return await sync_to_async(operation.run)(request, *a, **kw)
+            return self._undeclared_method(request)
+        try:
+            if operation.is_async:
+                return await cast(AsyncOperation, operation).run(request, *a, **kw)
+            return await sync_to_async(operation.run)(request, *a, **kw)
+        except Exception as exc:
+            return self._escaped_exception(request, operation, exc)
+
+    def _escaped_exception(
+        self, request: HttpRequest, operation: Operation, exc: Exception
+    ) -> HttpResponse:
+        """Answer an exception that got out of ``operation.run``.
+
+        The operation answers what its own code raises, so this is either one
+        the handlers already left unanswered, which goes on to Django, or one
+        raised around the operation by a view decorator, which they have not
+        seen yet.
+        """
+        if exc is getattr(request, "_hattori_unanswered", None):
+            raise exc
+        return operation._on_exception(request, exc)
 
     def _find_operation(self, request: HttpRequest) -> Operation | None:
         method = request.method or ""
         operation = self._method_map.get(method)
         if operation is None and method == "HEAD":
-            # As in Django's own View, a GET route answers HEAD as well; the
-            # server sends the headers and drops the body.
-            operation = self._method_map.get("GET")
+            operation = self._implicit_head()
+        return operation
+
+    def _implicit_head(self) -> Operation | None:
+        """The GET operation, where it answers HEAD as well.
+
+        As in Django's own View, it does unless HEAD is declared: the server
+        sends the headers and drops the body. A stream is the exception, since
+        answering would start a stream nobody reads.
+        """
+        if "HEAD" in self._method_map:
+            return None
+        operation = self._method_map.get("GET")
+        if operation is None or operation.stream_format:
+            return None
         return operation
 
     def _allowed_methods(self) -> list[str]:
         methods = list(self._method_map)
-        if "GET" in self._method_map and "HEAD" not in self._method_map:
+        if self._implicit_head():
             methods.append("HEAD")
+        if "OPTIONS" not in self._method_map:
+            methods.append("OPTIONS")
         return methods
 
-    def _not_allowed(self, request: HttpRequest) -> HttpResponse:
-        api = self.operations[0].api
-        response = api.on_exception(request, HttpError(405, "Method not allowed"))
+    def _undeclared_method(self, request: HttpRequest) -> HttpResponse:
+        """Answer a method that no operation on this path declares."""
+        if request.method == "OPTIONS":
+            # As in Django's own View: no body, just the methods on offer.
+            response = self.api.create_temporal_response(request)
+            response["Content-Length"] = "0"
+        else:
+            response = self.api.on_exception(
+                request, HttpError(405, "Method Not Allowed")
+            )
         response["Allow"] = ", ".join(self._allowed_methods())
         return response

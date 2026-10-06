@@ -367,7 +367,29 @@ set_http_error_model(Problem)   # e.g. from AppConfig.ready()
 
 The default is `{"detail": "<message>"}`.
 
-Errors the framework answers on your behalf are `HttpError`s too, so they take the same body and the same `@api.exception_handler(HttpError)` override: Django's `Http404` (404) and `PermissionDenied` (403) raised from a handler, and a request for a method the path doesn't define (405, with an `Allow` header). A `GET` route also answers `HEAD`.
+Every error the API answers on your behalf is an `HttpError` too, so it takes the same body and the same `@api.exception_handler(HttpError)` override:
+
+| Raised or requested | Answer |
+| --- | --- |
+| Django's `Http404` | 404 |
+| Django's `PermissionDenied` | 403, as an `AuthorizationError` |
+| Django's `BadRequest`, `SuspiciousOperation`, unreadable multipart data | 400 |
+| A method the path doesn't declare | 405, with an `Allow` header |
+| The API's root URL | 404 |
+
+That holds wherever the exception is raised: the operation, its auth or permissions, or a view decorator around it. The status and the log entry are the ones Django would have produced, only the body differs, and the Django exception is the `__cause__` of the `HttpError` your handler receives.
+
+A `GET` route also answers `HEAD` (unless it streams), and every path answers `OPTIONS` with its `Allow` header. Declare either operation yourself to replace that.
+
+A path under the API that matches no route is still Django's to answer, with its HTML 404. To have the API answer those as well, claim the whole mount:
+
+```python
+api = HattoriAPI(catch_all=True)
+```
+
+It is off by default because it is a catch-all URL pattern: anything listed after the API in `urlpatterns` under the same prefix is never reached, so list more specific mounts first.
+
+An exception no handler answers is not turned into an `HttpError`. Outside `DEBUG` it is re-raised, so Django reports it and sends its own 500; in `DEBUG` the API answers with a plain-text traceback. Register `@api.exception_handler(Exception)` to answer those yourself.
 
 ## Testing
 
