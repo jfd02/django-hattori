@@ -470,26 +470,11 @@ class Operation:
         )
         dump = model.model_dump
         extra: dict[str, Any] = {}
-        default_dump = type(model).model_dump is BaseModel.model_dump
         if mode == "json":
-            if pydantic_version >= [2, 11]:
-                parameters = (
-                    inspect.signature(dump).parameters if not default_dump else {}
-                )
-                if (
-                    default_dump
-                    or "fallback" in parameters
-                    or any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD
-                        for p in parameters.values()
-                    )
-                ):
-                    extra["fallback"] = json_default
-            elif default_dump:
-                # Older model_dump versions do not expose fallback. Only use
-                # the core serializer when there is no user override to honor.
+            if pydantic_version < [2, 11]:
+                # Older model_dump versions do not expose fallback.
                 dump = partial(model.__pydantic_serializer__.to_python, model)
-                extra["fallback"] = json_default
+            extra["fallback"] = json_default
         return dump(
             mode=mode,
             context=ctx,
@@ -769,20 +754,10 @@ class Operation:
             and isinstance(result, BaseModel)
             and isinstance(result, resp_type)
         ):
-            # The declared class itself dumps as declared. A model that overrides
-            # model_dump shapes its own output, so it keeps dumping itself too.
-            if (
-                type(result) is resp_annotation
-                or type(result).model_dump is not BaseModel.model_dump
-            ):
-                result = self._dump_model(result, ctx)
-                return self.api.create_response(
-                    request, result, temporal_response=temporal_response
-                )
-            # A subclass, or the same generic parameterized differently (Page or
+            # Wrapped unvalidated, never dumped by its own model_dump: a
+            # subclass, or the same generic parameterized differently (Page or
             # Page[UserInternal] for Page[UserOut]), would dump the fields of its
-            # own class. Wrap it unvalidated so it is dumped as the declared
-            # type instead, which drops the rest.
+            # own class. Dumping through the declared type drops the rest.
             response_object = response_model.model_construct(response=result)
         else:
             response_object = response_model.model_validate(
