@@ -386,6 +386,27 @@ def signup(request, data: SignupIn) -> Created[UserOut] | UsernameTaken:
 Only a hand-built `HttpResponse` is passed through on Django's own terms, which
 commit unless an exception escapes.
 
+For a write that has to outlive a failed request — a failed-login counter, an
+audit row — opt the endpoint out with Django's own `non_atomic_requests` and
+scope its transactions yourself:
+
+```python
+from django.db import transaction
+
+@api.post("/login")
+@transaction.non_atomic_requests
+def login(request, data: LoginIn) -> SessionOut | BadCredentials:
+    user = check_credentials(data.username, data.password)
+    if user is None:
+        FailedLogin.objects.create(username=data.username)   # kept
+        return BadCredentials()
+    return SessionOut(token=start_session(user))
+```
+
+Django applies the opt-out per URL, so it takes effect once every method
+registered on that path carries it. It is also what lets an `async` endpoint run
+in a project with `ATOMIC_REQUESTS` on, which Django otherwise refuses.
+
 ## Testing
 
 Hattori ships a lightweight test client that calls your endpoints in-process —

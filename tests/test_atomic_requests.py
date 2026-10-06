@@ -9,10 +9,10 @@ or returned, from a view, an auth callback or a permission.
 from typing import Literal
 
 import pytest
-from django.db import connection
+from django.db import connection, transaction
 from django.http import HttpResponse
 from django.test import Client
-from django.urls import path
+from django.urls import path, resolve
 from someapp.models import Event
 
 from hattori import ApiError, BasePermission, Created, HattoriAPI
@@ -141,9 +141,47 @@ def raw_response(request) -> str:
     return HttpResponse(status=409)
 
 
+@api.post("non-atomic")
+@transaction.non_atomic_requests
+def non_atomic(request) -> str | Conflict:
+    write("non-atomic")
+    return Conflict()
+
+
+@transaction.non_atomic_requests
+@api.post("non-atomic-outermost")
+def non_atomic_outermost(request) -> str:
+    return "ok"
+
+
+@api.post("other-db-non-atomic")
+@transaction.non_atomic_requests(using="other")
+def other_db_non_atomic(request) -> str | Conflict:
+    write("other-db-non-atomic")
+    return Conflict()
+
+
+@api.get("shared")
+@transaction.non_atomic_requests
+def shared_get(request) -> str:
+    return "ok"
+
+
+@api.post("shared")
+def shared_post(request) -> str | Conflict:
+    write("shared")
+    return Conflict()
+
+
 @api.get("async")
 async def async_view(request) -> str:
     return "ok"
+
+
+@api.get("async-non-atomic")
+@transaction.non_atomic_requests
+async def async_non_atomic(request) -> str | Conflict:
+    return Conflict()
 
 
 urlpatterns = [
@@ -178,6 +216,10 @@ def post(name: str) -> HttpResponse:
         ("permission-refused", 403),
         ("permission-returned", 403),
         ("permission-raised", 403),
+        # Opting out for another database leaves this one's request atomic.
+        ("other-db-non-atomic", 409),
+        # GET opted out but POST did not, and Django decides per URL.
+        ("shared", 409),
     ],
 )
 def test_error_response_rolls_back(atomic_requests, name, status):
@@ -204,6 +246,33 @@ def test_nothing_rolls_back_without_atomic_requests():
     assert written("returned")
 
 
+def test_non_atomic_requests_marker_reaches_the_url_callback():
+    def marker(name: str) -> set[str] | None:
+        return getattr(resolve(URL + name).func, "_non_atomic_requests", None)
+
+    assert marker("non-atomic") == {"default"}
+    assert marker("non-atomic-outermost") == {"default"}
+    assert marker("other-db-non-atomic") == {"other"}
+    assert marker("async-non-atomic") == {"default"}
+    assert marker("returned") is None
+    assert marker("shared") is None
+
+
+def test_non_atomic_view_keeps_its_writes(atomic_requests):
+    # The view opted out of the request transaction, so there is nothing of
+    # hattori's to roll back - least of all a transaction opened further out,
+    # such as this test's.
+    assert post("non-atomic").status_code == 409
+    assert written("non-atomic")
+
+
+def test_async_view_runs_once_it_opts_out(atomic_requests):
+    with pytest.raises(RuntimeError, match="ATOMIC_REQUESTS with async views"):
+        Client().get(URL + "async")
+
+    assert Client().get(URL + "async-non-atomic").status_code == 409
+
+
 def test_test_client_runs_the_request_transaction(atomic_requests):
     # The rollback lands on the request's transaction, not on one opened
     # further out, such as this test's.
@@ -215,8 +284,15 @@ def test_test_client_runs_the_request_transaction(atomic_requests):
     assert client.post("/created").status_code == 201
     assert written("created")
 
+    assert client.post("/non-atomic").status_code == 409
+    assert written("non-atomic")
+
 
 @pytest.mark.asyncio
 async def test_async_test_client_runs_the_request_transaction(atomic_requests):
+    client = TestAsyncClient(api)
+
     with pytest.raises(RuntimeError, match="ATOMIC_REQUESTS with async views"):
-        await TestAsyncClient(api).get("/async")
+        await client.get("/async")
+
+    assert (await client.get("/async-non-atomic")).status_code == 409

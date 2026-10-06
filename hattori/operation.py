@@ -455,12 +455,20 @@ class Operation:
 
     def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
         response = self.api.on_exception(request, exc)
-        self._rollback_atomic_requests()
+        self._rollback_atomic_requests(request)
         return response
 
-    def _rollback_atomic_requests(self) -> None:
+    def _rollback_atomic_requests(self, request: HttpRequest) -> None:
+        # A database the route opted out of with non_atomic_requests has no
+        # request transaction, and one opened further out is not ours to end.
+        match = request.resolver_match
+        non_atomic = getattr(match.func, "_non_atomic_requests", ()) if match else ()
         for db in connections.all():
-            if db.settings_dict.get("ATOMIC_REQUESTS") and db.in_atomic_block:
+            if (
+                db.settings_dict.get("ATOMIC_REQUESTS")
+                and db.alias not in non_atomic
+                and db.in_atomic_block
+            ):
                 transaction.set_rollback(True, using=db.alias)
 
     def _dump_model(
@@ -713,7 +721,7 @@ class Operation:
             status = type(result).code
             if status >= 400:
                 # A returned error fails the request just as a raised one does.
-                self._rollback_atomic_requests()
+                self._rollback_atomic_requests(request)
             result = result.value
         else:
             # Bare return value - dispatch as the declared success code (200).
@@ -1036,7 +1044,7 @@ class PathView:
             # Cookie-based auth (APIKeyCookie) handles CSRF checking separately
             async_view_wrapper.csrf_exempt = True  # type: ignore
 
-            return async_view_wrapper
+            return self._mark_non_atomic(async_view_wrapper)
         else:
             # Create a wrapper for sync view
             def sync_view_wrapper(
@@ -1048,7 +1056,23 @@ class PathView:
             # Cookie-based auth (APIKeyCookie) handles CSRF checking separately
             sync_view_wrapper.csrf_exempt = True  # type: ignore
 
-            return sync_view_wrapper
+            return self._mark_non_atomic(sync_view_wrapper)
+
+    def _mark_non_atomic(self, view: Callable) -> Callable:
+        """Carry ``transaction.non_atomic_requests`` over to the URL callback.
+
+        Django reads the marker off the callback it resolved, which is the
+        wrapper built above rather than the decorated endpoint. That one
+        callback serves every method of the path, so a database is opted out
+        only when all of them opted out.
+        """
+        non_atomic: set[str] | None = None
+        for operation in self.operations:
+            marker = set(getattr(operation.view_func, "_non_atomic_requests", ()))
+            non_atomic = marker if non_atomic is None else non_atomic & marker
+        if non_atomic:
+            view._non_atomic_requests = non_atomic  # type: ignore
+        return view
 
     def _sync_view(self, request: HttpRequest, *a: Any, **kw: Any) -> HttpResponseBase:
         operation = self._find_operation(request)
