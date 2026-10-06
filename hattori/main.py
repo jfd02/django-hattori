@@ -510,22 +510,20 @@ class HattoriAPI:
                 )
 
                 # Build mount configurations (non-mutating)
-                # Pass auth/permissions/tags so they can be inherited by children
+                # auth/permissions are this mount's overrides; they apply to the
+                # router and are inherited by its children. Tags are passed so
+                # they can be inherited by children.
                 mounts = router.build_routers(
                     prefix,
                     api_decorators,
-                    inherited_auth=auth,
                     inherited_tags=tags,
-                    inherited_permissions=permissions,
+                    mount_auth=auth,
+                    mount_permissions=permissions,
                 )
 
-                # Apply mount-level overrides to the first (parent) mount
+                # Apply the mount-level tags override to the first (parent) mount
                 # build_routers() always returns at least one mount (the router itself)
                 first_mount = mounts[0]
-                if auth is not NOT_SET:
-                    first_mount.auth = auth
-                if permissions is not NOT_SET:
-                    first_mount.permissions = permissions
                 if tags is not None:
                     first_mount.tags = tags
 
