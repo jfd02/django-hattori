@@ -18,7 +18,6 @@ from django.db import connections, transaction
 from django.http import (
     HttpRequest,
     HttpResponse,
-    HttpResponseNotAllowed,
     StreamingHttpResponse,
 )
 from django.http.response import HttpResponseBase
@@ -31,6 +30,7 @@ from hattori.errors import (
     AuthenticationError,
     AuthorizationError,
     ConfigError,
+    HttpError,
     ValidationErrorContext,
 )
 from hattori.params.models import TModels
@@ -1049,7 +1049,7 @@ class PathView:
     def _sync_view(self, request: HttpRequest, *a: Any, **kw: Any) -> HttpResponseBase:
         operation = self._find_operation(request)
         if operation is None:
-            return self._not_allowed()
+            return self._not_allowed(request)
         return operation.run(request, *a, **kw)
 
     async def _async_view(
@@ -1057,15 +1057,28 @@ class PathView:
     ) -> HttpResponseBase:
         operation = self._find_operation(request)
         if operation is None:
-            return self._not_allowed()
+            return self._not_allowed(request)
         if operation.is_async:
             return await cast(AsyncOperation, operation).run(request, *a, **kw)
         return await sync_to_async(operation.run)(request, *a, **kw)
 
     def _find_operation(self, request: HttpRequest) -> Operation | None:
-        return self._method_map.get(request.method or "")
+        method = request.method or ""
+        operation = self._method_map.get(method)
+        if operation is None and method == "HEAD":
+            # As in Django's own View, a GET route answers HEAD as well; the
+            # server sends the headers and drops the body.
+            operation = self._method_map.get("GET")
+        return operation
 
-    def _not_allowed(self) -> HttpResponse:
-        return HttpResponseNotAllowed(
-            self._method_map.keys(), content=b"Method not allowed"
-        )
+    def _allowed_methods(self) -> list[str]:
+        methods = list(self._method_map)
+        if "GET" in self._method_map and "HEAD" not in self._method_map:
+            methods.append("HEAD")
+        return methods
+
+    def _not_allowed(self, request: HttpRequest) -> HttpResponse:
+        api = self.operations[0].api
+        response = api.on_exception(request, HttpError(405, "Method not allowed"))
+        response["Allow"] = ", ".join(self._allowed_methods())
+        return response

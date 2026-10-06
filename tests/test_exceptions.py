@@ -1,4 +1,5 @@
 import pytest
+from django.core.exceptions import PermissionDenied
 from django.http import Http404
 
 from hattori import HattoriAPI, Schema
@@ -26,6 +27,12 @@ def err_thrower(request, code: str, payload: Payload = None) -> None:
         raise RuntimeError("test")
     if code == "404":
         raise Http404("test")
+    if code == "404-bare":
+        raise Http404
+    if code == "403":
+        raise PermissionDenied("test")
+    if code == "403-bare":
+        raise PermissionDenied
     if code == "custom":
         raise CustomException("test")
     return None
@@ -44,6 +51,12 @@ def test_default_handler(settings):
     response = client.post("/error/404")
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found: test"}
+    assert client.post("/error/404-bare").json() == {"detail": "Not Found"}
+
+    response = client.post("/error/403")
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Forbidden: test"}
+    assert client.post("/error/403-bare").json() == {"detail": "Forbidden"}
 
     response = client.post("/error/custom", body="invalid_json")
     assert response.status_code == 400
@@ -63,6 +76,7 @@ def test_default_handler(settings):
     "route,status_code,json",
     [
         ("/error/404", 404, {"detail": "Not Found"}),
+        ("/error/403", 403, {"detail": "Forbidden"}),
         ("/error/custom", 422, {"custom": True}),
     ],
 )

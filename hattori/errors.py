@@ -16,6 +16,7 @@ from typing import (
 
 import pydantic
 from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.http import Http404, HttpRequest, HttpResponse
 
 from hattori.responses import APIReturn
@@ -408,6 +409,10 @@ def set_default_exc_handlers(api: HattoriAPI) -> None:
         partial(_default_404, api=api),
     )
     api.add_exception_handler(
+        PermissionDenied,
+        partial(_default_permission_denied, api=api),
+    )
+    api.add_exception_handler(
         HttpError,
         partial(_default_http_error, api=api),
     )
@@ -417,11 +422,26 @@ def set_default_exc_handlers(api: HattoriAPI) -> None:
     )
 
 
+def _with_debug_reason(message: str, exc: Exception) -> str:
+    # The reason on a Django exception is written for the developer, so it only
+    # reaches the client in DEBUG.
+    if settings.DEBUG and str(exc):
+        return f"{message}: {exc}"
+    return message
+
+
+# Django's own exceptions are answered as the HttpError they stand for, so they
+# take the same body (and the same handler override) as every other HttpError.
 def _default_404(request: HttpRequest, exc: Exception, api: HattoriAPI) -> HttpResponse:
-    msg = "Not Found"
-    if settings.DEBUG:
-        msg += f": {exc}"
-    return api.create_response(request, {"detail": msg}, status=404)
+    error = HttpError(404, _with_debug_reason("Not Found", exc))
+    return api.on_exception(request, error)
+
+
+def _default_permission_denied(
+    request: HttpRequest, exc: Exception, api: HattoriAPI
+) -> HttpResponse:
+    error = AuthorizationError(message=_with_debug_reason("Forbidden", exc))
+    return api.on_exception(request, error)
 
 
 def _default_http_error(

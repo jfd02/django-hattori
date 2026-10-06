@@ -84,7 +84,7 @@ def file_response(request) -> str:
         ("delete", "/delete", 200, "this is DELETE", False),
         ("get", "/multi", 200, "this is GET", False),
         ("post", "/multi", 200, "this is POST", False),
-        ("patch", "/multi", 405, b"Method not allowed", False),
+        ("patch", "/multi", 405, {"detail": "Method not allowed"}, False),
         ("get", "/html", 200, b"html", False),
         ("get", "/file", 200, b"this is a file", True),
     ],
@@ -99,6 +99,39 @@ def test_method(method, path, expected_status, expected_data, expected_streaming
     except Exception:
         data = response.content
     assert data == expected_data
+
+
+def test_method_not_allowed_names_the_allowed_methods():
+    response = client.patch("/multi")
+
+    assert response["Content-Type"] == "application/json; charset=utf-8"
+    assert response["Allow"] == "GET, POST, HEAD"
+    assert client.get("/post")["Allow"] == "POST"
+
+
+def test_head_is_answered_by_the_get_operation():
+    response = client.request("HEAD", "/get")
+
+    assert response.status_code == 200
+    assert response.json() == "this is HEAD"
+    assert client.request("HEAD", "/post").status_code == 405
+
+
+def test_declared_head_operation_is_not_replaced_by_get():
+    api = HattoriAPI()
+
+    @api.get("/resource")
+    def read(request) -> str:
+        return "GET"
+
+    @api.api_operation(["HEAD"], "/resource")
+    def probe(request) -> str:
+        return "HEAD"
+
+    client = TestClient(api)
+
+    assert client.request("HEAD", "/resource").json() == "HEAD"
+    assert client.put("/resource")["Allow"] == "GET, HEAD"
 
 
 def test_validates():

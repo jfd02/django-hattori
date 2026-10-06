@@ -56,3 +56,8 @@ async def test_asyncio_operations():
     # invalid method
     res = await client.put("/async")
     assert res.status_code == 405
+    assert res.json() == {"detail": "Method not allowed"}
+
+    # HEAD falls back to the GET operation
+    res = await client.request("HEAD", "/async?payload=1&key=secret")
+    assert res.status_code == 200

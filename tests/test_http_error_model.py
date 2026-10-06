@@ -10,6 +10,8 @@ from http import HTTPStatus
 from typing import Self
 
 import pytest
+from django.core.exceptions import PermissionDenied
+from django.http import Http404
 from openapi_contract import export_contract, validate_response
 
 from hattori import ApiError, HattoriAPI, HttpErrorBody, Schema
@@ -63,6 +65,14 @@ def _api() -> HattoriAPI:
     @api.get("/items")
     def list_items(request) -> list[Item]:
         return []
+
+    @api.get("/missing")
+    def missing(request) -> Item:
+        raise Http404("No such item")
+
+    @api.get("/private")
+    def private(request) -> Item:
+        raise PermissionDenied("Staff only")
 
     return api
 
@@ -130,6 +140,47 @@ def test_every_http_error_uses_the_model(problem_model):
 
     assert response.status_code == 418
     assert response.json() == {"code": "im_a_teapot", "message": "Short and stout"}
+
+
+@pytest.mark.parametrize(
+    "method,path,status,body",
+    [
+        ("GET", "/missing", 404, {"code": "not_found", "message": "Not Found"}),
+        ("GET", "/private", 403, {"code": "forbidden", "message": "Forbidden"}),
+        (
+            "PUT",
+            "/teapot",
+            405,
+            {"code": "method_not_allowed", "message": "Method not allowed"},
+        ),
+    ],
+)
+def test_errors_the_framework_answers_use_the_model(
+    problem_model, settings, method, path, status, body
+):
+    settings.DEBUG = False
+
+    response = TestClient(_api()).request(method, path)
+
+    assert response.status_code == status
+    assert response.json() == body
+
+
+def test_errors_the_framework_answers_reach_an_http_error_handler():
+    api = _api()
+
+    @api.exception_handler(HttpError)
+    def envelope(request, exc):
+        return api.create_response(
+            request, {"error": exc.status_code}, status=exc.status_code
+        )
+
+    client = TestClient(api)
+
+    assert client.get("/missing").json() == {"error": 404}
+    assert client.get("/private").json() == {"error": 403}
+    assert client.put("/teapot").json() == {"error": 405}
+    assert client.put("/teapot")["Allow"] == "GET, HEAD"
 
 
 def test_operations_without_a_body_document_no_400(problem_model):

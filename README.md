@@ -367,6 +367,8 @@ set_http_error_model(Problem)   # e.g. from AppConfig.ready()
 
 The default is `{"detail": "<message>"}`.
 
+Errors the framework answers on your behalf are `HttpError`s too, so they take the same body and the same `@api.exception_handler(HttpError)` override: Django's `Http404` (404) and `PermissionDenied` (403) raised from a handler, and a request for a method the path doesn't define (405, with an `Allow` header). A `GET` route also answers `HEAD`.
+
 ## Testing
 
 Hattori ships a lightweight test client that calls your endpoints in-process —
