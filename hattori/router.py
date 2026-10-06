@@ -49,6 +49,28 @@ class RouterMount:
     inherited_permissions: Any = NOT_SET
     inherited_tags: list[str] | None = None
 
+    # Effective auth/permissions priority:
+    # 1. mount override (from the add_router auth/permissions params on this mount)
+    # 2. template's own settings (set on the Router itself)
+    # 3. inherited from parent (the parent's effective value)
+    @property
+    def effective_auth(self) -> Any:
+        return _first_set(self.auth, self.template.auth, self.inherited_auth)
+
+    @property
+    def effective_permissions(self) -> Any:
+        return _first_set(
+            self.permissions, self.template.permissions, self.inherited_permissions
+        )
+
+
+def _first_set(*values: Any) -> Any:
+    # Falsy values (None, []) are explicit settings; only NOT_SET is skipped.
+    for value in values:
+        if value is not NOT_SET:
+            return value
+    return NOT_SET
+
 
 @dataclass(frozen=True)
 class _OperationOptions:
@@ -111,28 +133,8 @@ class BoundRouter:
         self.prefix = mount.prefix
         self.url_name_prefix = mount.url_name_prefix
 
-        # Effective settings priority:
-        # 1. mount override (from api.add_router auth/tags params on this specific mount)
-        # 2. template's own settings (set on the Router itself)
-        # 3. inherited from parent (for nested routers where parent has auth)
-        if mount.auth is not NOT_SET:
-            self.auth = mount.auth
-        elif mount.template.auth is not NOT_SET:
-            self.auth = mount.template.auth
-        elif mount.inherited_auth is not NOT_SET:
-            self.auth = mount.inherited_auth
-        else:
-            self.auth = NOT_SET
-
-        # Permissions follow the same priority chain as auth.
-        if mount.permissions is not NOT_SET:
-            self.permissions = mount.permissions
-        elif mount.template.permissions is not NOT_SET:
-            self.permissions = mount.template.permissions
-        elif mount.inherited_permissions is not NOT_SET:
-            self.permissions = mount.inherited_permissions
-        else:
-            self.permissions = NOT_SET
+        self.auth = mount.effective_auth
+        self.permissions = mount.effective_permissions
 
         # Tags handling (issue #794):
         # - mount.tags (from add_router call) = explicit override, use as-is
@@ -672,6 +674,9 @@ class Router:
         inherited_auth: Any = NOT_SET,
         inherited_tags: list[str] | None = None,
         inherited_permissions: Any = NOT_SET,
+        *,
+        mount_auth: Any = NOT_SET,
+        mount_permissions: Any = NOT_SET,
     ) -> list[RouterMount]:
         """
         Build mount configurations for this router and all child routers.
@@ -685,6 +690,9 @@ class Router:
             inherited_auth: Auth inherited from parent routers
             inherited_tags: Tags inherited from parent routers
             inherited_permissions: Permissions inherited from parent routers
+            mount_auth: Auth override from the add_router() call for this mount
+            mount_permissions: Permissions override from the add_router() call
+                for this mount
 
         Returns:
             List of RouterMount configurations for this router and all descendants
@@ -696,6 +704,8 @@ class Router:
         mount = RouterMount(
             template=self,
             prefix=prefix,
+            auth=mount_auth,
+            permissions=mount_permissions,
             inherited_decorators=list(inherited_decorators),
             inherited_auth=inherited_auth,
             inherited_permissions=inherited_permissions,
@@ -705,14 +715,10 @@ class Router:
         # Calculate values to pass to children
         child_decorators = inherited_decorators + self._decorators
 
-        # For auth/permissions, effective value is used for children:
-        # priority: this router's own setting > inherited (override semantics).
-        child_auth = self.auth if self.auth is not NOT_SET else inherited_auth
-        child_permissions = (
-            self.permissions
-            if self.permissions is not NOT_SET
-            else inherited_permissions
-        )
+        # Children inherit this router's effective auth/permissions, so a
+        # mount-level override reaches descendants just as it reaches this router.
+        child_auth = mount.effective_auth
+        child_permissions = mount.effective_permissions
         # Tags accumulate (not override): a child inherits the full chain of its
         # ancestors' tags plus this router's own. Passing only self.tags (or only
         # inherited) drops ancestor tags beyond two levels of nesting.
@@ -729,25 +735,15 @@ class Router:
             child_url_name_prefix,
         ) in self._routers:
             child_path = normalize_path("/".join((prefix, child_prefix))).lstrip("/")
-            child_inherited_auth = (
-                child_mount_auth if child_mount_auth is not NOT_SET else child_auth
-            )
-            child_inherited_permissions = (
-                child_mount_permissions
-                if child_mount_permissions is not NOT_SET
-                else child_permissions
-            )
             mounts = child_router.build_routers(
                 child_path,
                 child_decorators,
-                child_inherited_auth,
+                child_auth,
                 child_tags,
-                child_inherited_permissions,
+                child_permissions,
+                mount_auth=child_mount_auth,
+                mount_permissions=child_mount_permissions,
             )
-            if mounts and child_mount_auth is not NOT_SET:
-                mounts[0].auth = child_mount_auth
-            if mounts and child_mount_permissions is not NOT_SET:
-                mounts[0].permissions = child_mount_permissions
             # Apply mount-level tags override to the first mount (the child router itself)
             if mounts and child_mount_tags is not None:
                 mounts[0].tags = child_mount_tags

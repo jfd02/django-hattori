@@ -520,6 +520,80 @@ def test_mount_level_permissions_override():
     assert TestClient(api).get("/r/x").status_code == 403
 
 
+def _permission_tree(**child_kwargs):
+    """parent (own permissions allow) -> child -> grandchild, each with "/x"."""
+    from hattori import Router
+
+    class AllowAll(BasePermission):
+        def check(self, request) -> bool:
+            return True
+
+    parent = Router(permissions=[AllowAll()])
+    child = Router(**child_kwargs)
+    grandchild = Router()
+
+    @parent.get("/x")
+    def parent_view(request) -> Out:
+        return Out(ok=True)
+
+    @child.get("/x")
+    def child_view(request) -> Out:
+        return Out(ok=True)
+
+    @grandchild.get("/x")
+    def grandchild_view(request) -> Out:
+        return Out(ok=True)
+
+    parent.add_router("/child", child)
+    child.add_router("/grand", grandchild)
+    return parent
+
+
+def _mount_denied(api, parent, nested):
+    """Mount parent at /r with a deny-all override, on the API or a router."""
+    from hattori import Router
+
+    class DenyAll(BasePermission):
+        def check(self, request) -> bool:
+            return False
+
+    if nested:
+        root = Router()
+        root.add_router("/r", parent, permissions=[DenyAll()])
+        api.add_router("", root)
+    else:
+        api.add_router("/r", parent, permissions=[DenyAll()])
+    return TestClient(api)
+
+
+@pytest.mark.parametrize(
+    "nested", [False, True], ids=["api.add_router", "router.add_router"]
+)
+def test_mount_level_permissions_reach_nested_routers(nested):
+    api = HattoriAPI(urls_namespace=f"perm-mount-nested-{nested}")
+    parent = _permission_tree()
+    client = _mount_denied(api, parent, nested)
+
+    assert client.get("/r/x").status_code == 403
+    assert client.get("/r/child/x").status_code == 403
+    assert client.get("/r/child/grand/x").status_code == 403
+
+
+@pytest.mark.parametrize(
+    "nested", [False, True], ids=["api.add_router", "router.add_router"]
+)
+def test_nested_router_own_permissions_beat_mount_level_permissions(nested):
+    api = HattoriAPI(urls_namespace=f"perm-mount-nested-own-{nested}")
+    parent = _permission_tree(permissions=[])
+    client = _mount_denied(api, parent, nested)
+
+    assert client.get("/r/x").status_code == 403
+    # The child router set its own (empty) permissions, so the override on its
+    # ancestor's mount stops there, for the child and for what it nests.
+    assert client.get("/r/child/x").status_code == 200
+    assert client.get("/r/child/grand/x").status_code == 200
+
+
 # ==========================================================================
 # OpenAPI documentation
 # ==========================================================================

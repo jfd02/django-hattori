@@ -1,6 +1,7 @@
 import pytest
 
 from hattori import HattoriAPI, Router
+from hattori.constants import NOT_SET
 from hattori.security import APIKeyQuery
 from hattori.testing import TestClient
 
@@ -93,3 +94,83 @@ def op_o4(request) -> str:
 )
 def test_router_inheritance_auth(route, status_code):
     assert client.get(route).status_code == status_code
+
+
+# --------------------------------------------------------------------------
+# Mount-level auth (add_router(..., auth=...)) on a router that has its own auth
+# --------------------------------------------------------------------------
+
+
+def make_parent(child_auth=NOT_SET) -> Router:
+    """parent (auth="own") -> child -> grandchild, each with a single "/" route."""
+    parent = Router(auth=Auth("own"))
+    child = Router(auth=child_auth)
+    grandchild = Router()
+
+    @parent.get("/")
+    def parent_op(request) -> str:
+        return "ok"
+
+    @child.get("/")
+    def child_op(request) -> str:
+        return "ok"
+
+    @grandchild.get("/")
+    def grandchild_op(request) -> str:
+        return "ok"
+
+    parent.add_router("/child", child)
+    child.add_router("/grand", grandchild)
+    return parent
+
+
+def mount(parent: Router, nested: bool, mounts: dict) -> TestClient:
+    """Mount parent once per prefix, on the API itself or on an intermediate router."""
+    mounted_api = HattoriAPI()
+    target = Router() if nested else mounted_api
+    for prefix, auth in mounts.items():
+        target.add_router(prefix, parent, auth=auth, url_name_prefix=prefix.strip("/"))
+    if nested:
+        mounted_api.add_router("", target)
+    return TestClient(mounted_api)
+
+
+mount_styles = pytest.mark.parametrize(
+    "nested", [False, True], ids=["api.add_router", "router.add_router"]
+)
+tree_routes = pytest.mark.parametrize("route", ["/", "/child/", "/child/grand/"])
+
+
+@mount_styles
+@tree_routes
+def test_mount_auth_replaces_router_auth_for_descendants(nested, route):
+    client = mount(make_parent(), nested, {"/x": Auth("mount")})
+    assert client.get(f"/x{route}?key=mount").status_code == 200
+    assert client.get(f"/x{route}?key=own").status_code == 401
+
+
+@mount_styles
+@tree_routes
+def test_mount_auth_none_reaches_descendants(nested, route):
+    client = mount(make_parent(), nested, {"/x": None})
+    assert client.get(f"/x{route}").status_code == 200
+
+
+@mount_styles
+def test_nested_router_own_auth_beats_ancestor_mount_auth(nested):
+    parent = make_parent(child_auth=Auth("child"))
+    client = mount(parent, nested, {"/x": Auth("mount")})
+    assert client.get("/x/?key=mount").status_code == 200
+    for route in ("/x/child/", "/x/child/grand/"):
+        assert client.get(f"{route}?key=child").status_code == 200
+        assert client.get(f"{route}?key=mount").status_code == 401
+
+
+@mount_styles
+@tree_routes
+def test_mount_auth_is_separate_for_each_mount_of_the_same_router(nested, route):
+    client = mount(make_parent(), nested, {"/a": Auth("a"), "/b": Auth("b")})
+    assert client.get(f"/a{route}?key=a").status_code == 200
+    assert client.get(f"/a{route}?key=b").status_code == 401
+    assert client.get(f"/b{route}?key=b").status_code == 200
+    assert client.get(f"/b{route}?key=a").status_code == 401
