@@ -413,6 +413,10 @@ Requests also include the resolved route in `request.resolver_match`, an async
 The response exposes `.status_code`, `.json()`, `.content`, and proxies header
 access (`resp["Content-Type"]`).
 
+With `ATOMIC_REQUESTS` on, each request runs in that transaction just as it does
+behind Django's handler, so a failed request's writes are rolled back in tests
+too.
+
 ### Async endpoints
 
 Use `TestAsyncClient` and `await` the calls:
