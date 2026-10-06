@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from ipaddress import IPv4Address, IPv6Address
+from typing import Generic, TypeVar
 
 import pytest
 from django.http import HttpResponse
@@ -12,7 +13,7 @@ from django.utils.translation import gettext_lazy
 from pydantic import BaseModel, HttpUrl, ValidationError
 from pydantic_core import Url
 
-from hattori import Router
+from hattori import Created, Router
 from hattori.responses import JsonResponse, json_default, json_dumps
 from hattori.testing import TestClient
 
@@ -135,6 +136,51 @@ def check_union(request, q: int) -> int | UserModel:
     return "invalid"
 
 
+class UserInternal(UserModel):
+    password_hash: str
+
+
+T = TypeVar("T")
+
+
+class Page(BaseModel, Generic[T]):
+    items: list[T]
+
+
+def _internal_user() -> UserInternal:
+    return UserInternal(id=1, user_name="John", password_hash="secret")
+
+
+@router.get("/check_subclass")
+def check_subclass(request) -> UserModel:
+    return _internal_user()
+
+
+@router.post("/check_subclass_created")
+def check_subclass_created(request) -> Created[UserModel]:
+    return Created(_internal_user())
+
+
+@router.get("/check_subclass_list")
+def check_subclass_list(request) -> list[UserModel]:
+    return [_internal_user()]
+
+
+@router.get("/check_subclass_in_generic")
+def check_subclass_in_generic(request) -> Page[UserModel]:
+    return Page[UserModel](items=[_internal_user()])
+
+
+@router.get("/check_subclass_in_bare_generic")
+def check_subclass_in_bare_generic(request) -> Page[UserModel]:
+    return Page(items=[_internal_user()])
+
+
+@router.get("/check_subclass_in_other_generic")
+def check_subclass_in_other_generic(request) -> Page[UserModel]:
+    return Page[UserInternal](items=[_internal_user()])
+
+
 @router.get("/check_set_header")
 def check_set_header(request, response: HttpResponse) -> int:
     response["Cache-Control"] = "no-cache"
@@ -185,6 +231,40 @@ def test_validates():
 
     with pytest.raises(ValidationError):
         client.get("/check_union?q=2")
+
+
+@pytest.mark.parametrize(
+    "method,path,status,expected_response",
+    [
+        ("get", "/check_subclass", 200, {"id": 1, "user_name": "John"}),
+        ("post", "/check_subclass_created", 201, {"id": 1, "user_name": "John"}),
+        ("get", "/check_subclass_list", 200, [{"id": 1, "user_name": "John"}]),
+        (
+            "get",
+            "/check_subclass_in_generic",
+            200,
+            {"items": [{"id": 1, "user_name": "John"}]},
+        ),
+        (
+            "get",
+            "/check_subclass_in_bare_generic",
+            200,
+            {"items": [{"id": 1, "user_name": "John"}]},
+        ),
+        (
+            "get",
+            "/check_subclass_in_other_generic",
+            200,
+            {"items": [{"id": 1, "user_name": "John"}]},
+        ),
+    ],
+)
+def test_subclass_fields_are_not_leaked(method, path, status, expected_response):
+    # Only the declared response type's fields go out, however the returned
+    # instance was built.
+    response = getattr(client, method)(path)
+    assert response.status_code == status, response.content
+    assert response.json() == expected_response
 
 
 def test_set_header():

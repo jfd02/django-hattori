@@ -198,7 +198,8 @@ class TestSkipRevalidation:
         with _ValidateTracker() as t:
             response = client.get("/model_subclass")
             assert response.status_code == 200
-            assert response.json() == {"id": 1, "name": "John", "extra": "bonus"}
+            # Dumped as the declared UserOut: the subclass's own field stays out.
+            assert response.json() == {"id": 1, "name": "John"}
             assert t.call_count == 0
 
     def test_dict_goes_through_validation(self):

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import pytest
 from django.utils.functional import Promise
@@ -53,6 +53,27 @@ def test_model_dump_override_can_combine_redaction_and_lazy_values():
     response = TestClient(api).get("/payload")
     assert response.status_code == 200
     assert response.json() == {"message": "Hello"}
+
+
+def test_model_dump_override_is_honored_for_unparameterized_generic():
+    T = TypeVar("T")
+
+    class Envelope(Schema, Generic[T]):
+        data: T
+        secret: str
+
+        def model_dump(self, **kwargs):
+            return super().model_dump(exclude={"secret"}, **kwargs)
+
+    api = HattoriAPI()
+
+    @api.get("/payload")
+    def payload(request) -> Envelope[int]:
+        return Envelope(data=1, secret="hidden")
+
+    response = TestClient(api).get("/payload")
+    assert response.status_code == 200
+    assert response.json() == {"data": 1}
 
 
 def test_model_dump_override_without_fallback_argument():

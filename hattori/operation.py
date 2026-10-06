@@ -769,16 +769,27 @@ class Operation:
             and isinstance(result, BaseModel)
             and isinstance(result, resp_type)
         ):
-            result = self._dump_model(result, ctx)
-            return self.api.create_response(
-                request, result, temporal_response=temporal_response
+            # The declared class itself dumps as declared. A model that overrides
+            # model_dump shapes its own output, so it keeps dumping itself too.
+            if (
+                type(result) is resp_annotation
+                or type(result).model_dump is not BaseModel.model_dump
+            ):
+                result = self._dump_model(result, ctx)
+                return self.api.create_response(
+                    request, result, temporal_response=temporal_response
+                )
+            # A subclass, or the same generic parameterized differently (Page or
+            # Page[UserInternal] for Page[UserOut]), would dump the fields of its
+            # own class. Wrap it unvalidated so it is dumped as the declared
+            # type instead, which drops the rest.
+            response_object = response_model.model_construct(response=result)
+        else:
+            response_object = response_model.model_validate(
+                {"response": result}, context=ctx
             )
 
-        validated_object = response_model.model_validate(
-            {"response": result}, context=ctx
-        )
-
-        result = self._dump_model(validated_object, ctx)["response"]
+        result = self._dump_model(response_object, ctx)["response"]
         return self.api.create_response(
             request, result, temporal_response=temporal_response
         )
