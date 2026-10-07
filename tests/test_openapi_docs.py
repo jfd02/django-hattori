@@ -1,3 +1,7 @@
+import json
+import re
+
+import pytest
 from django.conf import settings
 from django.test import override_settings
 
@@ -96,6 +100,37 @@ def test_docs_take_the_api_auth():
         assert response.status_code == 401
         assert response.json() == {"detail": "Unauthorized"}
         assert client.get(f"{url}?key=k").status_code == 200
+
+
+@pytest.mark.parametrize("docs", [Swagger(), Redoc()])
+@pytest.mark.parametrize("installed_apps", [None, NO_HATTORI_INSTALLED_APPS])
+def test_docs_page_passes_its_query_on_to_the_schema(docs, installed_apps):
+    client = TestClient(HattoriAPI(auth=Key(), docs=docs))
+    overrides = {"INSTALLED_APPS": installed_apps} if installed_apps else {}
+    with override_settings(**overrides):
+        page = client.get("/docs?key=k&theme=dark").content.decode()
+
+    if isinstance(docs, Swagger):
+        settings_json = re.search(
+            r'id="swagger-settings">(.*?)</script>', page, re.DOTALL
+        )
+        url = json.loads(settings_json.group(1))["url"]
+    else:
+        # A JavaScript string literal, in which ``&`` is written as an escape.
+        url = json.loads(f'"{re.search(r"Redoc.init\('(.*?)'", page).group(1)}"')
+
+    assert url == "/api/openapi.json?key=k&theme=dark"
+    assert client.get("/openapi.json").status_code == 401
+    assert client.get(url.removeprefix("/api")).status_code == 200
+
+
+@pytest.mark.parametrize("docs", [Swagger(), Redoc()])
+def test_query_passed_on_cannot_break_out_of_the_page(docs):
+    client = TestClient(HattoriAPI(auth=Key(), docs=docs))
+    payload = "</script><script>alert('x')</script>"
+    page = client.get("/docs", query_params={"key": payload}).content.decode()
+    assert "alert(" not in page
+    assert "%3C%2Fscript%3E" in page
 
 
 def test_docs_take_the_api_permissions():

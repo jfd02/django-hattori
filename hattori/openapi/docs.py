@@ -27,6 +27,19 @@ class DocsBase(ABC):
     def get_openapi_url(self, api: HattoriAPI, path_params: dict[str, Any]) -> str:
         return reverse(f"{api.urls_namespace}:openapi-json", kwargs=path_params)
 
+    def get_request_openapi_url(
+        self, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
+    ) -> str:
+        """The schema url for the page that answers ``request``.
+
+        The query string is passed on: the schema is guarded like the page, and
+        a key the page was opened with is the only credential it has to offer.
+        """
+        url = self.get_openapi_url(api, path_params)
+        # Encoded again rather than copied, as it ends up inside the page.
+        query = request.GET.urlencode()
+        return f"{url}?{query}" if query else url
+
 
 class Swagger(DocsBase):
     template = "hattori/swagger.html"
@@ -48,7 +61,8 @@ class Swagger(DocsBase):
         # Build the per-request url into a copy; mutating the shared self.settings
         # races across concurrent requests when the openapi url is path-param
         # dependent.
-        page_settings = {**self.settings, "url": self.get_openapi_url(api, kwargs)}
+        url = self.get_request_openapi_url(request, api, kwargs)
+        page_settings = {**self.settings, "url": url}
         context = {
             "swagger_settings": json.dumps(page_settings, indent=1),
             "api": api,
@@ -73,7 +87,7 @@ class Redoc(DocsBase):
     ) -> HttpResponse:
         context = {
             "redoc_settings": json.dumps(self.settings, indent=1),
-            "openapi_json_url": self.get_openapi_url(api, kwargs),
+            "openapi_json_url": self.get_request_openapi_url(request, api, kwargs),
             "api": api,
         }
         return render_template(request, self.template, self.template_cdn, context)

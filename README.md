@@ -255,7 +255,7 @@ api = HattoriAPI(auth=BearerAuth(), docs_auth=django_auth)  # logged-in users
 api = HattoriAPI(auth=BearerAuth(), docs_auth=None)         # everyone
 ```
 
-A browser can't attach a bearer token or an API-key header to a page load, so an API that authenticates by header needs one of these for Swagger UI to open. `docs_decorator=` still wraps both views, and runs before either check.
+A browser can't attach a bearer token or an API-key header to a page load, so an API that authenticates by header needs one of these for Swagger UI to open. A key in the query string does work: the page passes its query string on when it fetches the schema. `docs_decorator=` still wraps both views, and runs before either check.
 
 ## Response types reference
 

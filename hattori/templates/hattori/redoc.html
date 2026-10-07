@@ -22,7 +22,7 @@
         const configJson = document.getElementById("redoc-settings").textContent;
         const configObject = JSON.parse(configJson);
         const element = document.getElementById('redoc-ui');
-        Redoc.init('{{ openapi_json_url }}', configObject, element);
+        Redoc.init('{{ openapi_json_url|escapejs }}', configObject, element);
     </script>
 </body>
 </html>
