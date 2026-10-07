@@ -1,7 +1,7 @@
 import itertools
 import re
 from collections.abc import Generator, Sequence
-from copy import deepcopy
+from copy import copy, deepcopy
 from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
@@ -11,7 +11,6 @@ from pydantic_core import core_schema
 
 from hattori.compatibility.util import UNION_TYPES
 from hattori.errors import (
-    ConfigError,
     ErrorBody,
     get_http_error_model,
     get_validation_error_model,
@@ -132,6 +131,21 @@ def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
     return openapi
 
 
+def get_operation_id(
+    api: HattoriAPI, operation: Operation, bound_router: BoundRouter, method: str
+) -> str:
+    """The ``operationId`` one method of an operation is documented under."""
+    op_id = operation.operation_id or api.get_openapi_operation_id(
+        operation, bound_router
+    )
+    extra = operation.openapi_extra or {}
+    if "operationId" in extra:
+        op_id = extra["operationId"]
+    if len(operation.methods) > 1:
+        op_id = f"{op_id}_{method.lower()}"
+    return op_id
+
+
 def _field_can_fail_validation(field: FieldInfo) -> bool:
     """Whether a value supplied for this field could fail validation.
 
@@ -182,7 +196,9 @@ class OpenAPISchema(dict):
         self.path_prefix = path_prefix
         self.schemas: dict[str, Any] = {}
         self.securitySchemes: dict[str, Any] = {}
-        self.all_operation_ids: set = set()
+        self._error_models = (get_validation_error_model(), get_http_error_model())
+        # (path below the mount point, its methods) for every documented path
+        self._routes: list[tuple[str, dict[str, Any]]] = []
         self._validation_error_title: str | None = None
         self._http_error_title: str | None = None
         # (final component name, serialized message field) -> declared message
@@ -208,24 +224,47 @@ class OpenAPISchema(dict):
                 self[k] = v
 
     def get_paths(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
+        routes = []
         # Use bound routers to ensure operations have correct auth/tags
         for bound_router in self.api._get_bound_routers():
             for path, path_view in bound_router.path_operations.items():
-                full_path = "/".join([i for i in (bound_router.prefix, path) if i])
-                full_path = "/" + self.path_prefix + full_path
-                full_path = normalize_path(full_path)
-                full_path = re.sub(
-                    r"{[^}:]+:", "{", full_path
-                )  # remove path converters
                 path_methods = self.methods(path_view.operations, bound_router)
                 if path_methods:
-                    try:
-                        result[full_path].update(path_methods)
-                    except KeyError:
-                        result[full_path] = path_methods
+                    route = "/".join([i for i in (bound_router.prefix, path) if i])
+                    routes.append((route, path_methods))
+        self._routes = routes
+        return self._prefixed_paths()
 
+    def _prefixed_paths(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for route, path_methods in self._routes:
+            full_path = "/" + self.path_prefix + route
+            full_path = normalize_path(full_path)
+            full_path = re.sub(r"{[^}:]+:", "{", full_path)  # remove path converters
+            # Merged into a new dict: the methods are shared between prefixes.
+            result[full_path] = {**result.get(full_path, {}), **path_methods}
         return result
+
+    def is_current(self) -> bool:
+        """Whether this still documents the error bodies that would be sent.
+
+        The error models are process-wide and can be swapped at any time.
+        """
+        installed = (get_validation_error_model(), get_http_error_model())
+        return self._error_models == installed
+
+    def with_path_prefix(self, path_prefix: str) -> OpenAPISchema:
+        """This document as it is served from another mount point.
+
+        Only the keys of ``paths`` depend on where the API is mounted, so
+        everything else is shared with this schema rather than built again.
+        """
+        if path_prefix == self.path_prefix:
+            return self
+        schema = copy(self)
+        schema.path_prefix = path_prefix
+        schema["paths"] = schema._prefixed_paths()
+        return schema
 
     def methods(self, operations: list, bound_router: BoundRouter) -> dict[str, Any]:
         result = {}
@@ -259,9 +298,7 @@ class OpenAPISchema(dict):
     def operation_details(
         self, operation: Operation, bound_router: BoundRouter, method: str
     ) -> dict[str, Any]:
-        op_id = operation.operation_id or self.api.get_openapi_operation_id(
-            operation, bound_router
-        )
+        op_id = get_operation_id(self.api, operation, bound_router, method)
         result: dict[str, Any] = {
             "operationId": op_id,
             "parameters": self.operation_parameters(operation),
@@ -304,18 +341,7 @@ class OpenAPISchema(dict):
                     self.deep_dict_update(responses, {key: response})
                 extra["responses"] = responses
             self.deep_dict_update(result, extra)
-
-        op_id = result["operationId"]
-        if len(operation.methods) > 1:
-            op_id = f"{op_id}_{method.lower()}"
             result["operationId"] = op_id
-        if op_id in self.all_operation_ids:
-            raise ConfigError(
-                f'Duplicate operation_id "{op_id}" '
-                f"(at {operation.view_func.__module__}.{operation.view_func.__name__}). "
-                "Pass an explicit operation_id= or rename the view."
-            )
-        self.all_operation_ids.add(op_id)
 
         return result
 
