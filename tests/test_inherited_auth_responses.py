@@ -55,8 +55,13 @@ def test_router_inherited_auth_documents_401():
     api.add_router("/x", router)
     responses = _responses(api, "/api/x/me")
     assert 401 in responses
-    ref = responses[401]["content"]["application/json"]["schema"]["$ref"]
-    assert ref.endswith("/AuthError")
+    # The typed body, beside the default one sent when no token is presented.
+    assert responses[401]["content"]["application/json"]["schema"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/AuthError"},
+            {"$ref": "#/components/schemas/HttpErrorResponse"},
+        ]
+    }
 
 
 def test_api_level_inherited_auth_documents_401():

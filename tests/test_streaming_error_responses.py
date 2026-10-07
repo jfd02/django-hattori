@@ -78,8 +78,12 @@ def test_streaming_error_response_is_json_not_stream():
     # Success body streams as JSONL.
     assert list(responses[200]["content"].keys()) == ["application/jsonl"]
 
-    # The auth 401 is a plain JSON response, not a JSONL stream item.
+    # The auth 401 is a plain JSON response, not a JSONL stream item: the typed
+    # body, or the default one sent when no token is presented.
     assert list(responses[401]["content"].keys()) == ["application/json"]
-    assert responses[401]["content"]["application/json"]["schema"]["$ref"].endswith(
-        "/AuthErr"
-    )
+    assert responses[401]["content"]["application/json"]["schema"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/AuthErr"},
+            {"$ref": "#/components/schemas/HttpErrorResponse"},
+        ]
+    }
