@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
-from django.urls import reverse
 
 from hattori.constants import NOT_SET
 
@@ -25,7 +24,7 @@ class DocsBase(ABC):
         pass  # pragma: no cover
 
     def get_openapi_url(self, api: HattoriAPI, path_params: dict[str, Any]) -> str:
-        return reverse(f"{api.urls_namespace}:openapi-json", kwargs=path_params)
+        return api._own_url("openapi-json", path_params)
 
     def get_request_openapi_url(
         self, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]

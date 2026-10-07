@@ -9,7 +9,7 @@ from typing import (
 )
 
 from django.http import HttpRequest, HttpResponse
-from django.urls import URLPattern, URLResolver, reverse
+from django.urls import URLPattern, URLResolver, get_resolver, get_urlconf, reverse
 from django.utils.module_loading import import_string
 
 from hattori.constants import NOT_SET, NOT_SET_TYPE
@@ -23,7 +23,11 @@ from hattori.errors import (
 from hattori.openapi import get_schema
 from hattori.openapi.docs import DocsBase, Swagger
 from hattori.openapi.schema import OpenAPISchema, get_operation_id
-from hattori.openapi.urls import get_openapi_urls, get_root_url
+from hattori.openapi.urls import (
+    get_openapi_urls,
+    get_root_url,
+    shared_namespace_error,
+)
 from hattori.renderers import BaseRenderer, JSONRenderer
 from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
 from hattori.security.permissions import validate_permissions
@@ -78,6 +82,7 @@ class HattoriAPI:
             description: A description for the api.
             version: The API version.
             urls_namespace: The Django URL namespace for the API. If not provided, the namespace will be ``"api-" + self.version``.
+                APIs mounted in the same URLconf each need their own.
             openapi_url: The relative URL to serve the openAPI spec.
             openapi_extra: Additional attributes for the openAPI spec.
             docs_url: The relative URL to serve the API docs.
@@ -614,8 +619,14 @@ class HattoriAPI:
                         seen[op_id] = operation.view_func
 
     def get_root_path(self, path_params: dict[str, Any]) -> str:
-        name = f"{self.urls_namespace}:api-root"
-        return reverse(name, kwargs=path_params)
+        return self._own_url("api-root", path_params)
+
+    def _own_url(self, name: str, path_params: dict[str, Any]) -> str:
+        """The url of one of the API's own views, found by its namespace."""
+        error = shared_namespace_error(self, get_resolver(get_urlconf()))
+        if error:
+            raise ConfigError(error)
+        return reverse(f"{self.urls_namespace}:{name}", kwargs=path_params)
 
     def create_response(
         self,
