@@ -1,8 +1,12 @@
 import asyncio
+from functools import wraps
 
 import pytest
+from django.core.exceptions import PermissionDenied
 
-from hattori import HattoriAPI, Schema
+from hattori import BasePermission, HattoriAPI, Schema
+from hattori.decorators import decorate_view
+from hattori.errors import HttpError
 from hattori.security import APIKeyQuery
 from hattori.testing import TestAsyncClient
 
@@ -56,3 +60,121 @@ async def test_asyncio_operations():
     # invalid method
     res = await client.put("/async")
     assert res.status_code == 405
+    assert res.json() == {"detail": "Method Not Allowed"}
+
+    # HEAD falls back to the GET operation
+    res = await client.request("HEAD", "/async?payload=1&key=secret")
+    assert res.status_code == 200
+
+
+def _on_event_loop() -> bool:
+    # What Django checks before it lets synchronous code such as the ORM run.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+@pytest.mark.asyncio
+async def test_exception_handlers_never_run_on_the_event_loop():
+    # A handler may use the ORM, which Django refuses to run on the event loop.
+    api = HattoriAPI()
+    on_loop = []
+
+    @api.exception_handler(HttpError)
+    def handler(request, exc):
+        on_loop.append(_on_event_loop())
+        return api.create_response(request, {}, status=exc.status_code)
+
+    def denies(view):
+        @wraps(view)
+        def wrapper(request, *args, **kwargs):
+            raise PermissionDenied
+
+        return wrapper
+
+    def denies_async(view):
+        @wraps(view)
+        async def wrapper(request, *args, **kwargs):
+            raise PermissionDenied
+
+        return wrapper
+
+    async def declines(request):
+        return None
+
+    async def auth_raises(request):
+        raise PermissionDenied
+
+    class Refuses(BasePermission):
+        async def check(self, request) -> bool:
+            return False
+
+    class Raises(BasePermission):
+        async def check(self, request) -> bool:
+            raise PermissionDenied
+
+    @api.get("/mixed")
+    async def read(request) -> str:
+        return "async"
+
+    @api.post("/mixed")
+    @decorate_view(denies)
+    def write(request) -> str:
+        return "sync"
+
+    @api.get("/decorated")
+    @decorate_view(denies_async)
+    async def decorated(request) -> str:
+        return "async"
+
+    # A sync operation on an async path, with the dispatch's own argument name.
+    @api.get("/jobs/{operation}")
+    async def read_job(request, operation: str) -> str:
+        return operation
+
+    @api.post("/jobs/{operation}")
+    def run_job(request, operation: str) -> str:
+        return operation
+
+    @api.get("/raises-http-error")
+    async def raises_http_error(request) -> str:
+        raise HttpError(409, "conflict")
+
+    @api.get("/raises-django")
+    async def raises_django(request) -> str:
+        raise PermissionDenied
+
+    @api.get("/auth-declines", auth=declines)
+    async def auth_declines(request) -> str:
+        return "unreachable"
+
+    @api.get("/auth-raises", auth=auth_raises)
+    async def auth_raising(request) -> str:
+        return "unreachable"
+
+    @api.get("/permission-refuses", permissions=[Refuses()])
+    async def permission_refuses(request) -> str:
+        return "unreachable"
+
+    @api.get("/permission-raises", permissions=[Raises()])
+    async def permission_raises(request) -> str:
+        return "unreachable"
+
+    client = TestAsyncClient(api)
+    assert (await client.post("/jobs/restart")).json() == "restart"
+    answered = [
+        (await client.put("/mixed")).status_code,
+        (await client.post("/mixed")).status_code,
+        (await client.get("/decorated")).status_code,
+        (await client.get("/raises-http-error")).status_code,
+        (await client.get("/raises-django")).status_code,
+        (await client.get("/auth-declines")).status_code,
+        (await client.get("/auth-raises")).status_code,
+        (await client.get("/permission-refuses")).status_code,
+        (await client.get("/permission-raises")).status_code,
+    ]
+
+    assert answered == [405, 403, 403, 409, 403, 401, 403, 403, 403]
+    assert on_loop == [False] * len(answered)

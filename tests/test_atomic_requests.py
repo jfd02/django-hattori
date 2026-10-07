@@ -6,9 +6,11 @@ the rollback itself - for any error response, however it was signalled: raised
 or returned, from a view, an auth callback or a permission.
 """
 
+from functools import wraps
 from typing import Literal
 
 import pytest
+from django.core.exceptions import PermissionDenied
 from django.db import connection, transaction
 from django.http import HttpResponse
 from django.test import Client
@@ -16,6 +18,7 @@ from django.urls import path, resolve
 from someapp.models import Event
 
 from hattori import ApiError, BasePermission, Created, HattoriAPI
+from hattori.decorators import decorate_view
 from hattori.errors import HttpError
 from hattori.security import HttpBearer
 from hattori.testing import TestAsyncClient, TestClient
@@ -87,6 +90,27 @@ class RaisesNotAllowed(BasePermission):
         raise HttpError(403, "not allowed")
 
 
+class RaisesDjangoDenied(HttpBearer):
+    def authenticate(self, request, token: str) -> str:
+        write("auth-django-raised")
+        raise PermissionDenied
+
+
+class RaisesDjangoNotAllowed(BasePermission):
+    def check(self, request) -> bool:
+        write("permission-django-raised")
+        raise PermissionDenied
+
+
+def writes_then_denies(view):
+    @wraps(view)
+    def wrapper(request, *args, **kwargs):
+        write("decorator-raised")
+        raise PermissionDenied
+
+    return wrapper
+
+
 @api.post("raised")
 def raised(request) -> str:
     write("raised")
@@ -126,6 +150,28 @@ def permission_returned(request) -> str:
 
 @api.post("permission-raised", permissions=[RaisesNotAllowed()])
 def permission_raised(request) -> str:
+    return "ok"
+
+
+@api.post("django-raised")
+def django_raised(request) -> str:
+    write("django-raised")
+    raise PermissionDenied
+
+
+@api.post("auth-django-raised", auth=RaisesDjangoDenied())
+def auth_django_raised(request) -> str:
+    return "ok"
+
+
+@api.post("permission-django-raised", permissions=[RaisesDjangoNotAllowed()])
+def permission_django_raised(request) -> str:
+    return "ok"
+
+
+@api.post("decorator-raised")
+@decorate_view(writes_then_denies)
+def decorator_raised(request) -> str:
     return "ok"
 
 
@@ -184,8 +230,24 @@ async def async_non_atomic(request) -> str | Conflict:
     return Conflict()
 
 
+# An API whose handler writes, for errors no endpoint is involved in.
+recording = HattoriAPI(urls_namespace="atomic-requests-recording")
+
+
+@recording.exception_handler(HttpError)
+def record(request, exc):
+    write(f"handler-{exc.status_code}")
+    return recording.create_response(request, {}, status=exc.status_code)
+
+
+@recording.get("thing")
+def thing(request) -> str:
+    return "ok"
+
+
 urlpatterns = [
     path("api/atomic-requests/", api.urls),
+    path("api/atomic-recording/", recording.urls),
 ]
 
 
@@ -216,6 +278,11 @@ def post(name: str) -> HttpResponse:
         ("permission-refused", 403),
         ("permission-returned", 403),
         ("permission-raised", 403),
+        # A Django exception the API answers in Django's place, wherever raised.
+        ("django-raised", 403),
+        ("auth-django-raised", 403),
+        ("permission-django-raised", 403),
+        ("decorator-raised", 403),
         # Opting out for another database leaves this one's request atomic.
         ("other-db-non-atomic", 409),
         # GET opted out but POST did not, and Django decides per URL.
@@ -227,6 +294,15 @@ def test_error_response_rolls_back(atomic_requests, name, status):
 
     assert response.status_code == status
     assert not written(name)
+
+
+def test_error_the_framework_answers_itself_rolls_back(atomic_requests):
+    # No endpoint ran, but it is an error response all the same.
+    assert Client().put("/api/atomic-recording/thing").status_code == 405
+    assert not written("handler-405")
+
+    assert Client().get("/api/atomic-recording/").status_code == 404
+    assert not written("handler-404")
 
 
 def test_success_response_commits(atomic_requests):

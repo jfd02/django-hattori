@@ -708,9 +708,15 @@ class HattoriAPI:
 
     def on_exception(self, request: HttpRequest, exc: Exc[_E]) -> HttpResponse:
         handler = self._lookup_exception_handler(exc)
-        if handler is None:
-            raise exc
-        return handler(request, exc)
+        try:
+            if handler is None:
+                raise exc
+            return handler(request, exc)
+        except Exception as unanswered:
+            # Noted so that PathView, which may catch this again on its way to
+            # Django, does not offer it to the handlers twice.
+            request._hattori_unanswered = unanswered  # type: ignore[attr-defined]
+            raise
 
     def validation_error_from_error_contexts(
         self, error_contexts: list[ValidationErrorContext]

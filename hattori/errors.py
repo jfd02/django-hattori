@@ -16,7 +16,17 @@ from typing import (
 
 import pydantic
 from django.conf import settings
+from django.core.exceptions import BadRequest as DjangoBadRequest
+from django.core.exceptions import (
+    PermissionDenied,
+    RequestDataTooBig,
+    SuspiciousOperation,
+    TooManyFieldsSent,
+    TooManyFilesSent,
+)
 from django.http import Http404, HttpRequest, HttpResponse
+from django.http.multipartparser import MultiPartParserError
+from django.utils.log import log_response
 
 from hattori.responses import APIReturn
 
@@ -403,10 +413,11 @@ def set_default_exc_handlers(api: HattoriAPI) -> None:
         Exception,
         partial(_default_exception, api=api),
     )
-    api.add_exception_handler(
-        Http404,
-        partial(_default_404, api=api),
-    )
+    for exc_class, answer in _DJANGO_EXCEPTIONS.items():
+        api.add_exception_handler(
+            exc_class,
+            partial(_default_django_exception, api=api, answer=answer),
+        )
     api.add_exception_handler(
         HttpError,
         partial(_default_http_error, api=api),
@@ -417,11 +428,56 @@ def set_default_exc_handlers(api: HattoriAPI) -> None:
     )
 
 
-def _default_404(request: HttpRequest, exc: Exception, api: HattoriAPI) -> HttpResponse:
-    msg = "Not Found"
-    if settings.DEBUG:
-        msg += f": {exc}"
-    return api.create_response(request, {"detail": msg}, status=404)
+# Django's own exceptions and the HttpError each is answered as: the non-500
+# arms of ``django.core.handlers.exception.response_for_exception``.
+_DJANGO_EXCEPTIONS: dict[type[Exception], HttpError] = {
+    Http404: HttpError(404, "Not Found"),
+    PermissionDenied: AuthorizationError(),
+    MultiPartParserError: HttpError(400, "Bad Request"),
+    DjangoBadRequest: HttpError(400, "Bad Request"),
+    SuspiciousOperation: HttpError(400, "Bad Request"),
+}
+
+
+def _default_django_exception(
+    request: HttpRequest, exc: Exception, api: HattoriAPI, answer: HttpError
+) -> HttpResponse:
+    if isinstance(exc, (RequestDataTooBig, TooManyFieldsSent, TooManyFilesSent)):
+        # Otherwise error reporting, which reads request.POST, raises it again.
+        request._mark_post_parse_error()  # type: ignore[attr-defined]
+    message = answer.message
+    # The exception's own message is for the developer: DEBUG only.
+    if settings.DEBUG and str(exc):
+        message = f"{message}: {exc}"
+    error = type(answer)(answer.status_code, message)
+    error.__cause__ = exc
+    try:
+        response = api.on_exception(request, error)
+    except Exception as failure:
+        # A handler that failed still owes the exception's own log entry. One
+        # that handed the exception back to Django leaves the logging to it.
+        if failure is not exc:
+            stand_in = HttpResponse(status=error.status_code)
+            _log_as_django_does(request, exc, stand_in)
+        raise
+    _log_as_django_does(request, exc, response)
+    return response
+
+
+def _log_as_django_does(
+    request: HttpRequest, exc: Exception, response: HttpResponse
+) -> None:
+    # What each arm of ``response_for_exception`` logs; Http404 logs nothing.
+    log = partial(log_response, response=response, request=request, exception=exc)
+    if isinstance(exc, PermissionDenied):
+        log("Forbidden (Permission denied): %s", request.path)
+    elif isinstance(exc, MultiPartParserError):
+        log("Bad request (Unable to parse request body): %s", request.path)
+    elif isinstance(exc, DjangoBadRequest):
+        log("%s: %s", str(exc), request.path)
+    elif isinstance(exc, SuspiciousOperation):
+        security = logging.getLogger(f"django.security.{type(exc).__name__}")
+        log(str(exc), level="error", logger=security)
 
 
 def _default_http_error(

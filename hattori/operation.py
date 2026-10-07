@@ -18,7 +18,6 @@ from django.db import connections, transaction
 from django.http import (
     HttpRequest,
     HttpResponse,
-    HttpResponseNotAllowed,
     StreamingHttpResponse,
 )
 from django.http.response import HttpResponseBase
@@ -31,6 +30,7 @@ from hattori.errors import (
     AuthenticationError,
     AuthorizationError,
     ConfigError,
+    HttpError,
     ValidationErrorContext,
 )
 from hattori.params.models import TModels
@@ -48,6 +48,40 @@ __all__ = ["Operation", "PathView"]
 
 # Sentinel marking that a streamed generator produced no items at all.
 _NO_FIRST_ITEM = object()
+
+
+def rollback_atomic_requests(request: HttpRequest) -> None:
+    """Fail the request's ATOMIC_REQUESTS transaction, as an error response does."""
+    # A database the route opted out of with non_atomic_requests has no
+    # request transaction, and one opened further out is not ours to end.
+    match = request.resolver_match
+    non_atomic = getattr(match.func, "_non_atomic_requests", ()) if match else ()
+    for db in connections.all():
+        if (
+            db.settings_dict.get("ATOMIC_REQUESTS")
+            and db.alias not in non_atomic
+            and db.in_atomic_block
+        ):
+            transaction.set_rollback(True, using=db.alias)
+
+
+def drop_stream_for_head(
+    request: HttpRequest, response: HttpResponseBase
+) -> HttpResponseBase:
+    """Keep a HEAD request from pulling a streamed body.
+
+    The server drops a HEAD body, but only after reading a stream or a file to
+    its end. The original is still closed with the response.
+    """
+    if request.method == "HEAD" and isinstance(response, StreamingHttpResponse):
+        response.streaming_content = _no_chunks() if response.is_async else ()
+    return response
+
+
+async def _no_chunks() -> collections.abc.AsyncIterator[bytes]:
+    empty: tuple[bytes, ...] = ()
+    for chunk in empty:
+        yield chunk
 
 
 async def _await_coroutine(coroutine: Coroutine[Any, Any, Any]) -> Any:
@@ -456,21 +490,8 @@ class Operation:
 
     def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
         response = self.api.on_exception(request, exc)
-        self._rollback_atomic_requests(request)
+        rollback_atomic_requests(request)
         return response
-
-    def _rollback_atomic_requests(self, request: HttpRequest) -> None:
-        # A database the route opted out of with non_atomic_requests has no
-        # request transaction, and one opened further out is not ours to end.
-        match = request.resolver_match
-        non_atomic = getattr(match.func, "_non_atomic_requests", ()) if match else ()
-        for db in connections.all():
-            if (
-                db.settings_dict.get("ATOMIC_REQUESTS")
-                and db.alias not in non_atomic
-                and db.in_atomic_block
-            ):
-                transaction.set_rollback(True, using=db.alias)
 
     def _dump_model(
         self, model: BaseModel, ctx: dict[str, Any], *, stream: bool = False
@@ -723,7 +744,7 @@ class Operation:
             status = type(result).code
             if status >= 400:
                 # A returned error fails the request just as a raised one does.
-                self._rollback_atomic_requests(request)
+                rollback_atomic_requests(request)
             result = result.value
         else:
             # Bare return value - dispatch as the declared success code (200).
@@ -833,7 +854,13 @@ class AsyncOperation(Operation):
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
             self._add_wraps_hint(e)
-            return self._on_exception(request, e)
+            return await self._aon_exception(request, e)
+
+    async def _aon_exception(
+        self, request: HttpRequest, exc: Exception
+    ) -> HttpResponse:
+        # Handlers are sync code that may use the ORM: never on the event loop.
+        return await sync_to_async(self._on_exception)(request, exc)
 
     async def _async_stream_response(
         self,
@@ -910,12 +937,12 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(callback)(request)
             except Exception as exc:
-                return self._on_exception(request, exc)
+                return await self._aon_exception(request, exc)
 
             outcome, handled = self._auth_outcome(request, result, temporal_response)
             if handled:
                 return outcome
-        return self._on_exception(request, AuthenticationError())
+        return await self._aon_exception(request, AuthenticationError())
 
     async def _run_permissions(  # type: ignore
         self,
@@ -931,9 +958,10 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(permission.check)(request, **kwargs)
             except Exception as exc:
-                return self._on_exception(request, exc)
+                return await self._aon_exception(request, exc)
 
-            outcome = self._permission_outcome(
+            # A refusal is answered by a handler too.
+            outcome = await sync_to_async(self._permission_outcome)(
                 request, result, temporal_response, permission
             )
             if outcome is not None:
@@ -1016,6 +1044,10 @@ class PathView:
 
         return operation
 
+    @property
+    def api(self) -> HattoriAPI:
+        return self.operations[0].api
+
     def clone(self) -> PathView:
         """
         Create a fresh copy of this PathView with cloned operations.
@@ -1077,25 +1109,91 @@ class PathView:
         return view
 
     def _sync_view(self, request: HttpRequest, *a: Any, **kw: Any) -> HttpResponseBase:
+        response: HttpResponseBase
         operation = self._find_operation(request)
         if operation is None:
-            return self._not_allowed()
-        return operation.run(request, *a, **kw)
+            response = self._undeclared_method(request)
+        else:
+            response = self._run(operation, request, *a, **kw)
+        return drop_stream_for_head(request, response)
 
     async def _async_view(
         self, request: HttpRequest, *a: Any, **kw: Any
     ) -> HttpResponseBase:
+        # Whatever is answered here may run a handler, so not on the event loop.
+        response: HttpResponseBase
         operation = self._find_operation(request)
         if operation is None:
-            return self._not_allowed()
-        if operation.is_async:
-            return await cast(AsyncOperation, operation).run(request, *a, **kw)
-        return await sync_to_async(operation.run)(request, *a, **kw)
+            response = await sync_to_async(self._undeclared_method)(request)
+        elif not operation.is_async:
+            response = await sync_to_async(self._run)(operation, request, *a, **kw)
+        else:
+            try:
+                response = await cast(AsyncOperation, operation).run(request, *a, **kw)
+            except Exception as exc:
+                response = await sync_to_async(self._escaped_exception)(
+                    request, operation, exc
+                )
+        return drop_stream_for_head(request, response)
+
+    def _run(
+        self, operation: Operation, request: HttpRequest, /, *a: Any, **kw: Any
+    ) -> HttpResponseBase:
+        try:
+            return operation.run(request, *a, **kw)
+        except Exception as exc:
+            return self._escaped_exception(request, operation, exc)
+
+    def _escaped_exception(
+        self, request: HttpRequest, operation: Operation, exc: Exception
+    ) -> HttpResponse:
+        """Answer an exception that got out of ``operation.run``.
+
+        Either a view decorator raised it, or the handlers already left it
+        unanswered and it goes on to Django.
+        """
+        if exc is getattr(request, "_hattori_unanswered", None):
+            raise exc
+        return operation._on_exception(request, exc)
 
     def _find_operation(self, request: HttpRequest) -> Operation | None:
-        return self._method_map.get(request.method or "")
+        method = request.method or ""
+        operation = self._method_map.get(method)
+        if operation is None and method == "HEAD":
+            operation = self._implicit_head()
+        return operation
 
-    def _not_allowed(self) -> HttpResponse:
-        return HttpResponseNotAllowed(
-            self._method_map.keys(), content=b"Method not allowed"
-        )
+    def _implicit_head(self) -> Operation | None:
+        """The GET operation, where it also answers HEAD, as in Django's View.
+
+        Not when HEAD is declared, nor for a declared stream, whose response is
+        only built by starting it.
+        """
+        if "HEAD" in self._method_map:
+            return None
+        operation = self._method_map.get("GET")
+        if operation is None or operation.stream_format:
+            return None
+        return operation
+
+    def _allowed_methods(self) -> list[str]:
+        methods = list(self._method_map)
+        if self._implicit_head():
+            methods.append("HEAD")
+        if "OPTIONS" not in self._method_map:
+            methods.append("OPTIONS")
+        return methods
+
+    def _undeclared_method(self, request: HttpRequest) -> HttpResponse:
+        """Answer a method that no operation on this path declares."""
+        if request.method == "OPTIONS":
+            # As in Django's View: no body, only Allow.
+            response = self.api.create_temporal_response(request)
+            response["Content-Length"] = "0"
+        else:
+            response = self.api.on_exception(
+                request, HttpError(405, "Method Not Allowed")
+            )
+            rollback_atomic_requests(request)
+        response["Allow"] = ", ".join(self._allowed_methods())
+        return response

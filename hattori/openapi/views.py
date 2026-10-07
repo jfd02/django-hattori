@@ -1,12 +1,17 @@
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any
 
+from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
 from django.http.response import HttpResponseBase
 
 from hattori.constants import NOT_SET
 from hattori.openapi.docs import DocsBase
-from hattori.operation import Operation
+from hattori.operation import (
+    Operation,
+    drop_stream_for_head,
+    rollback_atomic_requests,
+)
 from hattori.responses import JsonResponse
 
 if TYPE_CHECKING:
@@ -14,10 +19,17 @@ if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
 
 
-def default_home(request: HttpRequest, api: HattoriAPI, **kwargs: Any) -> NoReturn:
+def default_home(
+    request: HttpRequest, api: HattoriAPI, **kwargs: Any
+) -> HttpResponseBase:
     "This view is mainly needed to determine the full path for API operations"
-    docs_url = f"{request.path}{api.docs_url}".replace("//", "/")
-    raise Http404(f"docs_url = {docs_url}")
+    hint = ""
+    if settings.DEBUG:
+        docs_url = f"{request.path}{api.docs_url}".replace("//", "/")
+        hint = f"docs_url = {docs_url}"
+    response = api.on_exception(request, Http404(hint))
+    rollback_atomic_requests(request)
+    return drop_stream_for_head(request, response)
 
 
 def openapi_json(request: HttpRequest, api: HattoriAPI, **kwargs: Any) -> HttpResponse:

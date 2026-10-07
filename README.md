@@ -382,6 +382,22 @@ set_http_error_model(Problem)   # e.g. from AppConfig.ready()
 
 The default is `{"detail": "<message>"}`.
 
+Every error the API answers on your behalf is an `HttpError` too, so it takes the same body and the same `@api.exception_handler(HttpError)` override:
+
+| Raised or requested | Answer |
+| --- | --- |
+| Django's `Http404` | 404 |
+| Django's `PermissionDenied` | 403, as an `AuthorizationError` |
+| Django's `BadRequest`, `SuspiciousOperation`, unreadable multipart data | 400 |
+| A method the path doesn't declare | 405, with an `Allow` header |
+| The API's root URL | 404 |
+
+This holds wherever the exception is raised: the endpoint, its auth or permissions, or a view decorator around it. The Django exception is the `__cause__` of the `HttpError` your handler receives, and a handler registered for the Django exception itself takes precedence. Handlers run in a sync thread, so they can use the ORM even for an `async` endpoint.
+
+A `GET` route also answers `HEAD`: the endpoint runs and the body is not sent. A streaming route is the exception. Every path answers `OPTIONS` with its `Allow` header, without running auth or the endpoint. Declare either operation yourself to replace that.
+
+Two cases are left to Django: a path under the API that matches no route gets its 404 (shaped by `handler404`), and an exception no handler answers is re-raised outside `DEBUG`, so Django reports it. Register `@api.exception_handler(Exception)` to answer the latter yourself.
+
 ## Transactions
 
 A returned error fails the request as fully as a raised one. With Django's
