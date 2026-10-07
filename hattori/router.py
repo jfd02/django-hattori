@@ -165,7 +165,6 @@ class BoundRouter:
 
         for path, path_view in self.template.path_operations.items():
             cloned_view = path_view.clone()
-            cloned_view.api = self.api
 
             for operation in cloned_view.operations:
                 # Bind to API

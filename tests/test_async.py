@@ -129,6 +129,15 @@ async def test_exception_handlers_never_run_on_the_event_loop():
     async def decorated(request) -> str:
         return "async"
 
+    # A sync operation on an async path, with the dispatch's own argument name.
+    @api.get("/jobs/{operation}")
+    async def read_job(request, operation: str) -> str:
+        return operation
+
+    @api.post("/jobs/{operation}")
+    def run_job(request, operation: str) -> str:
+        return operation
+
     @api.get("/raises-http-error")
     async def raises_http_error(request) -> str:
         raise HttpError(409, "conflict")
@@ -154,6 +163,7 @@ async def test_exception_handlers_never_run_on_the_event_loop():
         return "unreachable"
 
     client = TestAsyncClient(api)
+    assert (await client.post("/jobs/restart")).json() == "restart"
     answered = [
         (await client.put("/mixed")).status_code,
         (await client.post("/mixed")).status_code,

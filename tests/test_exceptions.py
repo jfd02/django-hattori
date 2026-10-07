@@ -170,6 +170,25 @@ def test_django_log_entry_survives_a_handler_that_fails(caplog):
     ]
 
 
+def test_exception_handed_back_to_django_is_left_for_django_to_log(caplog):
+    # Django logs it when it answers; logging it here as well would double it.
+    api = HattoriAPI()
+
+    @api.exception_handler(HttpError)
+    def delegate(request, exc):
+        raise exc.__cause__
+
+    @api.get("/tampered")
+    def tampered(request) -> None:
+        raise SuspiciousOperation("tampered")
+
+    caplog.set_level(logging.DEBUG, logger="django")
+    with pytest.raises(SuspiciousOperation):
+        TestClient(api).get("/tampered")
+
+    assert _log_entries(caplog) == []
+
+
 def test_over_limit_form_can_be_reported_without_raising_again(settings, caplog):
     # Django's error reporting reads request.POST, which is what raised.
     settings.DATA_UPLOAD_MAX_NUMBER_FIELDS = 2

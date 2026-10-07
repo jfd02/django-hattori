@@ -453,9 +453,12 @@ def _default_django_exception(
     error.__cause__ = exc
     try:
         response = api.on_exception(request, error)
-    except Exception:
-        # The handler failed; the exception's own log entry is still owed.
-        _log_as_django_does(request, exc, HttpResponse(status=error.status_code))
+    except Exception as failure:
+        # A handler that failed still owes the exception's own log entry. One
+        # that handed the exception back to Django leaves the logging to it.
+        if failure is not exc:
+            stand_in = HttpResponse(status=error.status_code)
+            _log_as_django_does(request, exc, stand_in)
         raise
     _log_as_django_does(request, exc, response)
     return response

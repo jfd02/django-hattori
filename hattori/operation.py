@@ -971,7 +971,6 @@ class AsyncOperation(Operation):
 
 class PathView:
     def __init__(self) -> None:
-        self.api: HattoriAPI = cast("HattoriAPI", None)
         self.operations: list[Operation] = []
         self._method_map: dict[str, Operation] = {}
         self.is_async = False  # if at least one operation is async - will become True
@@ -1044,6 +1043,10 @@ class PathView:
         view_func._hattori_operation = operation  # type: ignore
 
         return operation
+
+    @property
+    def api(self) -> HattoriAPI:
+        return self.operations[0].api
 
     def clone(self) -> PathView:
         """
@@ -1134,7 +1137,7 @@ class PathView:
         return drop_stream_for_head(request, response)
 
     def _run(
-        self, operation: Operation, request: HttpRequest, *a: Any, **kw: Any
+        self, operation: Operation, request: HttpRequest, /, *a: Any, **kw: Any
     ) -> HttpResponseBase:
         try:
             return operation.run(request, *a, **kw)

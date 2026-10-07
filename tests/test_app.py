@@ -7,8 +7,9 @@ from tempfile import NamedTemporaryFile
 import pytest
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, HttpResponse, StreamingHttpResponse
+from django.test import RequestFactory
 
-from hattori import SSE, HattoriAPI
+from hattori import SSE, HattoriAPI, Router
 from hattori.decorators import decorate_view
 from hattori.errors import ConfigError, HttpError
 from hattori.testing import TestAsyncClient, TestClient
@@ -103,6 +104,38 @@ def test_method(method, path, expected_status, expected_data, expected_streaming
     except Exception:
         data = response.content
     assert data == expected_data
+
+
+def test_path_parameter_may_share_a_name_with_the_dispatch_arguments():
+    api = HattoriAPI()
+
+    @api.get("/jobs/{operation}")
+    def job(request, operation: str) -> str:
+        return operation
+
+    assert TestClient(api).get("/jobs/restart").json() == "restart"
+
+
+def test_undeclared_method_is_answered_for_a_router_mounted_without_binding():
+    # Router.urls_paths() binds nothing itself; the operations' API is all a
+    # path view has to answer with.
+    api = HattoriAPI()
+    router = Router()
+
+    @router.get("/thing")
+    def thing(request) -> str:
+        return "ok"
+
+    for path_view in router.path_operations.values():
+        for operation in path_view.operations:
+            operation.api = api
+    view = next(iter(router.urls_paths("", api=api))).callback
+
+    response = view(RequestFactory().put("/thing"))
+
+    assert response.status_code == 405
+    assert response["Allow"] == "GET, HEAD, OPTIONS"
+    assert view(RequestFactory().options("/thing")).status_code == 200
 
 
 def test_method_not_allowed_names_the_allowed_methods():
