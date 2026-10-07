@@ -25,6 +25,7 @@ from hattori.openapi.schema import OpenAPISchema
 from hattori.openapi.urls import get_openapi_urls, get_root_url
 from hattori.renderers import BaseRenderer, JSONRenderer
 from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
+from hattori.security.permissions import validate_permissions
 from hattori.types import TCallable
 
 if TYPE_CHECKING:
@@ -104,6 +105,7 @@ class HattoriAPI:
         else:
             self.auth = auth
 
+        validate_permissions(permissions)
         # Permissions: a single BasePermission isn't callable, so normalize by
         # wrapping any non-sequence (and non-sentinel) value into a list.
         self.permissions: collections.abc.Sequence[Any] | NOT_SET_TYPE | None
@@ -445,6 +447,7 @@ class HattoriAPI:
                 "Cannot add routers after URLs have been generated. "
                 "Add all routers before accessing api.urls"
             )
+        validate_permissions(permissions)
 
         if isinstance(router, str):
             router = import_string(router)

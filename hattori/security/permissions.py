@@ -1,13 +1,15 @@
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
+from hattori.constants import NOT_SET
+from hattori.errors import ConfigError
 from hattori.responses import APIReturn
 from hattori.security.base import parse_api_return_responses
 from hattori.utils import is_async_callable
 
-__all__ = ["BasePermission"]
+__all__ = ["BasePermission", "validate_permissions"]
 
 
 class BasePermission(ABC):
@@ -56,6 +58,9 @@ class BasePermission(ABC):
 
     ``check`` may be ``async def``; it is awaited natively on async operations and
     run in a threadpool on sync ones (and vice-versa).
+
+    A permission that overrides ``__init__`` (to take a role, say) must call
+    ``super().__init__()``, which is where ``check``'s signature is read.
     """
 
     #: Default ``403`` message used when ``check`` returns a falsy value.
@@ -112,3 +117,31 @@ class BasePermission(ABC):
             for name, value in path_params.items()
             if name in self._path_param_names
         }
+
+
+def validate_permissions(permissions: Any) -> None:
+    """Raise :class:`~hattori.errors.ConfigError` unless ``permissions`` is usable.
+
+    Run wherever permissions are declared, so a misconfiguration fails while the
+    API is being assembled rather than as a ``500`` on every request to the
+    routes it guards.
+    """
+    if permissions is None or permissions is NOT_SET:
+        return
+    if not isinstance(permissions, Sequence):
+        permissions = [permissions]
+    for permission in permissions:
+        if isinstance(permission, type) and issubclass(permission, BasePermission):
+            name = permission.__name__
+            raise ConfigError(
+                f"permissions got the class {name}, not an instance of it. "
+                f"Pass {name}() instead."
+            )
+        if not isinstance(permission, BasePermission):
+            raise ConfigError(
+                f"permissions must be BasePermission instances, got {permission!r}."
+            )
+        if not hasattr(permission, "_path_param_names"):
+            raise ConfigError(
+                f"{type(permission).__name__}.__init__ must call super().__init__()."
+            )
