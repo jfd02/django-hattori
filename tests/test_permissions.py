@@ -10,8 +10,8 @@ from typing import Literal
 
 import pytest
 
-from hattori import ApiError, BasePermission, Forbidden, HattoriAPI, Schema
-from hattori.errors import AuthorizationError
+from hattori import ApiError, BasePermission, Forbidden, HattoriAPI, Router, Schema
+from hattori.errors import AuthorizationError, ConfigError
 from hattori.security import HttpBearer
 from hattori.testing import TestAsyncClient, TestClient
 
@@ -592,6 +592,88 @@ def test_nested_router_own_permissions_beat_mount_level_permissions(nested):
     # ancestor's mount stops there, for the child and for what it nests.
     assert client.get("/r/child/x").status_code == 200
     assert client.get("/r/child/grand/x").status_code == 200
+
+
+# ==========================================================================
+# Misconfiguration: rejected where it is declared, not on every request
+# ==========================================================================
+
+
+def _on_operation(permissions):
+    api = HattoriAPI()
+
+    @api.get("/x", permissions=permissions)
+    def view(request) -> Out:
+        return Out(ok=True)
+
+
+def _on_api(permissions):
+    HattoriAPI(permissions=permissions)
+
+
+def _on_router(permissions):
+    Router(permissions=permissions)
+
+
+def _on_api_mount(permissions):
+    HattoriAPI().add_router("/r", Router(), permissions=permissions)
+
+
+def _on_router_mount(permissions):
+    Router().add_router("/r", Router(), permissions=permissions)
+
+
+declared_anywhere = pytest.mark.parametrize(
+    "declare", [_on_operation, _on_api, _on_router, _on_api_mount, _on_router_mount]
+)
+
+
+@declared_anywhere
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        [IsHouseholdAdmin],
+        IsHouseholdAdmin,  # not a list
+        [IsHouseholdMember(), IsHouseholdAdmin],
+    ],
+)
+def test_permission_class_instead_of_instance_is_rejected(declare, permissions):
+    with pytest.raises(ConfigError, match=r"Pass IsHouseholdAdmin\(\) instead"):
+        declare(permissions)
+
+
+@declared_anywhere
+def test_permission_init_without_super_is_rejected(declare):
+    class HasRole(BasePermission):
+        def __init__(self, role):
+            self.role = role
+
+        def check(self, request) -> bool:
+            return True
+
+    with pytest.raises(ConfigError, match=r"HasRole\.__init__ must call super"):
+        declare([HasRole("admin")])
+
+
+@declared_anywhere
+def test_non_permission_is_rejected(declare):
+    with pytest.raises(ConfigError, match="must be BasePermission instances"):
+        declare([lambda request: True])
+
+
+def test_permissions_assigned_after_construction_are_rejected_when_urls_build():
+    api = HattoriAPI(urls_namespace="perm-assigned-late")
+    router = Router()
+
+    @router.get("/x")
+    def view(request) -> Out:
+        return Out(ok=True)
+
+    router.permissions = [IsHouseholdAdmin]
+    api.add_router("/r", router)
+
+    with pytest.raises(ConfigError, match=r"Pass IsHouseholdAdmin\(\) instead"):
+        _ = api.urls
 
 
 # ==========================================================================
