@@ -257,6 +257,22 @@ api = HattoriAPI(auth=BearerAuth(), docs_auth=None)         # everyone
 
 A browser can't attach a bearer token or an API-key header to a page load, so an API that authenticates by header needs one of these for Swagger UI to open. A key in the query string does work: the page passes its query string on when it fetches the schema. `docs_decorator=` still wraps both views, and runs before either check.
 
+## More than one API
+
+Each `HattoriAPI` finds its own urls through a Django URL namespace, `api-<version>` by default. APIs mounted in the same URLconf need different ones, so give each a `version=` or a `urls_namespace=`:
+
+```python
+public = HattoriAPI()
+internal = HattoriAPI(urls_namespace="internal")
+
+urlpatterns = [
+    path("api/", public.urls),
+    path("internal/", internal.urls),
+]
+```
+
+Two APIs that share a namespace fail Django's system check (`hattori.E001`), and their docs and schema raise `ConfigError` rather than describe each other.
+
 ## Response types reference
 
 Hattori ships typed response classes for the common status codes. Use these directly in return annotations — no need to declare your own subclasses for them.
