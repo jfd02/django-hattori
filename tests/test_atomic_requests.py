@@ -230,8 +230,25 @@ async def async_non_atomic(request) -> str | Conflict:
     return Conflict()
 
 
+# An API whose own handler writes, to see what becomes of that write when the
+# error comes from the framework rather than from an endpoint.
+recording = HattoriAPI(urls_namespace="atomic-requests-recording")
+
+
+@recording.exception_handler(HttpError)
+def record(request, exc):
+    write(f"handler-{exc.status_code}")
+    return recording.create_response(request, {}, status=exc.status_code)
+
+
+@recording.get("thing")
+def thing(request) -> str:
+    return "ok"
+
+
 urlpatterns = [
     path("api/atomic-requests/", api.urls),
+    path("api/atomic-recording/", recording.urls),
 ]
 
 
@@ -278,6 +295,15 @@ def test_error_response_rolls_back(atomic_requests, name, status):
 
     assert response.status_code == status
     assert not written(name)
+
+
+def test_error_the_framework_answers_itself_rolls_back(atomic_requests):
+    # No endpoint ran, but it is an error response all the same.
+    assert Client().put("/api/atomic-recording/thing").status_code == 405
+    assert not written("handler-405")
+
+    assert Client().get("/api/atomic-recording/").status_code == 404
+    assert not written("handler-404")
 
 
 def test_success_response_commits(atomic_requests):

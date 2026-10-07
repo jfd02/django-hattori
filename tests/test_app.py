@@ -1,13 +1,14 @@
 import contextlib
+import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import pytest
-from django.http import FileResponse, HttpResponse
+from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 
 from hattori import SSE, HattoriAPI
 from hattori.errors import ConfigError
-from hattori.testing import TestClient
+from hattori.testing import TestAsyncClient, TestClient
 
 api = HattoriAPI()
 
@@ -148,6 +149,79 @@ def test_head_does_not_start_a_stream():
     assert response.status_code == 405
     assert response["Allow"] == "GET, OPTIONS"
     assert started == []
+
+
+def test_head_does_not_pull_a_hand_built_stream():
+    api = HattoriAPI()
+    pulled = []
+
+    def chunks():
+        pulled.append(True)
+        yield b"chunk"
+
+    @api.get("/download")
+    def download(request) -> str:
+        response = StreamingHttpResponse(chunks(), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="rows.csv"'
+        return response
+
+    client = TestClient(api)
+    response = client.request("HEAD", "/download")
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "text/csv"
+    assert response["Content-Disposition"] == 'attachment; filename="rows.csv"'
+    assert response.content == b""
+    assert pulled == []
+    assert client.get("/download").content == b"chunk"
+
+
+@pytest.mark.django_db  # closing a response signals request_finished
+def test_head_does_not_read_a_file_response(tmp_path):
+    api = HattoriAPI()
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"0123456789")
+    opened = []
+
+    @api.get("/report")
+    def download(request) -> str:
+        opened.append(report.open("rb"))
+        return FileResponse(opened[-1])
+
+    response = TestClient(api).request("HEAD", "/report")
+
+    assert response["Content-Length"] == "10"
+    assert response.content == b""
+    # Not read, and still closed along with the response.
+    assert opened[0].tell() == 0
+    response.close()
+    assert opened[0].closed
+
+
+@pytest.mark.asyncio
+async def test_head_does_not_pull_an_async_hand_built_stream():
+    api = HattoriAPI()
+    pulled = []
+
+    async def chunks():
+        pulled.append(True)
+        yield b"chunk"
+
+    @api.get("/download")
+    async def download(request) -> str:
+        return StreamingHttpResponse(chunks(), content_type="text/csv")
+
+    # Served as an ASGI server serves it: iterated asynchronously, where
+    # Django warns about a stream of the wrong kind.
+    func, request, kwargs = TestAsyncClient(api)._resolve("HEAD", "/download", {}, {})
+    response = await func(request, **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        chunks = [chunk async for chunk in response]
+
+    assert response.status_code == 200
+    assert chunks == []
+    assert pulled == []
 
 
 def test_options_lists_the_methods_without_running_an_operation():

@@ -49,6 +49,27 @@ __all__ = ["Operation", "PathView"]
 _NO_FIRST_ITEM = object()
 
 
+def rollback_atomic_requests(request: HttpRequest) -> None:
+    """Fail the request's ATOMIC_REQUESTS transaction, as an error response does."""
+    # A database the route opted out of with non_atomic_requests has no
+    # request transaction, and one opened further out is not ours to end.
+    match = request.resolver_match
+    non_atomic = getattr(match.func, "_non_atomic_requests", ()) if match else ()
+    for db in connections.all():
+        if (
+            db.settings_dict.get("ATOMIC_REQUESTS")
+            and db.alias not in non_atomic
+            and db.in_atomic_block
+        ):
+            transaction.set_rollback(True, using=db.alias)
+
+
+async def _no_chunks() -> collections.abc.AsyncIterator[bytes]:
+    empty: tuple[bytes, ...] = ()
+    for chunk in empty:
+        yield chunk
+
+
 async def _await_coroutine(coroutine: Coroutine[Any, Any, Any]) -> Any:
     """Await the existing result without invoking its callback a second time."""
     return await coroutine
@@ -455,21 +476,8 @@ class Operation:
 
     def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
         response = self.api.on_exception(request, exc)
-        self._rollback_atomic_requests(request)
+        rollback_atomic_requests(request)
         return response
-
-    def _rollback_atomic_requests(self, request: HttpRequest) -> None:
-        # A database the route opted out of with non_atomic_requests has no
-        # request transaction, and one opened further out is not ours to end.
-        match = request.resolver_match
-        non_atomic = getattr(match.func, "_non_atomic_requests", ()) if match else ()
-        for db in connections.all():
-            if (
-                db.settings_dict.get("ATOMIC_REQUESTS")
-                and db.alias not in non_atomic
-                and db.in_atomic_block
-            ):
-                transaction.set_rollback(True, using=db.alias)
 
     def _dump_model(
         self, model: BaseModel, ctx: dict[str, Any], *, stream: bool = False
@@ -721,7 +729,7 @@ class Operation:
             status = type(result).code
             if status >= 400:
                 # A returned error fails the request just as a raised one does.
-                self._rollback_atomic_requests(request)
+                rollback_atomic_requests(request)
             result = result.value
         else:
             # Bare return value - dispatch as the declared success code (200).
@@ -1079,23 +1087,34 @@ class PathView:
         operation = self._find_operation(request)
         if operation is None:
             return self._undeclared_method(request)
-        try:
-            return operation.run(request, *a, **kw)
-        except Exception as exc:
-            return self._escaped_exception(request, operation, exc)
+        return self._run(operation, request, *a, **kw)
 
     async def _async_view(
         self, request: HttpRequest, *a: Any, **kw: Any
     ) -> HttpResponseBase:
+        # Exception handlers are synchronous code and may well use the ORM, so
+        # whatever is answered here rather than inside an async operation is
+        # answered in the sync thread, never on the event loop.
         operation = self._find_operation(request)
         if operation is None:
-            return self._undeclared_method(request)
+            return await sync_to_async(self._undeclared_method)(request)
+        if not operation.is_async:
+            return await sync_to_async(self._run)(operation, request, *a, **kw)
         try:
-            if operation.is_async:
-                return await cast(AsyncOperation, operation).run(request, *a, **kw)
-            return await sync_to_async(operation.run)(request, *a, **kw)
+            response = await cast(AsyncOperation, operation).run(request, *a, **kw)
+        except Exception as exc:
+            escaped = sync_to_async(self._escaped_exception)
+            return await escaped(request, operation, exc)
+        return self._without_stream(request, response)
+
+    def _run(
+        self, operation: Operation, request: HttpRequest, *a: Any, **kw: Any
+    ) -> HttpResponseBase:
+        try:
+            response = operation.run(request, *a, **kw)
         except Exception as exc:
             return self._escaped_exception(request, operation, exc)
+        return self._without_stream(request, response)
 
     def _escaped_exception(
         self, request: HttpRequest, operation: Operation, exc: Exception
@@ -1111,6 +1130,19 @@ class PathView:
             raise exc
         return operation._on_exception(request, exc)
 
+    def _without_stream(
+        self, request: HttpRequest, response: HttpResponseBase
+    ) -> HttpResponseBase:
+        """Keep a HEAD request from pulling a streamed body.
+
+        The server drops the body of a HEAD response, but a stream or a file it
+        would first read to the end, and an endless one never ends. The stream
+        is still closed with the response.
+        """
+        if request.method == "HEAD" and isinstance(response, StreamingHttpResponse):
+            response.streaming_content = _no_chunks() if response.is_async else ()
+        return response
+
     def _find_operation(self, request: HttpRequest) -> Operation | None:
         method = request.method or ""
         operation = self._method_map.get(method)
@@ -1122,8 +1154,8 @@ class PathView:
         """The GET operation, where it answers HEAD as well.
 
         As in Django's own View, it does unless HEAD is declared: the server
-        sends the headers and drops the body. A stream is the exception, since
-        answering would start a stream nobody reads.
+        sends the headers and drops the body. A declared stream is the
+        exception, because its response is only built by starting the stream.
         """
         if "HEAD" in self._method_map:
             return None
@@ -1150,5 +1182,6 @@ class PathView:
             response = self.api.on_exception(
                 request, HttpError(405, "Method Not Allowed")
             )
+            rollback_atomic_requests(request)
         response["Allow"] = ", ".join(self._allowed_methods())
         return response

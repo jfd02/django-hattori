@@ -22,7 +22,7 @@ from hattori.errors import (
 from hattori.openapi import get_schema
 from hattori.openapi.docs import DocsBase, Swagger
 from hattori.openapi.schema import OpenAPISchema
-from hattori.openapi.urls import get_catch_all_url, get_openapi_urls, get_root_url
+from hattori.openapi.urls import get_openapi_urls, get_root_url
 from hattori.renderers import BaseRenderer, JSONRenderer
 from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
 from hattori.types import TCallable
@@ -65,7 +65,6 @@ class HattoriAPI:
         renderer: BaseRenderer | None = None,
         default_router: Router | None = None,
         openapi_extra: dict[str, Any] | None = None,
-        catch_all: bool = False,
     ):
         """
         Args:
@@ -79,11 +78,6 @@ class HattoriAPI:
             servers: List of target hosts used in openAPI spec.
             auth (Callable | Sequence[Callable] | NOT_SET_TYPE | None): Authentication class
             renderer: Default response renderer
-            catch_all: Answer every path under the API that no route matches with
-                the API's own 404 instead of leaving it to Django's HTML page. Off
-                by default because the API then claims every URL beneath its
-                mount: anything listed after it in ``urlpatterns`` under the same
-                prefix is never reached.
         """
         self.title = title
         self.version = version
@@ -99,7 +93,6 @@ class HattoriAPI:
             f"{self.renderer.media_type}; charset={self.renderer.charset}"
         )
         self.openapi_extra = openapi_extra or {}
-        self.catch_all = catch_all
 
         self._exception_handlers: dict[type[Exception], ExcHandler[Any]] = {}
         self.set_default_exception_handlers()
@@ -562,8 +555,6 @@ class HattoriAPI:
             result.extend(bound_router.urls_paths(bound_router.prefix))
 
         result.append(get_root_url(self))
-        if self.catch_all:
-            result.append(get_catch_all_url(self, routes=list(result)))
         self._validate_unique_url_names(result)
         return result
 
