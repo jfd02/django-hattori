@@ -5,10 +5,12 @@ AND semantics, and each ``check`` receives the route's path parameters. A falsy
 result is a ``403``; an ``APIReturn`` short-circuits to that typed response.
 """
 
+import functools
 from enum import Enum
 from typing import Literal
 
 import pytest
+from django.http import HttpResponseForbidden
 
 from hattori import ApiError, BasePermission, Forbidden, HattoriAPI, Router, Schema
 from hattori.errors import AuthorizationError, ConfigError
@@ -249,6 +251,83 @@ def test_check_returning_forbidden_httperror():
     r = TestClient(api).get("/x")
     assert r.status_code == 403
     assert r.json()["code"] == "denied"
+
+
+def test_check_returning_a_response_answers_with_it():
+    api = HattoriAPI(urls_namespace="perm-response")
+    reached = []
+
+    class Gate(BasePermission):
+        def check(self, request):
+            return HttpResponseForbidden("go away")
+
+    @api.get("/sync", permissions=[Gate()])
+    def sync_view(request) -> Out:
+        reached.append("sync")
+        return Out(ok=True)
+
+    r = TestClient(api).get("/sync")
+    assert r.status_code == 403
+    assert r.content == b"go away"
+    assert reached == []
+
+
+@pytest.mark.asyncio
+async def test_check_returning_a_response_answers_with_it_on_async_view():
+    api = HattoriAPI(urls_namespace="perm-response-async")
+    reached = []
+
+    class Gate(BasePermission):
+        def check(self, request):
+            return HttpResponseForbidden("go away")
+
+    @api.get("/async", permissions=[Gate()])
+    async def async_view(request) -> Out:
+        reached.append("async")
+        return Out(ok=True)
+
+    r = await TestAsyncClient(api).get("/async")
+    assert r.status_code == 403
+    assert r.content == b"go away"
+    assert reached == []
+
+
+class YieldsItsAnswer(BasePermission):
+    """A ``check`` that is a generator: calling it runs none of its body."""
+
+    def check(self, request):
+        yield False
+
+
+def test_check_that_has_not_run_is_refused():
+    api = HattoriAPI(urls_namespace="perm-unrun")
+    reached = []
+
+    @api.get("/sync", permissions=[YieldsItsAnswer()])
+    def view(request) -> Out:
+        reached.append("view")
+        return Out(ok=True)
+
+    with pytest.raises(ConfigError, match="YieldsItsAnswer.check returned generator"):
+        TestClient(api).get("/sync")
+
+    assert reached == []
+
+
+@pytest.mark.asyncio
+async def test_check_that_has_not_run_is_refused_on_async_view():
+    api = HattoriAPI(urls_namespace="perm-unrun-async")
+    reached = []
+
+    @api.get("/async", permissions=[YieldsItsAnswer()])
+    async def view(request) -> Out:
+        reached.append("view")
+        return Out(ok=True)
+
+    with pytest.raises(ConfigError, match="YieldsItsAnswer.check returned generator"):
+        await TestAsyncClient(api).get("/async")
+
+    assert reached == []
 
 
 def test_exception_in_check_is_handled():
@@ -766,4 +845,60 @@ def test_async_permission_on_sync_view(recwarn):
     assert client.get("/households/1/c", headers=_bearer("bob")).status_code == 403
 
     assert calls == ["alice", "bob"]
+    assert not recwarn
+
+
+def _sync_decorator(func):
+    """Wrap ``func`` so that nothing about the wrapper says ``func`` is async."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+class WrappedAsyncAdmin(BasePermission):
+    @_sync_decorator
+    async def check(self, request, household_id) -> bool:
+        members = MEMBERSHIPS.get(int(household_id), {})
+        return members.get(request.auth) == "admin"
+
+
+@pytest.mark.asyncio
+async def test_async_permission_behind_a_sync_decorator_on_async_view(recwarn):
+    api = HattoriAPI(urls_namespace="perm-wrapped-async")
+
+    @api.get(
+        "/households/{household_id}/d",
+        auth=TokenAuth(),
+        permissions=[WrappedAsyncAdmin()],
+    )
+    async def view(request, household_id: int) -> Out:
+        return Out(ok=True)
+
+    client = TestAsyncClient(api)
+    ok = await client.get("/households/1/d", headers=_bearer("alice"))
+    assert ok.status_code == 200
+    denied = await client.get("/households/1/d", headers=_bearer("bob"))
+    assert denied.status_code == 403
+
+    assert not recwarn
+
+
+def test_async_permission_behind_a_sync_decorator_on_sync_view(recwarn):
+    api = HattoriAPI(urls_namespace="perm-wrapped-sync")
+
+    @api.get(
+        "/households/{household_id}/e",
+        auth=TokenAuth(),
+        permissions=[WrappedAsyncAdmin()],
+    )
+    def view(request, household_id: int) -> Out:
+        return Out(ok=True)
+
+    client = TestClient(api)
+    assert client.get("/households/1/e", headers=_bearer("alice")).status_code == 200
+    assert client.get("/households/1/e", headers=_bearer("bob")).status_code == 403
+
     assert not recwarn

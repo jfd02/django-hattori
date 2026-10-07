@@ -1,6 +1,6 @@
 import collections.abc
 import inspect
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from functools import partial
 from typing import (
     TYPE_CHECKING,
@@ -84,9 +84,34 @@ async def _no_chunks() -> collections.abc.AsyncIterator[bytes]:
         yield chunk
 
 
-async def _await_coroutine(coroutine: Coroutine[Any, Any, Any]) -> Any:
+async def _await_result(result: collections.abc.Awaitable[Any]) -> Any:
     """Await the existing result without invoking its callback a second time."""
-    return await coroutine
+    return await result
+
+
+def _reject_unrun_result(result: Any, owner: str) -> None:
+    """Refuse a ``result`` that stands for code which has not run.
+
+    An awaitable, a generator and an async generator are all truthy before
+    their body has decided anything, so taking one for a principal or for a
+    passed check would let the request through unchecked. Whether to await is
+    read off the result, not off whether the callback looks async - a sync
+    decorator around an ``async def`` hands back a coroutine all the same - and
+    it is awaited once: what is still unrun after that is refused here.
+    """
+    if not (
+        inspect.isawaitable(result)
+        or inspect.isgenerator(result)
+        or inspect.isasyncgen(result)
+    ):
+        return
+    if inspect.iscoroutine(result):
+        # Not going to be awaited, and this error says so already.
+        result.close()
+    raise ConfigError(
+        f"{owner} returned {type(result).__name__} where a result was expected: "
+        f"its code has not run, so nothing was checked."
+    )
 
 
 class _ParsedAnnotation:
@@ -470,7 +495,7 @@ class Operation:
     def run(self, request: HttpRequest, **kw: Any) -> HttpResponseBase:
         temporal_response = self.api.create_temporal_response(request)
         error = self._run_checks(request, temporal_response, kw)
-        if error:
+        if error is not None:
             return error
         try:
             values = self._get_values(request, kw, temporal_response)
@@ -640,32 +665,41 @@ class Operation:
         # auth:
         if self.auth_callbacks:
             error = self._run_authentication(request, temporal_response)
-            if error:
+            if error is not None:
                 return error
 
         # permissions (run after auth so request.auth is available):
         if self.permission_callbacks:
             error = self._run_permissions(request, temporal_response, path_params)
-            if error:
+            if error is not None:
                 return error
 
         return None
 
     def _auth_outcome(
-        self, request: HttpRequest, result: Any, temporal_response: HttpResponse
+        self,
+        request: HttpRequest,
+        result: Any,
+        temporal_response: HttpResponse,
+        callback: Callable[..., Any],
     ) -> tuple[HttpResponseBase | None, bool]:
         """Map an auth callback ``result`` to ``(response, handled)``.
 
-        ``handled`` True means stop looping: either a typed ``APIReturn`` that
-        short-circuits to that response, or a successful auth whose value is
-        stashed on ``request.auth``. ``handled`` False means this callback
-        declined (returned ``None``) - try the next one.
+        ``handled`` True means stop looping: either a typed ``APIReturn`` or a
+        response, which short-circuits to that response, or a successful auth
+        whose value is stashed on ``request.auth``. ``handled`` False means this
+        callback declined (returned a falsy value) - try the next one.
+        Truthiness, not ``is not None``, so that ``return key == SECRET``
+        rejects a wrong key.
         """
-        if isinstance(result, APIReturn):
-            # Auth declared a typed error response - short-circuit to it
-            # instead of calling the view.
+        name = getattr(callback, "__name__", type(callback).__name__)
+        _reject_unrun_result(result, f"Auth {name}")
+        if isinstance(result, (APIReturn, HttpResponseBase)):
+            # Auth answered for itself - a typed error response, or a response
+            # outright, which is no principal - so short-circuit to it instead
+            # of calling the view.
             return self._result_to_response(request, result, temporal_response), True
-        if result is not None:
+        if result:
             request.auth = result  # type: ignore
             return None, True
         return None, False
@@ -673,15 +707,17 @@ class Operation:
     def _run_authentication(
         self, request: HttpRequest, temporal_response: HttpResponse
     ) -> HttpResponseBase | None:
-        for callback, is_async in self.auth_callbacks_with_async:
+        for callback, _ in self.auth_callbacks_with_async:
             try:
                 result = callback(request)
-                if is_async and inspect.iscoroutine(result):
-                    result = async_to_sync(_await_coroutine)(result)
+                if inspect.isawaitable(result):
+                    result = async_to_sync(_await_result)(result)
             except Exception as exc:
                 return self._on_exception(request, exc)
 
-            outcome, handled = self._auth_outcome(request, result, temporal_response)
+            outcome, handled = self._auth_outcome(
+                request, result, temporal_response, callback
+            )
             if handled:
                 return outcome
         return self._on_exception(request, AuthenticationError())
@@ -695,10 +731,12 @@ class Operation:
     ) -> HttpResponseBase | None:
         """Map a permission ``check`` result to a short-circuit response (or None).
 
-        ``APIReturn`` short-circuits to that typed response; a falsy result is a
-        ``403`` using the permission's ``message``; truthy means pass.
+        An ``APIReturn`` or a response short-circuits to that response; a falsy
+        result is a ``403`` using the permission's ``message``; any other truthy
+        result means pass.
         """
-        if isinstance(result, APIReturn):
+        _reject_unrun_result(result, f"{type(permission).__name__}.check")
+        if isinstance(result, (APIReturn, HttpResponseBase)):
             return self._result_to_response(request, result, temporal_response)
         if result:
             return None
@@ -715,8 +753,8 @@ class Operation:
             try:
                 kwargs = permission.select_path_kwargs(path_params)
                 result = permission.check(request, **kwargs)
-                if inspect.iscoroutine(result):
-                    result = async_to_sync(_await_coroutine)(result)
+                if inspect.isawaitable(result):
+                    result = async_to_sync(_await_result)(result)
             except Exception as exc:
                 return self._on_exception(request, exc)
 
@@ -841,7 +879,7 @@ class AsyncOperation(Operation):
     async def run(self, request: HttpRequest, **kw: Any) -> HttpResponseBase:  # type: ignore
         temporal_response = self.api.create_temporal_response(request)
         error = await self._run_checks(request, temporal_response, kw)
-        if error:
+        if error is not None:
             return error
         try:
             values = self._get_values(request, kw, temporal_response)
@@ -912,13 +950,13 @@ class AsyncOperation(Operation):
         # auth:
         if self.auth_callbacks:
             error = await self._run_authentication(request, temporal_response)
-            if error:
+            if error is not None:
                 return error
 
         # permissions (run after auth so request.auth is available):
         if self.permission_callbacks:
             error = await self._run_permissions(request, temporal_response, path_params)
-            if error:
+            if error is not None:
                 return error
 
         return None
@@ -929,17 +967,17 @@ class AsyncOperation(Operation):
         for callback, is_async in self.auth_callbacks_with_async:
             try:
                 if is_async:
-                    cor: collections.abc.Coroutine | None = callback(request)
-                    if cor is None:
-                        result = None
-                    else:
-                        result = await cor
+                    result = callback(request)
                 else:
                     result = await sync_to_async(callback)(request)
+                if inspect.isawaitable(result):
+                    result = await result
             except Exception as exc:
                 return await self._aon_exception(request, exc)
 
-            outcome, handled = self._auth_outcome(request, result, temporal_response)
+            outcome, handled = self._auth_outcome(
+                request, result, temporal_response, callback
+            )
             if handled:
                 return outcome
         return await self._aon_exception(request, AuthenticationError())
@@ -954,9 +992,11 @@ class AsyncOperation(Operation):
             try:
                 kwargs = permission.select_path_kwargs(path_params)
                 if permission.is_async:
-                    result = await permission.check(request, **kwargs)
+                    result = permission.check(request, **kwargs)
                 else:
                     result = await sync_to_async(permission.check)(request, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
             except Exception as exc:
                 return await self._aon_exception(request, exc)
 
