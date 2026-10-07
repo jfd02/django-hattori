@@ -1,5 +1,8 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import pydantic
@@ -22,8 +25,10 @@ from hattori import (
     UploadedFile,
 )
 from hattori.errors import ConfigError
+from hattori.openapi import get_schema
 from hattori.openapi.urls import get_openapi_urls
 from hattori.renderers import JSONRenderer
+from hattori.testing import TestClient
 
 api = HattoriAPI()
 
@@ -1005,6 +1010,126 @@ def test_unique_operation_ids():
 
     with pytest.raises(ConfigError, match='Duplicate operation_id "same_name"'):
         api.get_openapi_schema()
+
+
+def test_duplicate_operation_ids_fail_at_startup():
+    api = HattoriAPI()
+
+    @api.get("/1", operation_id="shared")
+    def first(request) -> None:
+        pass
+
+    @api.get("/2", operation_id="shared")
+    def second(request) -> None:
+        pass
+
+    # Django imports a URLconf that failed again on the next request, and the
+    # API it finds there has to fail again rather than start half-checked.
+    for _ in range(2):
+        with pytest.raises(
+            ConfigError,
+            match=r'Duplicate operation_id "shared" \(at .*first and .*second\)',
+        ):
+            _ = api.urls
+
+
+def test_method_suffixed_operation_ids_are_checked_at_startup():
+    api = HattoriAPI()
+
+    @api.api_operation(["GET", "POST"], "/1")
+    def item(request) -> None:
+        pass
+
+    @api.get("/2", operation_id="item_post")
+    def other(request) -> None:
+        pass
+
+    with pytest.raises(ConfigError, match='Duplicate operation_id "item_post"'):
+        _ = api.urls
+
+
+def test_operation_left_out_of_the_schema_may_reuse_an_operation_id():
+    api = HattoriAPI()
+
+    @api.get("/1", operation_id="shared")
+    def first(request) -> None:
+        pass
+
+    @api.get("/2", operation_id="shared", include_in_schema=False)
+    def second(request) -> None:
+        pass
+
+    assert [
+        m["get"]["operationId"] for m in api.get_openapi_schema()["paths"].values()
+    ] == ["shared"]
+
+
+def test_schema_is_built_once():
+    api = HattoriAPI()
+
+    @api.get("/ping")
+    def ping(request) -> None:
+        pass
+
+    client = TestClient(api)
+    with patch("hattori.main.get_schema", wraps=get_schema) as build:
+        served = client.get("/openapi.json")
+        assert client.get("/openapi.json").content == served.content
+        assert api.get_openapi_schema() is api.get_openapi_schema()
+    assert served.status_code == 200
+    assert build.call_count == 1
+
+
+def test_requests_arriving_together_share_one_build():
+    api = HattoriAPI()
+
+    @api.get("/ping")
+    def ping(request) -> None:
+        pass
+
+    together = threading.Barrier(4)
+
+    def slow_build(**kwargs):
+        time.sleep(0.05)
+        return get_schema(**kwargs)
+
+    def request(_):
+        together.wait()
+        return api.get_openapi_schema()
+
+    with patch("hattori.main.get_schema", side_effect=slow_build) as build:
+        with ThreadPoolExecutor(4) as pool:
+            schemas = list(pool.map(request, range(4)))
+
+    assert build.call_count == 1
+    assert all(schema is schemas[0] for schema in schemas)
+
+
+def test_schema_for_another_mount_point_is_not_rebuilt():
+    api = HattoriAPI()
+    router = Router()
+
+    @api.get("/ping")
+    def ping(request) -> None:
+        pass
+
+    @router.post("/ping")
+    def create_ping(request) -> None:
+        pass
+
+    api.add_router("", router)
+
+    with patch("hattori.main.get_schema", wraps=get_schema) as build:
+        schema = api.get_openapi_schema(path_prefix="/a/")
+        other = api.get_openapi_schema(path_prefix="/b/")
+        assert api.get_openapi_schema(path_prefix="/a/") is schema
+    assert build.call_count == 1
+
+    assert list(schema["paths"]) == ["/a/ping"]
+    assert list(other["paths"]) == ["/b/ping"]
+    assert list(other["paths"]["/b/ping"]) == ["get", "post"]
+    assert other["paths"]["/b/ping"]["get"] is schema["paths"]["/a/ping"]["get"]
+    assert other["components"] is schema["components"]
 
 
 def test_operation_id_includes_router_prefix():

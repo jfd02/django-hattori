@@ -1,7 +1,12 @@
+import json
+import re
+
+import pytest
 from django.conf import settings
 from django.test import override_settings
 
-from hattori import HattoriAPI, Redoc, Swagger
+from hattori import ApiError, BasePermission, HattoriAPI, Redoc, Swagger
+from hattori.security import APIKeyQuery
 from hattori.testing import TestClient
 
 NO_HATTORI_INSTALLED_APPS = [i for i in settings.INSTALLED_APPS if i != "hattori"]
@@ -64,3 +69,138 @@ def test_redoc_settings():
     response = client.get("/docs")
     assert response.status_code == 200
     assert b'"disableSearch": true' in response.content
+
+
+# --- Who can see the docs ---
+
+DOCS_URLS = ("/docs", "/openapi.json")
+
+
+class Key(APIKeyQuery):
+    def authenticate(self, request, key):
+        return key or None
+
+
+class DocsKey(APIKeyQuery):
+    param_name = "docs_key"
+
+    def authenticate(self, request, key):
+        return key or None
+
+
+class StaffOnly(BasePermission):
+    def check(self, request) -> bool:
+        return request.auth == "staff"
+
+
+def test_docs_take_the_api_auth():
+    client = TestClient(HattoriAPI(auth=Key()))
+    for url in DOCS_URLS:
+        response = client.get(url)
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Unauthorized"}
+        assert client.get(f"{url}?key=k").status_code == 200
+
+
+@pytest.mark.parametrize("docs", [Swagger(), Redoc()])
+@pytest.mark.parametrize("installed_apps", [None, NO_HATTORI_INSTALLED_APPS])
+def test_docs_page_passes_its_query_on_to_the_schema(docs, installed_apps):
+    client = TestClient(HattoriAPI(auth=Key(), docs=docs))
+    overrides = {"INSTALLED_APPS": installed_apps} if installed_apps else {}
+    with override_settings(**overrides):
+        page = client.get("/docs?key=k&theme=dark").content.decode()
+
+    if isinstance(docs, Swagger):
+        settings_json = re.search(
+            r'id="swagger-settings">(.*?)</script>', page, re.DOTALL
+        )
+        url = json.loads(settings_json.group(1))["url"]
+    else:
+        # A JavaScript string literal, in which ``&`` is written as an escape.
+        url = json.loads(f'"{re.search(r"Redoc.init\('(.*?)'", page).group(1)}"')
+
+    assert url == "/api/openapi.json?key=k&theme=dark"
+    assert client.get("/openapi.json").status_code == 401
+    assert client.get(url.removeprefix("/api")).status_code == 200
+
+
+@pytest.mark.parametrize("docs", [Swagger(), Redoc()])
+def test_query_passed_on_cannot_break_out_of_the_page(docs):
+    client = TestClient(HattoriAPI(auth=Key(), docs=docs))
+    payload = "</script><script>alert('x')</script>"
+    page = client.get("/docs", query_params={"key": payload}).content.decode()
+    assert "alert(" not in page
+    assert "%3C%2Fscript%3E" in page
+
+
+def test_docs_take_the_api_permissions():
+    client = TestClient(HattoriAPI(auth=Key(), permissions=[StaffOnly()]))
+    for url in DOCS_URLS:
+        assert client.get(f"{url}?key=guest").status_code == 403
+        assert client.get(f"{url}?key=staff").status_code == 200
+
+
+def test_docs_auth_none_makes_the_docs_public():
+    client = TestClient(HattoriAPI(auth=Key(), docs_auth=None))
+    for url in DOCS_URLS:
+        assert client.get(url).status_code == 200
+
+
+def test_docs_auth_stands_in_for_the_api_checks():
+    api = HattoriAPI(auth=Key(), permissions=[StaffOnly()], docs_auth=DocsKey())
+    client = TestClient(api)
+    for url in DOCS_URLS:
+        assert client.get(f"{url}?key=staff").status_code == 401
+        # Its own auth is all that guards the docs: the API's permissions are
+        # written against what the API's auth returns.
+        assert client.get(f"{url}?docs_key=anyone").status_code == 200
+
+
+def test_docs_of_an_api_without_auth_can_still_be_guarded():
+    client = TestClient(HattoriAPI(docs_auth=DocsKey()))
+    for url in DOCS_URLS:
+        assert client.get(url).status_code == 401
+        assert client.get(f"{url}?docs_key=k").status_code == 200
+
+
+def test_docs_answer_with_the_typed_response_of_the_auth():
+    class BadKey(ApiError):
+        code = 401
+        error_code = "bad_key"
+        message = "Unknown key"
+
+    class TypedKey(APIKeyQuery):
+        def authenticate(self, request, key) -> str | BadKey:
+            return key or BadKey()
+
+    client = TestClient(HattoriAPI(auth=TypedKey()))
+    for url in DOCS_URLS:
+        response = client.get(url)
+        assert response.status_code == 401
+        assert response.json() == {"code": "bad_key", "message": "Unknown key"}
+
+
+def test_docs_run_async_auth():
+    async def auth(request):
+        return request.GET.get("key")
+
+    client = TestClient(HattoriAPI(auth=auth))
+    for url in DOCS_URLS:
+        assert client.get(url).status_code == 401
+        assert client.get(f"{url}?key=k").status_code == 200
+
+
+def test_docs_decorator_wraps_the_guarded_docs():
+    def decorator(view):
+        def wrapper(request, **kwargs):
+            response = view(request, **kwargs)
+            response["X-Docs"] = "yes"
+            return response
+
+        return wrapper
+
+    client = TestClient(HattoriAPI(auth=Key(), docs_decorator=decorator))
+    for url in DOCS_URLS:
+        response = client.get(url)
+        assert response.status_code == 401
+        assert response["X-Docs"] == "yes"

@@ -36,6 +36,7 @@ from hattori.errors import (
 from hattori.params.models import TModels
 from hattori.responses import APIReturn, json_default, resolve_api_return_schema
 from hattori.schema import Schema, pydantic_version
+from hattori.security.permissions import validate_permissions
 from hattori.signature import ViewSignature
 from hattori.streaming import StreamFormat, _serialize_item, _StreamAlias
 from hattori.utils import is_async_callable
@@ -614,6 +615,7 @@ class Operation:
     def _set_permissions(
         self, permissions: collections.abc.Sequence[Any] | Any | None
     ) -> None:
+        validate_permissions(permissions)
         if permissions is not None and permissions is not NOT_SET:
             self.permission_callbacks = (
                 permissions

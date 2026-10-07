@@ -1,5 +1,6 @@
 import collections.abc
 import re
+import threading
 from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
@@ -21,10 +22,11 @@ from hattori.errors import (
 )
 from hattori.openapi import get_schema
 from hattori.openapi.docs import DocsBase, Swagger
-from hattori.openapi.schema import OpenAPISchema
+from hattori.openapi.schema import OpenAPISchema, get_operation_id
 from hattori.openapi.urls import get_openapi_urls, get_root_url
 from hattori.renderers import BaseRenderer, JSONRenderer
 from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
+from hattori.security.permissions import validate_permissions
 from hattori.types import TCallable
 
 if TYPE_CHECKING:
@@ -52,6 +54,10 @@ class HattoriAPI:
         docs: DocsBase | None = None,
         docs_url: str | None = "/docs",
         docs_decorator: Callable[[TCallable], TCallable] | None = None,
+        docs_auth: collections.abc.Sequence[Callable]
+        | Callable
+        | NOT_SET_TYPE
+        | None = NOT_SET,
         servers: list[dict[str, Any]] | None = None,
         urls_namespace: str | None = None,
         auth: collections.abc.Sequence[Callable]
@@ -75,6 +81,10 @@ class HattoriAPI:
             openapi_url: The relative URL to serve the openAPI spec.
             openapi_extra: Additional attributes for the openAPI spec.
             docs_url: The relative URL to serve the API docs.
+            docs_decorator: A decorator applied to the docs and openAPI spec views.
+            docs_auth: Authentication for the docs and the openAPI spec. Left
+                unset they are guarded like the API's own operations, by ``auth``
+                and ``permissions``; ``None`` makes them public.
             servers: List of target hosts used in openAPI spec.
             auth (Callable | Sequence[Callable] | NOT_SET_TYPE | None): Authentication class
             renderer: Default response renderer
@@ -104,6 +114,10 @@ class HattoriAPI:
         else:
             self.auth = auth
 
+        self.docs_auth: collections.abc.Sequence[Callable] | NOT_SET_TYPE | None
+        self.docs_auth = [docs_auth] if callable(docs_auth) else docs_auth
+
+        validate_permissions(permissions)
         # Permissions: a single BasePermission isn't callable, so normalize by
         # wrapping any non-sequence (and non-sentinel) value into a list.
         self.permissions: collections.abc.Sequence[Any] | NOT_SET_TYPE | None
@@ -122,6 +136,8 @@ class HattoriAPI:
             tuple[str, Router, Any, Any, list[str] | None, str | None]
         ] = []
         self._bound_routers_cache: list[BoundRouter] | None = None
+        self._openapi_schema: OpenAPISchema | None = None
+        self._openapi_schema_lock = threading.Lock()
 
         # Backward compat: keep _routers list populated
         self._routers: list[tuple[str, Router]] = []
@@ -445,6 +461,7 @@ class HattoriAPI:
                 "Cannot add routers after URLs have been generated. "
                 "Add all routers before accessing api.urls"
             )
+        validate_permissions(permissions)
 
         if isinstance(router, str):
             router = import_string(router)
@@ -535,9 +552,11 @@ class HattoriAPI:
                 all_mounts.extend(mounts)
 
             # Create bound routers from mounts
-            self._bound_routers_cache = [
-                BoundRouter(mount, self) for mount in all_mounts
-            ]
+            bound_routers = [BoundRouter(mount, self) for mount in all_mounts]
+            # Checked before the routers are kept, so a startup that failed
+            # here fails again if the URLconf is imported a second time.
+            self._validate_unique_operation_ids(bound_routers)
+            self._bound_routers_cache = bound_routers
 
             # Freeze all templates after binding
             for mount in all_mounts:
@@ -574,6 +593,25 @@ class HattoriAPI:
                     f"url_name_prefix values."
                 )
             seen_names.add(pattern.name)
+
+    def _validate_unique_operation_ids(self, bound_routers: list[BoundRouter]) -> None:
+        seen: dict[str, Callable] = {}
+        for bound_router in bound_routers:
+            for path_view in bound_router.path_operations.values():
+                for operation in path_view.operations:
+                    if not operation.include_in_schema:
+                        continue
+                    for method in operation.methods:
+                        op_id = get_operation_id(self, operation, bound_router, method)
+                        if op_id in seen:
+                            first, view = seen[op_id], operation.view_func
+                            raise ConfigError(
+                                f'Duplicate operation_id "{op_id}" '
+                                f"(at {first.__module__}.{first.__name__} "
+                                f"and {view.__module__}.{view.__name__}). "
+                                "Pass an explicit operation_id= or rename the view."
+                            )
+                        seen[op_id] = operation.view_func
 
     def get_root_path(self, path_params: dict[str, Any]) -> str:
         name = f"{self.urls_namespace}:api-root"
@@ -615,9 +653,23 @@ class HattoriAPI:
         path_prefix: str | None = None,
         path_params: dict[str, Any] | None = None,
     ) -> OpenAPISchema:
+        """The OpenAPI document for this API.
+
+        It is built once, on first use, and shared by every later call:
+        treat the result as read-only.
+        """
         if path_prefix is None:
             path_prefix = self.get_root_path(path_params or {})
-        return get_schema(api=self, path_prefix=path_prefix)
+        schema = self._openapi_schema
+        if schema is None or not schema.is_current():
+            # Building takes long enough that requests arriving together
+            # should wait for one build rather than each run their own.
+            with self._openapi_schema_lock:
+                schema = self._openapi_schema
+                if schema is None or not schema.is_current():
+                    schema = get_schema(api=self, path_prefix=path_prefix)
+                    self._openapi_schema = schema
+        return schema.with_path_prefix(path_prefix)
 
     def get_openapi_operation_id(
         self, operation: Operation, router: BoundRouter

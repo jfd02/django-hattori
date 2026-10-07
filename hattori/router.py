@@ -15,6 +15,7 @@ from hattori.constants import NOT_SET
 from hattori.decorators import DecoratorMode
 from hattori.errors import ConfigError
 from hattori.operation import PathView
+from hattori.security.permissions import validate_permissions
 from hattori.types import TCallable
 from hattori.utils import normalize_path, replace_path_param_notation
 
@@ -250,6 +251,7 @@ class Router:
     ) -> None:
         self._frozen = False
         self.auth = auth
+        validate_permissions(permissions)
         self.permissions = permissions
         self.tags = tags
         self.by_alias = by_alias
@@ -633,6 +635,7 @@ class Router:
         url_name_prefix: str | None = None,
     ) -> None:
         self._check_not_frozen()
+        validate_permissions(permissions)
 
         if isinstance(router, str):
             router = import_string(router)
