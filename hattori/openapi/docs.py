@@ -8,6 +8,7 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 
 from hattori.constants import NOT_SET
+from hattori.security.base import auth_attribute
 
 if TYPE_CHECKING:
     # if anyone knows a cleaner way to make mypy happy - welcome
@@ -124,4 +125,4 @@ def _csrf_needed(api: HattoriAPI) -> bool:
     if not api.auth or api.auth == NOT_SET:
         return False
 
-    return any(getattr(a, "csrf", False) for a in api.auth)  # type: ignore
+    return any(auth_attribute(a, "csrf") for a in api.auth)  # type: ignore
