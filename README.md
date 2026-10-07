@@ -242,6 +242,21 @@ class IsHouseholdAdmin(BasePermission):
 
 `AuthedRequest` is annotation-only: the object your view actually receives is Django's own `WSGIRequest`/`ASGIRequest`, so don't use it with `isinstance`. Only operations with `auth=` set populate `auth` — annotating an unauthenticated view with it claims an attribute that won't be there.
 
+## Who can see the docs
+
+`/api/docs` and `/api/openapi.json` are guarded like the API's own operations: pass `auth=` (or `permissions=`) to `HattoriAPI` and a request for the docs has to pass the same checks. An API with no API-wide auth has public docs.
+
+`docs_auth=` guards them differently from the API:
+
+```python
+from hattori.security import django_auth
+
+api = HattoriAPI(auth=BearerAuth(), docs_auth=django_auth)  # logged-in users
+api = HattoriAPI(auth=BearerAuth(), docs_auth=None)         # everyone
+```
+
+A browser can't attach a bearer token or an API-key header to a page load, so an API that authenticates by header needs one of these for Swagger UI to open. A key in the query string does work: the page passes its query string on when it fetches the schema. `docs_decorator=` still wraps both views, and runs before either check.
+
 ## Response types reference
 
 Hattori ships typed response classes for the common status codes. Use these directly in return annotations — no need to declare your own subclasses for them.

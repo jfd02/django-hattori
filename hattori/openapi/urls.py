@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from django.urls import path
 
-from .views import default_home, openapi_json, openapi_view
+from .views import default_home, guard_docs, openapi_json, openapi_view
 
 if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
@@ -15,7 +15,7 @@ def get_openapi_urls(api: HattoriAPI) -> list[Any]:
     result = []
 
     if api.openapi_url:
-        view = partial(openapi_json, api=api)
+        view = guard_docs(api, partial(openapi_json, api=api))
         if api.docs_decorator:
             view = api.docs_decorator(view)  # type: ignore
         result.append(
@@ -27,7 +27,7 @@ def get_openapi_urls(api: HattoriAPI) -> list[Any]:
         )
 
         if api.docs_url:
-            view = partial(openapi_view, api=api)
+            view = guard_docs(api, partial(openapi_view, api=api))
             if api.docs_decorator:
                 view = api.docs_decorator(view)  # type: ignore
             result.append(

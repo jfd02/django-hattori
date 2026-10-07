@@ -61,7 +61,7 @@ def get_query_id(request, item_id, query: int) -> str:
     return f"foo bar {item_id} {query}"
 
 
-@router.get("/text-bad", url_name="get_text_bad")
+@router.get("/text-bad", url_name="get_text_bad", operation_id="get_text_bad")
 @a_bad_test_wrapper
 def get_text_bad(request) -> str:
     return "Hello World"
@@ -69,13 +69,15 @@ def get_text_bad(request) -> str:
 
 with mock.patch("hattori.signature.details.warnings.warn_explicit"):
 
-    @router.get("/path-bad/{item_id}", url_name="get_id_bad")
+    @router.get("/path-bad/{item_id}", url_name="get_id_bad", operation_id="get_id_bad")
     @a_bad_test_wrapper
     def get_id_bad(request, item_id) -> str:
         return item_id
 
 
-@router.get("/query-bad", url_name="get_query_type_bad")
+@router.get(
+    "/query-bad", url_name="get_query_type_bad", operation_id="get_query_type_bad"
+)
 @a_bad_test_wrapper
 def get_query_type_bad(request, query: int) -> str:
     return f"foo bar {query}"
@@ -83,7 +85,11 @@ def get_query_type_bad(request, query: int) -> str:
 
 with mock.patch("hattori.signature.details.warnings.warn_explicit"):
 
-    @router.get("/path-query-bad/{item_id}", url_name="get_query_id_bad")
+    @router.get(
+        "/path-query-bad/{item_id}",
+        url_name="get_query_id_bad",
+        operation_id="get_query_id_bad",
+    )
     @a_bad_test_wrapper
     def get_query_id_bad(request, item_id, query: int) -> str:
         return f"foo bar {item_id} {query}"
