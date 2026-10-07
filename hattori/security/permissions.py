@@ -34,12 +34,16 @@ class BasePermission(ABC):
 
     ``check`` may return:
 
-    * ``True`` (or any truthy value) — the check passes, move on.
+    * ``True`` — the check passes, move on.
     * ``False``/``None`` — denied; the framework returns a ``403`` using this
       permission's :attr:`message`. The OpenAPI spec documents that ``403`` on
       every operation the permission guards, unless ``check``'s return
       annotation rules a falsy result out (as ``Literal[True] | NotAdmin`` does
       below).
+    * anything else — a :class:`~hattori.errors.ConfigError`. A result that is
+      only truthy is not a pass: a method ``check`` forgot to call and a
+      ``(False, "reason")`` tuple are truthy too. Spell a truthiness test out
+      with ``bool(...)``.
     * an :class:`~hattori.APIReturn` instance (e.g. a typed ``Forbidden(...)``) —
       short-circuits to that response. Declaring such variants in ``check``'s
       return annotation documents them on every operation's OpenAPI spec, exactly
@@ -66,7 +70,7 @@ class BasePermission(ABC):
     ``super().__init__()``, which is where ``check``'s signature is read.
     """
 
-    #: Default ``403`` message used when ``check`` returns a falsy value.
+    #: Default ``403`` message used when ``check`` returns ``False`` or ``None``.
     message: str = "Forbidden"
 
     def __init__(self) -> None:
@@ -99,7 +103,7 @@ class BasePermission(ABC):
     # calls `check` with `request` plus whichever path params it declares.
     @abstractmethod
     def check(self, *args: Any, **kwargs: Any) -> bool | APIReturn | None:
-        """Return ``True`` to pass, a falsy value for a ``403``, or an ``APIReturn``.
+        """Return ``True`` to pass, ``False``/``None`` for a ``403``, or an ``APIReturn``.
 
         Implementations take ``(self, request)`` plus any subset of the route's
         path parameters — see the class docstring for the full contract.
@@ -126,10 +130,11 @@ class BasePermission(ABC):
 def _can_return_falsy(check: Callable[..., Any]) -> bool:
     """Whether ``check``'s return annotation leaves room for a falsy result.
 
-    A falsy result is answered with the framework's own ``403``, so this
+    ``False`` or ``None`` is answered with the framework's own ``403``, so this
     answers "is that 403 *impossible*": anything it can't prove truthy counts.
     Only two kinds of arm are provably safe — an ``APIReturn``, which
-    short-circuits before the truthiness test, and a ``Literal`` of truthy values.
+    short-circuits before the result is read as a verdict, and a ``Literal`` of
+    truthy values.
     """
     arms = return_annotation_arms(check)
     if arms is None:

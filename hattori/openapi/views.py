@@ -67,9 +67,16 @@ def guard_docs(
     guard.api = api
 
     def guarded(request: HttpRequest, **kwargs: Any) -> HttpResponseBase:
-        denied = guard._run_checks(
-            request, api.create_temporal_response(request), kwargs
-        )
+        try:
+            denied = guard._run_checks(
+                request, api.create_temporal_response(request), kwargs
+            )
+        except Exception as exc:
+            # A check whose result was rejected. As for an operation, the
+            # handlers answer it, unless it is they who left it unanswered.
+            if exc is getattr(request, "_hattori_unanswered", None):
+                raise
+            return guard._on_exception(request, exc)
         if denied is not None:
             return denied
         return view(request, **kwargs)

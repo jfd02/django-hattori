@@ -19,7 +19,7 @@ from someapp.models import Event
 
 from hattori import ApiError, BasePermission, Created, HattoriAPI
 from hattori.decorators import decorate_view
-from hattori.errors import HttpError
+from hattori.errors import ConfigError, HttpError
 from hattori.security import HttpBearer
 from hattori.testing import TestAsyncClient, TestClient
 
@@ -102,6 +102,24 @@ class RaisesDjangoNotAllowed(BasePermission):
         raise PermissionDenied
 
 
+class ReturnsUnrun(HttpBearer):
+    def authenticate(self, request, token: str):
+        write("auth-unrun")
+        return (principal for principal in [token])
+
+
+class ReturnsUnrunCheck(BasePermission):
+    def check(self, request):
+        write("permission-unrun")
+        return (verdict for verdict in [True])
+
+
+class ReturnsNoVerdict(BasePermission):
+    def check(self, request):
+        write("permission-no-verdict")
+        return "allowed"
+
+
 def writes_then_denies(view):
     @wraps(view)
     def wrapper(request, *args, **kwargs):
@@ -175,6 +193,21 @@ def decorator_raised(request) -> str:
     return "ok"
 
 
+@api.post("auth-unrun", auth=ReturnsUnrun())
+def auth_unrun(request) -> str:
+    return "ok"
+
+
+@api.post("permission-unrun", permissions=[ReturnsUnrunCheck()])
+def permission_unrun(request) -> str:
+    return "ok"
+
+
+@api.post("permission-no-verdict", permissions=[ReturnsNoVerdict()])
+def permission_no_verdict(request) -> str:
+    return "ok"
+
+
 @api.post("created")
 def created(request) -> Created[str]:
     write("created")
@@ -245,9 +278,26 @@ def thing(request) -> str:
     return "ok"
 
 
+# An API that answers for a check whose result was rejected.
+answering = HattoriAPI(urls_namespace="atomic-requests-answering")
+
+
+@answering.exception_handler(ConfigError)
+def answer(request, exc):
+    return answering.create_response(request, {}, status=500)
+
+
+answering.post("auth-unrun", auth=ReturnsUnrun())(auth_unrun)
+answering.post("permission-unrun", permissions=[ReturnsUnrunCheck()])(permission_unrun)
+answering.post("permission-no-verdict", permissions=[ReturnsNoVerdict()])(
+    permission_no_verdict
+)
+
+
 urlpatterns = [
     path("api/atomic-requests/", api.urls),
     path("api/atomic-recording/", recording.urls),
+    path("api/atomic-answering/", answering.urls),
 ]
 
 
@@ -303,6 +353,36 @@ def test_error_the_framework_answers_itself_rolls_back(atomic_requests):
 
     assert Client().get("/api/atomic-recording/").status_code == 404
     assert not written("handler-404")
+
+
+REJECTED = ["auth-unrun", "permission-unrun", "permission-no-verdict"]
+
+
+@pytest.mark.parametrize("name", REJECTED)
+def test_rejected_check_result_rolls_back(atomic_requests, name):
+    # Nothing answers the ConfigError, so it reaches Django, which rolls back.
+    with pytest.raises(ConfigError):
+        post(name)
+
+    assert not written(name)
+
+
+@pytest.mark.parametrize("name", REJECTED)
+def test_rejected_check_result_a_handler_answers_rolls_back(atomic_requests, name):
+    response = Client().post(
+        "/api/atomic-answering/" + name, HTTP_AUTHORIZATION="Bearer token"
+    )
+
+    assert response.status_code == 500
+    assert not written(name)
+
+
+@pytest.mark.parametrize("name", REJECTED)
+def test_rejected_check_result_keeps_its_write_without_atomic_requests(name):
+    with pytest.raises(ConfigError):
+        post(name)
+
+    assert written(name)
 
 
 def test_success_response_commits(atomic_requests):
