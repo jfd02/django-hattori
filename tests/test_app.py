@@ -211,7 +211,6 @@ def test_head_does_not_pull_a_stream_an_exception_handler_answers_with():
 
 
 def test_head_does_not_pull_a_streamed_error_wherever_it_comes_from():
-    # Every way out of the API, not only the one through an operation.
     api = HattoriAPI()
     pulled = []
 
@@ -279,8 +278,7 @@ async def test_head_does_not_pull_an_async_hand_built_stream():
     async def download(request) -> str:
         return StreamingHttpResponse(chunks(), content_type="text/csv")
 
-    # Served as an ASGI server serves it: iterated asynchronously, where
-    # Django warns about a stream of the wrong kind.
+    # Iterated as ASGI does, where Django warns about the wrong kind of stream.
     func, request, kwargs = TestAsyncClient(api)._resolve("HEAD", "/download", {}, {})
     response = await func(request, **kwargs)
     with warnings.catch_warnings():

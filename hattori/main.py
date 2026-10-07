@@ -661,9 +661,8 @@ class HattoriAPI:
                 raise exc
             return handler(request, exc)
         except Exception as unanswered:
-            # Whatever the handlers leave unanswered is on its way to Django.
-            # Noted on the request so that a caller further out which catches
-            # it again (PathView) does not offer it to the handlers twice.
+            # Noted so that PathView, which may catch this again on its way to
+            # Django, does not offer it to the handlers twice.
             request._hattori_unanswered = unanswered  # type: ignore[attr-defined]
             raise
 

@@ -377,17 +377,11 @@ Every error the API answers on your behalf is an `HttpError` too, so it takes th
 | A method the path doesn't declare | 405, with an `Allow` header |
 | The API's root URL | 404 |
 
-That holds wherever the exception is raised: the operation, its auth or permissions, or a view decorator around it. The status and the log entry are the ones Django would have produced, only the body differs, and the Django exception is the `__cause__` of the `HttpError` your handler receives.
+This holds wherever the exception is raised: the endpoint, its auth or permissions, or a view decorator around it. The Django exception is the `__cause__` of the `HttpError` your handler receives, and a handler registered for the Django exception itself takes precedence. Handlers run in a sync thread, so they can use the ORM even for an `async` endpoint.
 
-A `GET` route also answers `HEAD`, and every path answers `OPTIONS` with its `Allow` header and nothing else: no auth, permissions or endpoint code run for it. Declare either operation yourself to replace that. `HEAD` runs the `GET` operation, auth and all, and sends its headers without the body; a stream or a file is never read for it, and a route declared as a stream (`SSE[...]`, `JSONL[...]`) does not answer `HEAD` at all.
+A `GET` route also answers `HEAD`: the endpoint runs and the body is not sent. A streaming route is the exception. Every path answers `OPTIONS` with its `Allow` header, without running auth or the endpoint. Declare either operation yourself to replace that.
 
-A path under the API that matches no route is not the API's to answer: Django sends its own 404, which a project shapes with `handler404`.
-
-An exception no handler answers is not turned into an `HttpError`. Outside `DEBUG` it is re-raised, so Django reports it and sends its own 500; in `DEBUG` the API answers with a plain-text traceback. Register `@api.exception_handler(Exception)` to answer those yourself.
-
-Exception handlers always run in a sync thread, never on the event loop, so one may use the ORM even when the endpoint is `async`.
-
-Because the API now answers these itself, they no longer reach what used to see them: a handler registered for `Exception`, Django's `handler403`/`handler400` views, or a middleware's `process_exception`. Register a handler for the Django exception, or for `HttpError`, to keep custom behaviour.
+Two cases are left to Django: a path under the API that matches no route gets its 404 (shaped by `handler404`), and an exception no handler answers is re-raised outside `DEBUG`, so Django reports it. Register `@api.exception_handler(Exception)` to answer the latter yourself.
 
 ## Transactions
 

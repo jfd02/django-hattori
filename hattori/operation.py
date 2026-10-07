@@ -69,9 +69,8 @@ def drop_stream_for_head(
 ) -> HttpResponseBase:
     """Keep a HEAD request from pulling a streamed body.
 
-    The server drops the body of a HEAD response, but a stream or a file it
-    would first read to the end, and an endless one never ends. The stream is
-    still closed with the response.
+    The server drops a HEAD body, but only after reading a stream or a file to
+    its end. The original is still closed with the response.
     """
     if request.method == "HEAD" and isinstance(response, StreamingHttpResponse):
         response.streaming_content = _no_chunks() if response.is_async else ()
@@ -858,8 +857,7 @@ class AsyncOperation(Operation):
     async def _aon_exception(
         self, request: HttpRequest, exc: Exception
     ) -> HttpResponse:
-        # Exception handlers are synchronous code and may well use the ORM,
-        # which Django refuses to run on the event loop.
+        # Handlers are sync code that may use the ORM: never on the event loop.
         return await sync_to_async(self._on_exception)(request, exc)
 
     async def _async_stream_response(
@@ -1117,9 +1115,7 @@ class PathView:
     async def _async_view(
         self, request: HttpRequest, *a: Any, **kw: Any
     ) -> HttpResponseBase:
-        # Exception handlers are synchronous code and may well use the ORM, so
-        # whatever is answered here is answered in the sync thread, never on
-        # the event loop. An async operation does the same for what it answers.
+        # Whatever is answered here may run a handler, so not on the event loop.
         response: HttpResponseBase
         operation = self._find_operation(request)
         if operation is None:
@@ -1128,11 +1124,11 @@ class PathView:
             response = await sync_to_async(self._run)(operation, request, *a, **kw)
         else:
             try:
-                run = cast(AsyncOperation, operation).run
-                response = await run(request, *a, **kw)
+                response = await cast(AsyncOperation, operation).run(request, *a, **kw)
             except Exception as exc:
-                escaped = sync_to_async(self._escaped_exception)
-                response = await escaped(request, operation, exc)
+                response = await sync_to_async(self._escaped_exception)(
+                    request, operation, exc
+                )
         return drop_stream_for_head(request, response)
 
     def _run(
@@ -1148,10 +1144,8 @@ class PathView:
     ) -> HttpResponse:
         """Answer an exception that got out of ``operation.run``.
 
-        The operation answers what its own code raises, so this is either one
-        the handlers already left unanswered, which goes on to Django, or one
-        raised around the operation by a view decorator, which they have not
-        seen yet.
+        Either a view decorator raised it, or the handlers already left it
+        unanswered and it goes on to Django.
         """
         if exc is getattr(request, "_hattori_unanswered", None):
             raise exc
@@ -1165,11 +1159,10 @@ class PathView:
         return operation
 
     def _implicit_head(self) -> Operation | None:
-        """The GET operation, where it answers HEAD as well.
+        """The GET operation, where it also answers HEAD, as in Django's View.
 
-        As in Django's own View, it does unless HEAD is declared: the server
-        sends the headers and drops the body. A declared stream is the
-        exception, because its response is only built by starting the stream.
+        Not when HEAD is declared, nor for a declared stream, whose response is
+        only built by starting it.
         """
         if "HEAD" in self._method_map:
             return None
@@ -1189,7 +1182,7 @@ class PathView:
     def _undeclared_method(self, request: HttpRequest) -> HttpResponse:
         """Answer a method that no operation on this path declares."""
         if request.method == "OPTIONS":
-            # As in Django's own View: no body, just the methods on offer.
+            # As in Django's View: no body, only Allow.
             response = self.api.create_temporal_response(request)
             response["Content-Length"] = "0"
         else:

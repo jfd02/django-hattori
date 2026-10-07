@@ -230,8 +230,7 @@ async def async_non_atomic(request) -> str | Conflict:
     return Conflict()
 
 
-# An API whose own handler writes, to see what becomes of that write when the
-# error comes from the framework rather than from an endpoint.
+# An API whose handler writes, for errors no endpoint is involved in.
 recording = HattoriAPI(urls_namespace="atomic-requests-recording")
 
 

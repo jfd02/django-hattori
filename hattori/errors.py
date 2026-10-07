@@ -428,10 +428,8 @@ def set_default_exc_handlers(api: HattoriAPI) -> None:
     )
 
 
-# Django's own exceptions, and the HttpError each one is answered as: the arms of
-# ``django.core.handlers.exception.response_for_exception`` that are not a 500.
-# Raised inside the API they keep the status Django gives them, but take the same
-# body, through the same handlers, as every other HttpError.
+# Django's own exceptions and the HttpError each is answered as: the non-500
+# arms of ``django.core.handlers.exception.response_for_exception``.
 _DJANGO_EXCEPTIONS: dict[type[Exception], HttpError] = {
     Http404: HttpError(404, "Not Found"),
     PermissionDenied: AuthorizationError(),
@@ -445,12 +443,10 @@ def _default_django_exception(
     request: HttpRequest, exc: Exception, api: HattoriAPI, answer: HttpError
 ) -> HttpResponse:
     if isinstance(exc, (RequestDataTooBig, TooManyFieldsSent, TooManyFilesSent)):
-        # As Django does: reading the POST data again, which error reporting
-        # does, would raise the same exception again.
+        # Otherwise error reporting, which reads request.POST, raises it again.
         request._mark_post_parse_error()  # type: ignore[attr-defined]
     message = answer.message
-    # The reason on a Django exception is written for the developer, so it only
-    # reaches the client in DEBUG.
+    # The exception's own message is for the developer: DEBUG only.
     if settings.DEBUG and str(exc):
         message = f"{message}: {exc}"
     error = type(answer)(answer.status_code, message)
@@ -458,8 +454,7 @@ def _default_django_exception(
     try:
         response = api.on_exception(request, error)
     except Exception:
-        # The answer failed, which Django reports in its own right. What it
-        # would have logged about the exception itself is still owed.
+        # The handler failed; the exception's own log entry is still owed.
         _log_as_django_does(request, exc, HttpResponse(status=error.status_code))
         raise
     _log_as_django_does(request, exc, response)
@@ -469,43 +464,17 @@ def _default_django_exception(
 def _log_as_django_does(
     request: HttpRequest, exc: Exception, response: HttpResponse
 ) -> None:
-    # The log entry each arm of ``response_for_exception`` writes, so that
-    # answering in Django's place loses nothing from the logs. Http404 has no
-    # entry of its own there either.
+    # What each arm of ``response_for_exception`` logs; Http404 logs nothing.
+    log = partial(log_response, response=response, request=request, exception=exc)
     if isinstance(exc, PermissionDenied):
-        log_response(
-            "Forbidden (Permission denied): %s",
-            request.path,
-            response=response,
-            request=request,
-            exception=exc,
-        )
+        log("Forbidden (Permission denied): %s", request.path)
     elif isinstance(exc, MultiPartParserError):
-        log_response(
-            "Bad request (Unable to parse request body): %s",
-            request.path,
-            response=response,
-            request=request,
-            exception=exc,
-        )
+        log("Bad request (Unable to parse request body): %s", request.path)
     elif isinstance(exc, DjangoBadRequest):
-        log_response(
-            "%s: %s",
-            str(exc),
-            request.path,
-            response=response,
-            request=request,
-            exception=exc,
-        )
+        log("%s: %s", str(exc), request.path)
     elif isinstance(exc, SuspiciousOperation):
-        log_response(
-            str(exc),
-            response=response,
-            request=request,
-            exception=exc,
-            level="error",
-            logger=logging.getLogger(f"django.security.{type(exc).__name__}"),
-        )
+        security = logging.getLogger(f"django.security.{type(exc).__name__}")
+        log(str(exc), level="error", logger=security)
 
 
 def _default_http_error(

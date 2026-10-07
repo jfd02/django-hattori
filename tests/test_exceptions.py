@@ -136,8 +136,7 @@ def _log_entries(caplog):
     ids=lambda exc: type(exc).__name__,
 )
 def test_django_exceptions_keep_django_status_and_log_entries(caplog, exc):
-    # Django's own handler is the reference: answering in its place changes the
-    # body, and must change neither the status nor what reaches the logs.
+    # Django's own handler is the reference for the status and the log entries.
     caplog.set_level(logging.DEBUG, logger="django")
     request = RequestFactory().get("/error")
     django_response = response_for_exception(request, exc)
@@ -152,7 +151,6 @@ def test_django_exceptions_keep_django_status_and_log_entries(caplog, exc):
 
 
 def test_django_log_entry_survives_a_handler_that_fails(caplog):
-    # A security event must reach its logger even if answering it goes wrong.
     api = HattoriAPI()
 
     @api.exception_handler(HttpError)

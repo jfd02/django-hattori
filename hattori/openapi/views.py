@@ -21,8 +21,6 @@ def default_home(
     if settings.DEBUG:
         docs_url = f"{request.path}{api.docs_url}".replace("//", "/")
         hint = f"docs_url = {docs_url}"
-    # No operation answers here, so what an operation does for an error
-    # response is done here.
     response = api.on_exception(request, Http404(hint))
     rollback_atomic_requests(request)
     return drop_stream_for_head(request, response)

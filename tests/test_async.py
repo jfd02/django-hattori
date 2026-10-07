@@ -78,8 +78,7 @@ def _on_event_loop() -> bool:
 
 @pytest.mark.asyncio
 async def test_exception_handlers_never_run_on_the_event_loop():
-    # A handler is synchronous code and may use the ORM, which Django refuses
-    # to run on the event loop.
+    # A handler may use the ORM, which Django refuses to run on the event loop.
     api = HattoriAPI()
     on_loop = []
 
