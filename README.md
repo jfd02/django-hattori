@@ -240,6 +240,8 @@ class IsHouseholdAdmin(BasePermission):
         return is_admin(request.auth, household_id)
 ```
 
+`check` returns `True` to allow the request, `False` or `None` to refuse it with a 403, or a response of its own to refuse it with: a typed error such as `Forbidden`, or an `HttpResponse`. Any other value raises a `ConfigError`: a result that is only truthy, such as a method the check forgot to call, is never read as a pass.
+
 `AuthedRequest` is annotation-only: the object your view actually receives is Django's own `WSGIRequest`/`ASGIRequest`, so don't use it with `isinstance`. Only operations with `auth=` set populate `auth` — annotating an unauthenticated view with it claims an attribute that won't be there.
 
 ## Who can see the docs

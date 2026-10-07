@@ -642,7 +642,7 @@ class OpenAPISchema(dict):
     def _can_send_default_403(self, operation: Operation, method: str | None) -> bool:
         """Whether the framework's own 403 can answer this operation.
 
-        It answers a permission whose ``check`` returns a falsy value, and a
+        It answers a permission whose ``check`` returns ``False`` or ``None``, and a
         request that fails the CSRF check cookie auth runs on unsafe methods.
         """
         if any(

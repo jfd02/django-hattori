@@ -1,10 +1,12 @@
 """End-to-end tests for the permissions layer.
 
 Permissions run *after* authentication (so ``request.auth`` is populated), with
-AND semantics, and each ``check`` receives the route's path parameters. A falsy
-result is a ``403``; an ``APIReturn`` short-circuits to that typed response.
+AND semantics, and each ``check`` receives the route's path parameters. ``True``
+passes, ``False`` or ``None`` is a ``403``, an ``APIReturn`` short-circuits to
+that typed response, and anything else is a ``ConfigError``.
 """
 
+import asyncio
 import functools
 from enum import Enum
 from typing import Literal
@@ -299,35 +301,148 @@ class YieldsItsAnswer(BasePermission):
         yield False
 
 
-def test_check_that_has_not_run_is_refused():
-    api = HattoriAPI(urls_namespace="perm-unrun")
+class YieldsItsAnswerAsync(BasePermission):
+    async def check(self, request):
+        yield False
+
+
+class ForgetsAnAwait(BasePermission):
+    async def _decide(self):
+        return False
+
+    async def check(self, request):
+        return self._decide()
+
+
+class ResolvesToItself(BasePermission):
+    async def check(self, request):
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(future)
+        return future
+
+
+# Each hands back something whose code never decided anything.
+_UNRUN = [
+    pytest.param(YieldsItsAnswer(), "generator", id="generator"),
+    pytest.param(YieldsItsAnswerAsync(), "async_generator", id="async-generator"),
+    pytest.param(ForgetsAnAwait(), "coroutine", id="forgotten-await"),
+    pytest.param(ResolvesToItself(), "Future", id="self-resolving-future"),
+]
+
+
+@pytest.mark.parametrize("permission,kind", _UNRUN)
+def test_check_that_has_not_run_is_refused(permission, kind):
+    api = HattoriAPI(urls_namespace=f"perm-unrun-{kind}")
     reached = []
 
-    @api.get("/sync", permissions=[YieldsItsAnswer()])
+    @api.get("/sync", permissions=[permission])
     def view(request) -> Out:
         reached.append("view")
         return Out(ok=True)
 
-    with pytest.raises(ConfigError, match="YieldsItsAnswer.check returned generator"):
+    name = type(permission).__name__
+    with pytest.raises(ConfigError, match=f"{name}.check returned {kind} where"):
         TestClient(api).get("/sync")
 
     assert reached == []
 
 
 @pytest.mark.asyncio
-async def test_check_that_has_not_run_is_refused_on_async_view():
-    api = HattoriAPI(urls_namespace="perm-unrun-async")
+@pytest.mark.parametrize("permission,kind", _UNRUN)
+async def test_check_that_has_not_run_is_refused_on_async_view(permission, kind):
+    api = HattoriAPI(urls_namespace=f"perm-unrun-async-{kind}")
     reached = []
 
-    @api.get("/async", permissions=[YieldsItsAnswer()])
+    @api.get("/async", permissions=[permission])
     async def view(request) -> Out:
         reached.append("view")
         return Out(ok=True)
 
-    with pytest.raises(ConfigError, match="YieldsItsAnswer.check returned generator"):
+    name = type(permission).__name__
+    with pytest.raises(ConfigError, match=f"{name}.check returned {kind} where"):
         await TestAsyncClient(api).get("/async")
 
     assert reached == []
+
+
+class Answers(BasePermission):
+    """A ``check`` that returns whatever it was built with."""
+
+    def __init__(self, answer):
+        super().__init__()
+        self.answer = answer
+
+    def check(self, request):
+        return self.answer
+
+
+class AnswersAsync(Answers):
+    async def check(self, request):
+        return self.answer
+
+
+# Truthy or falsy, none of these says "allowed" or "refused".
+_NO_VERDICT = [
+    pytest.param(1, "int", id="one"),
+    pytest.param(0, "int", id="zero"),
+    pytest.param("yes", "str", id="string"),
+    pytest.param("", "str", id="empty-string"),
+    pytest.param((False, "denied"), "tuple", id="verdict-and-reason"),
+    pytest.param([], "list", id="empty-list"),
+    pytest.param({"admin"}, "set", id="set"),
+    pytest.param(Answers(True).check, "method", id="uncalled-method"),
+]
+
+
+@pytest.mark.parametrize("permission", [Answers, AnswersAsync])
+@pytest.mark.parametrize("answer,kind", _NO_VERDICT)
+def test_check_result_that_is_no_verdict_is_refused(permission, answer, kind):
+    api = HattoriAPI(urls_namespace=f"perm-no-verdict-{kind}")
+    reached = []
+
+    @api.get("/sync", permissions=[permission(answer)])
+    def view(request) -> Out:
+        reached.append("view")
+        return Out(ok=True)
+
+    owner = f"{permission.__name__}.check"
+    with pytest.raises(ConfigError, match=f"{owner} returned {kind}, which"):
+        TestClient(api).get("/sync")
+
+    assert reached == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permission", [Answers, AnswersAsync])
+@pytest.mark.parametrize("answer,kind", _NO_VERDICT)
+async def test_check_result_that_is_no_verdict_is_refused_on_async_view(
+    permission, answer, kind
+):
+    api = HattoriAPI(urls_namespace=f"perm-no-verdict-async-{kind}")
+    reached = []
+
+    @api.get("/async", permissions=[permission(answer)])
+    async def view(request) -> Out:
+        reached.append("view")
+        return Out(ok=True)
+
+    owner = f"{permission.__name__}.check"
+    with pytest.raises(ConfigError, match=f"{owner} returned {kind}, which"):
+        await TestAsyncClient(api).get("/async")
+
+    assert reached == []
+
+
+@pytest.mark.parametrize("permission", [Answers, AnswersAsync])
+@pytest.mark.parametrize("answer,status", [(True, 200), (False, 403), (None, 403)])
+def test_check_verdicts(permission, answer, status):
+    api = HattoriAPI(urls_namespace=f"perm-verdict-{answer}")
+
+    @api.get("/sync", permissions=[permission(answer)])
+    def view(request) -> Out:
+        return Out(ok=True)
+
+    assert TestClient(api).get("/sync").status_code == status
 
 
 def test_exception_in_check_is_handled():

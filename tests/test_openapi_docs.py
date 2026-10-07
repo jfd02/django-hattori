@@ -6,6 +6,7 @@ from django.conf import settings
 from django.test import override_settings
 
 from hattori import ApiError, BasePermission, HattoriAPI, Redoc, Swagger
+from hattori.errors import ConfigError
 from hattori.security import APIKeyQuery
 from hattori.testing import TestClient
 
@@ -138,6 +139,66 @@ def test_docs_take_the_api_permissions():
     for url in DOCS_URLS:
         assert client.get(f"{url}?key=guest").status_code == 403
         assert client.get(f"{url}?key=staff").status_code == 200
+
+
+class NoVerdict(BasePermission):
+    def check(self, request):
+        return 0
+
+
+def test_rejected_check_result_on_the_docs_is_answered_by_the_api_handlers():
+    api = HattoriAPI(permissions=[NoVerdict()])
+    answered = []
+
+    @api.exception_handler(ConfigError)
+    def answer(request, exc):
+        answered.append(request.path)
+        return api.create_response(request, {"detail": str(exc)}, status=503)
+
+    client = TestClient(api)
+    for url in DOCS_URLS:
+        response = client.get(url)
+        assert response.status_code == 503
+        assert "NoVerdict.check returned int" in response.json()["detail"]
+
+    assert len(answered) == len(DOCS_URLS)
+
+
+def test_rejected_check_result_on_the_docs_no_handler_answers_is_raised_once():
+    api = HattoriAPI(permissions=[NoVerdict()])
+    offered = []
+
+    @api.exception_handler(ConfigError)
+    def hand_back(request, exc):
+        offered.append(exc)
+        raise exc
+
+    client = TestClient(api)
+    for url in DOCS_URLS:
+        with pytest.raises(ConfigError, match="NoVerdict.check returned int"):
+            client.get(url)
+
+    assert len(offered) == len(DOCS_URLS)
+
+
+def test_exception_from_a_docs_check_no_handler_answers_is_offered_once():
+    def backend_down(request):
+        raise RuntimeError("auth backend down")
+
+    api = HattoriAPI(auth=backend_down)
+    offered = []
+
+    @api.exception_handler(RuntimeError)
+    def hand_back(request, exc):
+        offered.append(exc)
+        raise exc
+
+    client = TestClient(api)
+    for url in DOCS_URLS:
+        with pytest.raises(RuntimeError, match="auth backend down"):
+            client.get(url)
+
+    assert len(offered) == len(DOCS_URLS)
 
 
 def test_docs_auth_none_makes_the_docs_public():

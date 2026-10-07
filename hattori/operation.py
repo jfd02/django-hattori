@@ -731,17 +731,25 @@ class Operation:
     ) -> HttpResponseBase | None:
         """Map a permission ``check`` result to a short-circuit response (or None).
 
-        An ``APIReturn`` or a response short-circuits to that response; a falsy
-        result is a ``403`` using the permission's ``message``; any other truthy
-        result means pass.
+        ``True`` means pass; ``False`` or ``None`` is a ``403`` using the
+        permission's ``message``; an ``APIReturn`` or a response short-circuits
+        to that response. Anything else is no verdict - an uncalled method and
+        a ``(False, "reason")`` tuple are both truthy - so it is refused as a
+        misconfiguration rather than read as a pass.
         """
-        _reject_unrun_result(result, f"{type(permission).__name__}.check")
+        owner = f"{type(permission).__name__}.check"
+        _reject_unrun_result(result, owner)
         if isinstance(result, (APIReturn, HttpResponseBase)):
             return self._result_to_response(request, result, temporal_response)
-        if result:
+        if result is True:
             return None
-        message = getattr(permission, "message", "Forbidden")
-        return self._on_exception(request, AuthorizationError(message=message))
+        if result is False or result is None:
+            message = getattr(permission, "message", "Forbidden")
+            return self._on_exception(request, AuthorizationError(message=message))
+        raise ConfigError(
+            f"{owner} returned {type(result).__name__}, which neither allows nor "
+            f"refuses the request: return True, False or None, or a response."
+        )
 
     def _run_permissions(
         self,
