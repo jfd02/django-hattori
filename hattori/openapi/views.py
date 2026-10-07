@@ -2,9 +2,10 @@ from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
+from django.http.response import HttpResponseBase
 
 from hattori.openapi.docs import DocsBase
-from hattori.operation import rollback_atomic_requests
+from hattori.operation import drop_stream_for_head, rollback_atomic_requests
 from hattori.responses import JsonResponse
 
 if TYPE_CHECKING:
@@ -12,15 +13,19 @@ if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
 
 
-def default_home(request: HttpRequest, api: HattoriAPI, **kwargs: Any) -> HttpResponse:
+def default_home(
+    request: HttpRequest, api: HattoriAPI, **kwargs: Any
+) -> HttpResponseBase:
     "This view is mainly needed to determine the full path for API operations"
     hint = ""
     if settings.DEBUG:
         docs_url = f"{request.path}{api.docs_url}".replace("//", "/")
         hint = f"docs_url = {docs_url}"
+    # No operation answers here, so what an operation does for an error
+    # response is done here.
     response = api.on_exception(request, Http404(hint))
     rollback_atomic_requests(request)
-    return response
+    return drop_stream_for_head(request, response)
 
 
 def openapi_json(request: HttpRequest, api: HattoriAPI, **kwargs: Any) -> HttpResponse:

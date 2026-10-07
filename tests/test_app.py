@@ -10,7 +10,7 @@ from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 
 from hattori import SSE, HattoriAPI
 from hattori.decorators import decorate_view
-from hattori.errors import ConfigError
+from hattori.errors import ConfigError, HttpError
 from hattori.testing import TestAsyncClient, TestClient
 
 api = HattoriAPI()
@@ -208,6 +208,40 @@ def test_head_does_not_pull_a_stream_an_exception_handler_answers_with():
     assert response.status_code == 403
     assert response.content == b""
     assert pulled == []
+
+
+def test_head_does_not_pull_a_streamed_error_wherever_it_comes_from():
+    # Every way out of the API, not only the one through an operation.
+    api = HattoriAPI()
+    pulled = []
+
+    def chunks():
+        pulled.append(True)
+        yield b"chunk"
+
+    @api.exception_handler(HttpError)
+    def streamed(request, exc):
+        return StreamingHttpResponse(chunks(), status=exc.status_code)
+
+    @api.post("/write-only")
+    def write_only(request) -> str:
+        return "ok"
+
+    @api.get("/events")
+    def events(request) -> SSE[str]:
+        yield "tick"
+
+    client = TestClient(api)
+    method_not_allowed = client.request("HEAD", "/write-only")
+    declared_stream = client.request("HEAD", "/events")
+    root = client.request("HEAD", "/")
+
+    assert method_not_allowed.status_code == 405
+    assert declared_stream.status_code == 405
+    assert root.status_code == 404
+    assert pulled == []
+    # A request that does want the body still gets it.
+    assert client.get("/write-only").content == b"chunk"
 
 
 @pytest.mark.django_db  # closing a response signals request_finished

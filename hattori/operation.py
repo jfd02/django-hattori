@@ -64,6 +64,20 @@ def rollback_atomic_requests(request: HttpRequest) -> None:
             transaction.set_rollback(True, using=db.alias)
 
 
+def drop_stream_for_head(
+    request: HttpRequest, response: HttpResponseBase
+) -> HttpResponseBase:
+    """Keep a HEAD request from pulling a streamed body.
+
+    The server drops the body of a HEAD response, but a stream or a file it
+    would first read to the end, and an endless one never ends. The stream is
+    still closed with the response.
+    """
+    if request.method == "HEAD" and isinstance(response, StreamingHttpResponse):
+        response.streaming_content = _no_chunks() if response.is_async else ()
+    return response
+
+
 async def _no_chunks() -> collections.abc.AsyncIterator[bytes]:
     empty: tuple[bytes, ...] = ()
     for chunk in empty:
@@ -839,7 +853,14 @@ class AsyncOperation(Operation):
             return self._result_to_response(request, result, temporal_response)
         except Exception as e:
             self._add_wraps_hint(e)
-            return self._on_exception(request, e)
+            return await self._aon_exception(request, e)
+
+    async def _aon_exception(
+        self, request: HttpRequest, exc: Exception
+    ) -> HttpResponse:
+        # Exception handlers are synchronous code and may well use the ORM,
+        # which Django refuses to run on the event loop.
+        return await sync_to_async(self._on_exception)(request, exc)
 
     async def _async_stream_response(
         self,
@@ -916,12 +937,12 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(callback)(request)
             except Exception as exc:
-                return self._on_exception(request, exc)
+                return await self._aon_exception(request, exc)
 
             outcome, handled = self._auth_outcome(request, result, temporal_response)
             if handled:
                 return outcome
-        return self._on_exception(request, AuthenticationError())
+        return await self._aon_exception(request, AuthenticationError())
 
     async def _run_permissions(  # type: ignore
         self,
@@ -937,9 +958,10 @@ class AsyncOperation(Operation):
                 else:
                     result = await sync_to_async(permission.check)(request, **kwargs)
             except Exception as exc:
-                return self._on_exception(request, exc)
+                return await self._aon_exception(request, exc)
 
-            outcome = self._permission_outcome(
+            # A refusal is answered by a handler too.
+            outcome = await sync_to_async(self._permission_outcome)(
                 request, result, temporal_response, permission
             )
             if outcome is not None:
@@ -1084,37 +1106,42 @@ class PathView:
         return view
 
     def _sync_view(self, request: HttpRequest, *a: Any, **kw: Any) -> HttpResponseBase:
+        response: HttpResponseBase
         operation = self._find_operation(request)
         if operation is None:
-            return self._undeclared_method(request)
-        return self._run(operation, request, *a, **kw)
+            response = self._undeclared_method(request)
+        else:
+            response = self._run(operation, request, *a, **kw)
+        return drop_stream_for_head(request, response)
 
     async def _async_view(
         self, request: HttpRequest, *a: Any, **kw: Any
     ) -> HttpResponseBase:
         # Exception handlers are synchronous code and may well use the ORM, so
-        # whatever is answered here rather than inside an async operation is
-        # answered in the sync thread, never on the event loop.
+        # whatever is answered here is answered in the sync thread, never on
+        # the event loop. An async operation does the same for what it answers.
+        response: HttpResponseBase
         operation = self._find_operation(request)
         if operation is None:
-            return await sync_to_async(self._undeclared_method)(request)
-        if not operation.is_async:
-            return await sync_to_async(self._run)(operation, request, *a, **kw)
-        try:
-            response = await cast(AsyncOperation, operation).run(request, *a, **kw)
-        except Exception as exc:
-            escaped = sync_to_async(self._escaped_exception)
-            response = await escaped(request, operation, exc)
-        return self._without_stream(request, response)
+            response = await sync_to_async(self._undeclared_method)(request)
+        elif not operation.is_async:
+            response = await sync_to_async(self._run)(operation, request, *a, **kw)
+        else:
+            try:
+                run = cast(AsyncOperation, operation).run
+                response = await run(request, *a, **kw)
+            except Exception as exc:
+                escaped = sync_to_async(self._escaped_exception)
+                response = await escaped(request, operation, exc)
+        return drop_stream_for_head(request, response)
 
     def _run(
         self, operation: Operation, request: HttpRequest, *a: Any, **kw: Any
     ) -> HttpResponseBase:
         try:
-            response = operation.run(request, *a, **kw)
+            return operation.run(request, *a, **kw)
         except Exception as exc:
-            response = self._escaped_exception(request, operation, exc)
-        return self._without_stream(request, response)
+            return self._escaped_exception(request, operation, exc)
 
     def _escaped_exception(
         self, request: HttpRequest, operation: Operation, exc: Exception
@@ -1129,19 +1156,6 @@ class PathView:
         if exc is getattr(request, "_hattori_unanswered", None):
             raise exc
         return operation._on_exception(request, exc)
-
-    def _without_stream(
-        self, request: HttpRequest, response: HttpResponseBase
-    ) -> HttpResponseBase:
-        """Keep a HEAD request from pulling a streamed body.
-
-        The server drops the body of a HEAD response, but a stream or a file it
-        would first read to the end, and an endless one never ends. The stream
-        is still closed with the response.
-        """
-        if request.method == "HEAD" and isinstance(response, StreamingHttpResponse):
-            response.streaming_content = _no_chunks() if response.is_async else ()
-        return response
 
     def _find_operation(self, request: HttpRequest) -> Operation | None:
         method = request.method or ""

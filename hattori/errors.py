@@ -455,7 +455,13 @@ def _default_django_exception(
         message = f"{message}: {exc}"
     error = type(answer)(answer.status_code, message)
     error.__cause__ = exc
-    response = api.on_exception(request, error)
+    try:
+        response = api.on_exception(request, error)
+    except Exception:
+        # The answer failed, which Django reports in its own right. What it
+        # would have logged about the exception itself is still owed.
+        _log_as_django_does(request, exc, HttpResponse(status=error.status_code))
+        raise
     _log_as_django_does(request, exc, response)
     return response
 

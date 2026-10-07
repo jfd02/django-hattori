@@ -151,6 +151,27 @@ def test_django_exceptions_keep_django_status_and_log_entries(caplog, exc):
     assert _log_entries(caplog) == django_entries
 
 
+def test_django_log_entry_survives_a_handler_that_fails(caplog):
+    # A security event must reach its logger even if answering it goes wrong.
+    api = HattoriAPI()
+
+    @api.exception_handler(HttpError)
+    def broken(request, exc):
+        raise RuntimeError("renderer failed")
+
+    @api.get("/tampered")
+    def tampered(request) -> None:
+        raise SuspiciousOperation("tampered")
+
+    caplog.set_level(logging.DEBUG, logger="django")
+    with pytest.raises(RuntimeError, match="renderer failed"):
+        TestClient(api).get("/tampered")
+
+    assert _log_entries(caplog) == [
+        ("django.security.SuspiciousOperation", "ERROR", "tampered", 400, True)
+    ]
+
+
 def test_over_limit_form_can_be_reported_without_raising_again(settings, caplog):
     # Django's error reporting reads request.POST, which is what raised.
     settings.DATA_UPLOAD_MAX_NUMBER_FIELDS = 2

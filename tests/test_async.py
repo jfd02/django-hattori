@@ -4,7 +4,7 @@ from functools import wraps
 import pytest
 from django.core.exceptions import PermissionDenied
 
-from hattori import HattoriAPI, Schema
+from hattori import BasePermission, HattoriAPI, Schema
 from hattori.decorators import decorate_view
 from hattori.errors import HttpError
 from hattori.security import APIKeyQuery
@@ -102,6 +102,20 @@ async def test_exception_handlers_never_run_on_the_event_loop():
 
         return wrapper
 
+    async def declines(request):
+        return None
+
+    async def auth_raises(request):
+        raise PermissionDenied
+
+    class Refuses(BasePermission):
+        async def check(self, request) -> bool:
+            return False
+
+    class Raises(BasePermission):
+        async def check(self, request) -> bool:
+            raise PermissionDenied
+
     @api.get("/mixed")
     async def read(request) -> str:
         return "async"
@@ -116,9 +130,42 @@ async def test_exception_handlers_never_run_on_the_event_loop():
     async def decorated(request) -> str:
         return "async"
 
-    client = TestAsyncClient(api)
+    @api.get("/raises-http-error")
+    async def raises_http_error(request) -> str:
+        raise HttpError(409, "conflict")
 
-    assert (await client.put("/mixed")).status_code == 405
-    assert (await client.post("/mixed")).status_code == 403
-    assert (await client.get("/decorated")).status_code == 403
-    assert on_loop == [False, False, False]
+    @api.get("/raises-django")
+    async def raises_django(request) -> str:
+        raise PermissionDenied
+
+    @api.get("/auth-declines", auth=declines)
+    async def auth_declines(request) -> str:
+        return "unreachable"
+
+    @api.get("/auth-raises", auth=auth_raises)
+    async def auth_raising(request) -> str:
+        return "unreachable"
+
+    @api.get("/permission-refuses", permissions=[Refuses()])
+    async def permission_refuses(request) -> str:
+        return "unreachable"
+
+    @api.get("/permission-raises", permissions=[Raises()])
+    async def permission_raises(request) -> str:
+        return "unreachable"
+
+    client = TestAsyncClient(api)
+    answered = [
+        (await client.put("/mixed")).status_code,
+        (await client.post("/mixed")).status_code,
+        (await client.get("/decorated")).status_code,
+        (await client.get("/raises-http-error")).status_code,
+        (await client.get("/raises-django")).status_code,
+        (await client.get("/auth-declines")).status_code,
+        (await client.get("/auth-raises")).status_code,
+        (await client.get("/permission-refuses")).status_code,
+        (await client.get("/permission-raises")).status_code,
+    ]
+
+    assert answered == [405, 403, 403, 409, 403, 401, 403, 403, 403]
+    assert on_loop == [False] * len(answered)
