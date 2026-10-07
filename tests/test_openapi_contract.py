@@ -140,14 +140,19 @@ def test_json_parse_errors_are_documented_alongside_declared_400(custom_error):
     )
 
 
-def test_non_json_operations_do_not_document_json_parse_errors():
+def test_non_json_operations_document_unreadable_bodies():
     api = HattoriAPI()
 
     @api.post("/form")
     def form(request, text: str = Form(...)) -> str:
         return text
 
-    assert "400" not in export_contract(api)["paths"]["/api/form"]["post"]["responses"]
+    document = export_contract(api)
+    unreadable = TestClient(api).post(
+        "/form", data=b"x", content_type="multipart/form-data"
+    )
+    assert unreadable.status_code == 400
+    validate_response(document, "/api/form", unreadable, method="post")
 
 
 @pytest.mark.parametrize("reverse", [False, True])

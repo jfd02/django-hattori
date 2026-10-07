@@ -1,6 +1,7 @@
 import itertools
 import re
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import contextmanager
 from copy import copy, deepcopy
 from http.client import responses as _stdlib_responses
 from typing import TYPE_CHECKING, Any, get_args, get_origin
@@ -19,6 +20,7 @@ from hattori.operation import Operation
 from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
 from hattori.security.apikey import APIKeyCookie
+from hattori.security.base import auth_declaration, auth_layers
 from hattori.utils import normalize_path
 
 if TYPE_CHECKING:
@@ -128,6 +130,72 @@ class ResponseJsonSchema(HattoriGenerateJsonSchema):
         ):
             return self._allows_none(schema["schema"], seen_refs)
         return False
+
+
+class DumpedModelJsonSchema(HattoriGenerateJsonSchema):
+    """Describe a model as ``model_dump()`` writes it when given no arguments.
+
+    That is how the framework's own error bodies reach the renderer, and it
+    differs from what a serialization schema describes in two ways. The dump is
+    in Python mode, so a serializer reserved for JSON does not run. And each
+    model, and each dataclass that carries a pydantic config, is written by
+    alias only where its own config says so, while a typed dict or a dataclass
+    without one is written as the nearest of those around it is.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._undefined: dict[str, Any] = {}
+
+    def definitions_schema(
+        self, schema: core_schema.DefinitionsSchema
+    ) -> dict[str, Any]:
+        # A type used more than once is defined apart from its uses. Defined up
+        # front it would be written as nothing in particular is, so it is
+        # defined where it is first used, as whatever holds it there is written.
+        self._undefined.update(
+            (definition["ref"], definition) for definition in schema["definitions"]
+        )
+        return self.generate_inner(schema["schema"])
+
+    def definition_ref_schema(
+        self, schema: core_schema.DefinitionReferenceSchema
+    ) -> dict[str, Any]:
+        self._define(schema["schema_ref"])
+        return super().definition_ref_schema(schema)
+
+    def _define(self, ref: str) -> None:
+        definition = self._undefined.pop(ref, None)
+        if definition is not None:
+            self.generate_inner(definition)
+
+    def model_schema(self, schema: core_schema.ModelSchema) -> dict[str, Any]:
+        with self._written_as(schema["cls"].model_config):
+            return super().model_schema(schema)
+
+    def dataclass_schema(self, schema: core_schema.DataclassSchema) -> dict[str, Any]:
+        config = getattr(schema["cls"], "__pydantic_config__", None)
+        if config is None:
+            return super().dataclass_schema(schema)
+        with self._written_as(config):
+            return super().dataclass_schema(schema)
+
+    @contextmanager
+    def _written_as(self, config: Any) -> Iterator[None]:
+        by_alias = self.by_alias
+        self.by_alias = bool(config.get("serialize_by_alias"))
+        try:
+            yield
+        finally:
+            self.by_alias = by_alias
+
+    def ser_schema(self, schema: Any) -> dict[str, Any] | None:
+        # The built-in string serializers are for JSON unless told otherwise.
+        builtin = schema["type"] in ("to-string", "format")
+        when_used = schema.get("when_used", "json-unless-none" if builtin else "always")
+        if when_used in ("json", "json-unless-none"):
+            return None
+        return super().ser_schema(schema)
 
 
 def get_schema(api: HattoriAPI, path_prefix: str = "") -> OpenAPISchema:
@@ -344,10 +412,40 @@ class OpenAPISchema(dict):
                     )
                     self.deep_dict_update(responses, {key: response})
                 extra["responses"] = responses
+            self._drop_replaced_schemas(result, extra)
             self.deep_dict_update(result, extra)
             result["operationId"] = op_id
 
         return result
+
+    def _drop_replaced_schemas(
+        self, result: dict[str, Any], extra: dict[str, Any]
+    ) -> None:
+        """Drop each generated body schema that ``extra`` points elsewhere.
+
+        ``openapi_extra`` is merged into the operation key by key, so the
+        keywords of a schema it supplies refine the generated schema. A ``$ref``
+        is the exception: it names another schema outright. Merged over a
+        generated ``$ref`` it takes its place, but a body generated as a union
+        has no ``$ref`` to take the place of, and would be left beside it.
+        """
+        bodies = [(result.get("requestBody"), extra.get("requestBody"))]
+        responses = extra.get("responses")
+        if isinstance(responses, dict):
+            bodies += [
+                (result["responses"].get(status), response)
+                for status, response in responses.items()
+            ]
+        for generated, supplied in bodies:
+            if not (isinstance(generated, dict) and isinstance(supplied, dict)):
+                continue
+            content = supplied.get("content")
+            if not isinstance(content, dict):
+                continue
+            for media_type, media in content.items():
+                schema = media.get("schema") if isinstance(media, dict) else None
+                if isinstance(schema, dict) and "$ref" in schema:
+                    generated.get("content", {}).get(media_type, {}).pop("schema", None)
 
     def operation_parameters(self, operation: Operation) -> list[dict[str, Any]]:
         result = []
@@ -600,9 +698,10 @@ class OpenAPISchema(dict):
                     }
             result.update(details)
 
-        if any(m.__hattori_param_source__ == "body" for m in operation.models):
-            # JSON decoding fails before Pydantic validation. Preserve explicitly
-            # declared 400 responses alongside the framework's HttpError body.
+        if self._can_fail_to_read_body(operation, method):
+            # A body that cannot be read is answered before Pydantic validation.
+            # Preserve explicitly declared 400 responses alongside the
+            # framework's HttpError body.
             self._add_response_schema(result, 400, self._http_error_schema())
 
         if operation.auth_callbacks:
@@ -639,6 +738,23 @@ class OpenAPISchema(dict):
     def _http_error_schema(self) -> dict[str, str]:
         return {"$ref": REF_TEMPLATE.format(model=self._get_http_error_title())}
 
+    def _can_fail_to_read_body(self, operation: Operation, method: str | None) -> bool:
+        """Whether the operation can answer a body it cannot read with a 400.
+
+        It decodes JSON itself, whatever the method. Form and multipart data
+        is Django's to parse, and it only parses them for ``POST``: malformed
+        multipart data, or more fields or bytes than its upload limits allow,
+        fail there, inside the operation. For any other method the operation
+        is handed whatever was parsed before it ran, if anything was.
+        """
+        sources = {model.__hattori_param_source__ for model in operation.models}
+        if "body" in sources:
+            return True
+        methods = operation.methods if method is None else [method]
+        return bool(sources & {"form", "file"}) and any(
+            method.upper() == "POST" for method in methods
+        )
+
     def _can_send_default_403(self, operation: Operation, method: str | None) -> bool:
         """Whether the framework's own 403 can answer this operation.
 
@@ -654,8 +770,9 @@ class OpenAPISchema(dict):
             not operation.csrf_exempt
             and any(method.upper() not in CSRF_SAFE_METHODS for method in methods)
             and any(
-                isinstance(auth, APIKeyCookie) and auth.csrf
+                isinstance(layer, APIKeyCookie) and layer.csrf
                 for auth in operation.auth_callbacks
+                for layer in auth_layers(auth)
             )
         )
 
@@ -687,7 +804,13 @@ class OpenAPISchema(dict):
         return title
 
     def _register_error_model(self, model: Any) -> str:
-        schema = self._create_schema_from_model(model, remove_level=False)[0]
+        schema = self._create_schema_from_model(
+            model,
+            by_alias=False,
+            remove_level=False,
+            mode="serialization",
+            schema_generator=DumpedModelJsonSchema,
+        )[0]
         base_title = schema.get("title", model.__name__)
         # Register through the collision-aware path (rather than writing
         # self.schemas[title] directly) so a user model that happens to share
@@ -702,11 +825,19 @@ class OpenAPISchema(dict):
             return None
         result = []
         for auth in operation.auth_callbacks:
-            security_schema = getattr(auth, "openapi_security_schema", None)
+            owner, security_schema = auth_declaration(auth, "openapi_security_schema")
             if security_schema is not None:
                 scopes: list[dict[str, Any]] = []  # TODO: scopes
+                # functools.wraps copies the scheme onto its wrapper, which has
+                # no name worth showing: name it after the auth it came from.
+                for layer in auth_layers(owner):
+                    if (
+                        getattr(layer, "openapi_security_schema", None)
+                        is security_schema
+                    ):
+                        owner = layer
                 name = self._unique_security_scheme_name(
-                    auth.__class__.__name__, security_schema
+                    owner.__class__.__name__, security_schema
                 )
                 result.append({name: scopes})
                 self.securitySchemes[name] = security_schema

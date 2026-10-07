@@ -36,6 +36,7 @@ from hattori.errors import (
 from hattori.params.models import TModels
 from hattori.responses import APIReturn, json_default, resolve_api_return_schema
 from hattori.schema import Schema, pydantic_version
+from hattori.security.base import declared_auth_responses
 from hattori.security.permissions import validate_permissions
 from hattori.signature import ViewSignature
 from hattori.streaming import StreamFormat, _serialize_item, _StreamAlias
@@ -402,9 +403,7 @@ class Operation:
         # operation both at runtime (short-circuit) and in the OpenAPI spec.
         collected = dict(self._annotated_responses)
         for auth_cb in self.auth_callbacks:
-            _merge_response_schemas(
-                collected, getattr(auth_cb, "auth_responses", None) or {}
-            )
+            _merge_response_schemas(collected, declared_auth_responses(auth_cb))
         for permission in self.permission_callbacks:
             _merge_response_schemas(
                 collected, getattr(permission, "permission_responses", None) or {}

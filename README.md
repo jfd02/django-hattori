@@ -171,7 +171,7 @@ def signup(request, data: SignupIn) -> UserRegistered:
     ...
 ```
 
-This applies equally to endpoints and auth classes. Exceptions like `AuthenticationError` are framework-internal — hattori raises them when every auth callback declines — not public API. A callback declines by returning `None` or any other falsy value, so `return key == SECRET` rejects a wrong key; a truthy result authenticates and becomes `request.auth`.
+This applies equally to endpoints and to auth, whether `auth=` is given an auth class or a plain function annotated the same way. Exceptions like `AuthenticationError` are framework-internal — hattori raises them when every auth callback declines — not public API. A callback declines by returning `None` or any other falsy value, so `return key == SECRET` rejects a wrong key; a truthy result authenticates and becomes `request.auth`.
 
 ### What you get for free
 
@@ -381,7 +381,7 @@ The default is `{"detail": [{"loc": [...], "msg": ..., "type": ...}]}`. `loc` de
 
 ### `HttpError` responses
 
-`HttpError` is what the framework raises itself; a request body that can't be parsed is an `HttpError(400)`, so every operation with a body documents a 400. That body is one model too: its schema is what OpenAPI documents, and its `from_error` is what the default handler sends.
+`HttpError` is what the framework raises itself; a request body that can't be read — JSON that doesn't parse, a malformed multipart upload, a form past Django's upload limits — is an `HttpError(400)` when the operation is what reads it, and such an operation documents a 400. That is any operation with a JSON body, and one with form or file parameters on `POST`, the only method Django parses them for. On other methods `fix_request_files_middleware` parses multipart data before the API runs, and what it can't read is answered by Django, not by the API. That body is one model too: its schema is what OpenAPI documents, and its `from_error` is what the default handler sends.
 
 ```python
 from http import HTTPStatus
@@ -399,6 +399,8 @@ set_http_error_model(Problem)   # e.g. from AppConfig.ready()
 ```
 
 The default is `{"detail": "<message>"}`.
+
+Both this model and the 422 one reach the renderer as `model_dump()` writes them when given no arguments, and the spec describes that dump rather than the model's validation schema. Field serializers, computed fields and excluded fields are documented as they are sent. Fields go under their own names, or under their aliases wherever pydantic's `serialize_by_alias` setting is in force for that part of the dump, and a serializer declared `when_used="json"` does not run, because the dump is in Python mode.
 
 Every error the API answers on your behalf is an `HttpError` too, so it takes the same body and the same `@api.exception_handler(HttpError)` override:
 

@@ -669,6 +669,7 @@ def test_schema_form(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -698,6 +699,7 @@ def test_schema_single(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -767,6 +769,7 @@ def test_schema_form_file(schema):
                 }
             },
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 
@@ -865,6 +868,7 @@ def test_schema_title_description(schema):
             },
             "description": "OK",
         },
+        400: PARSE_ERROR_400,
         422: VALIDATION_ERROR_422,
     }
 

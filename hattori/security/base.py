@@ -1,3 +1,5 @@
+import functools
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from typing import Any, TypeAliasType, get_args, get_origin, get_type_hints
@@ -12,6 +14,10 @@ from hattori.utils import is_async_callable
 __all__ = [
     "SecuritySchema",
     "AuthBase",
+    "auth_attribute",
+    "auth_declaration",
+    "auth_layers",
+    "declared_auth_responses",
     "parse_api_return_responses",
     "return_annotation_arms",
 ]
@@ -151,3 +157,59 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
     if target is None:
         target = auth.__call__
     return parse_api_return_responses(target, f"{type(auth).__name__}.authenticate")
+
+
+def auth_layers(callback: Any) -> Iterator[Any]:
+    """``callback``, then each callable it wraps, outermost first.
+
+    Follows ``functools.partial`` and the ``__wrapped__`` that ``functools.wraps``
+    leaves, so wrapping an auth callback hides nothing the spec reads off it.
+    """
+    seen: set[int] = set()
+    while callable(callback) and id(callback) not in seen:
+        seen.add(id(callback))
+        yield callback
+        if isinstance(callback, functools.partial):
+            callback = callback.func
+        else:
+            callback = getattr(callback, "__wrapped__", None)
+
+
+_UNSET: Any = object()
+
+
+def auth_declaration(callback: Any, name: str) -> tuple[Any, Any]:
+    """The outermost layer of ``callback`` that sets ``name``, and what it sets.
+
+    What a wrapper declares for itself comes before what it wraps, ``None``
+    included. ``(None, None)`` when no layer sets it.
+    """
+    for layer in auth_layers(callback):
+        value = getattr(layer, name, _UNSET)
+        if value is not _UNSET:
+            return layer, value
+    return None, None
+
+
+def auth_attribute(callback: Any, name: str) -> Any:
+    """``name`` as the outermost layer of ``callback`` that sets it has it."""
+    return auth_declaration(callback, name)[1]
+
+
+def declared_auth_responses(callback: Any) -> dict[int, Any]:
+    """``{code: body_schema}`` for the typed responses an auth callback declares.
+
+    An :class:`AuthBase` read them off ``authenticate`` when it was created. Any
+    other callable declares them the same way, on its own return annotation.
+    """
+    for layer in auth_layers(callback):
+        declared: dict[int, Any] | None = getattr(layer, "auth_responses", _UNSET)
+        if declared is not _UNSET:
+            return declared or {}
+        if isinstance(layer, functools.partial):
+            continue
+        target = layer if inspect.isroutine(layer) else layer.__call__
+        if return_annotation_arms(target) is not None:
+            owner = getattr(layer, "__qualname__", type(layer).__name__)
+            return parse_api_return_responses(target, owner)
+    return {}
