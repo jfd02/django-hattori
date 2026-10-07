@@ -328,6 +328,74 @@ def test_async_check_is_read_like_a_sync_one():
     assert AsyncBool().can_return_falsy is True
 
 
+type AlwaysAllowed = Literal[True]
+type Verdict = AlwaysAllowed | NotAdmin
+type Checked = bool | NotAdmin
+type Principal = str | BadToken
+
+
+def test_check_annotation_is_read_through_type_aliases():
+    assert _permission(AlwaysAllowed).can_return_falsy is False
+    assert _permission(Verdict).can_return_falsy is False
+    assert _permission(Checked).can_return_falsy is True
+    assert _permission(Verdict | None).can_return_falsy is True
+
+
+def test_typed_responses_behind_a_type_alias_are_documented_and_sent():
+    class AliasedBearer(HttpBearer):
+        def authenticate(self, request, token: str) -> Principal:
+            return token if token in ("admin", "member") else BadToken()
+
+    class AliasedIsAdmin(BasePermission):
+        def check(self, request) -> Verdict:
+            return True if request.auth == "admin" else NotAdmin()
+
+    api = _api(auth=AliasedBearer(), permissions=[AliasedIsAdmin()])
+    document = export_contract(api)
+    client = TestClient(api)
+
+    rejected = client.get("/view", headers={"Authorization": "Bearer nope"})
+    denied = client.get("/view", headers=MEMBER)
+
+    assert rejected.status_code == 401
+    assert rejected.json() == {"code": "bad_token", "message": "Token invalid"}
+    assert denied.status_code == 403
+    assert denied.json() == {"code": "not_admin", "message": "Admin role required"}
+    validate_response(document, "/api/view", rejected)
+    validate_response(document, "/api/view", denied)
+    assert _schema(document, "401") == {"anyOf": [BAD_TOKEN, HTTP_ERROR]}
+    assert _schema(document, "403") == NOT_ADMIN
+
+
+# What an alias of a name imported under TYPE_CHECKING looks like at runtime.
+type OnlyForTheTypeChecker = NotImportedAtRuntime  # noqa: F821
+
+
+def test_alias_that_cannot_be_resolved_keeps_the_arms_beside_it():
+    class Bearer(HttpBearer):
+        def authenticate(self, request, token: str) -> OnlyForTheTypeChecker | BadToken:
+            return token if token in ("admin", "member") else BadToken()
+
+    class IsAdminUnresolved(BasePermission):
+        def check(self, request) -> OnlyForTheTypeChecker | NotAdmin:
+            return True if request.auth == "admin" else NotAdmin()
+
+    api = _api(auth=Bearer(), permissions=[IsAdminUnresolved()])
+    document = export_contract(api)
+    client = TestClient(api)
+
+    rejected = client.get("/view", headers={"Authorization": "Bearer nope"})
+    denied = client.get("/view", headers=MEMBER)
+
+    assert rejected.json() == {"code": "bad_token", "message": "Token invalid"}
+    assert denied.json() == {"code": "not_admin", "message": "Admin role required"}
+    validate_response(document, "/api/view", rejected)
+    validate_response(document, "/api/view", denied)
+    # What the alias names is unknown, so it may be falsy.
+    assert IsAdminUnresolved().can_return_falsy is True
+    assert _schema(document, "403") == {"anyOf": [NOT_ADMIN, HTTP_ERROR]}
+
+
 @pytest.mark.asyncio
 async def test_async_operation_answers_the_documented_defaults():
     class AsyncBearer(HttpBearer):

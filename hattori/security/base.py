@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from typing import Any, get_args, get_origin, get_type_hints
+from collections.abc import Callable, Iterator
+from typing import Any, TypeAliasType, get_args, get_origin, get_type_hints
 
 from django.http import HttpRequest
 
@@ -70,7 +70,11 @@ class AuthBase(ABC):
 
 
 def return_annotation_arms(target: Callable[..., Any]) -> tuple[Any, ...] | None:
-    """The union arms of ``target``'s return annotation, or ``None`` without one."""
+    """The union arms of ``target``'s return annotation, or ``None`` without one.
+
+    A ``type`` alias counts as the type it names, so the arms behind it are read
+    too. One whose value cannot be resolved stays an arm of its own.
+    """
     try:
         hints = get_type_hints(target)
     except Exception:
@@ -79,9 +83,24 @@ def return_annotation_arms(target: Callable[..., Any]) -> tuple[Any, ...] | None
     annotation = hints.get("return")
     if annotation is None:
         return None
+    return tuple(_union_arms(annotation))
 
-    origin = get_origin(annotation)
-    return get_args(annotation) if origin in UNION_TYPES else (annotation,)
+
+def _union_arms(annotation: Any) -> Iterator[Any]:
+    if isinstance(annotation, TypeAliasType):
+        try:
+            value = annotation.__value__
+        except Exception:
+            # It names something only the type checker can see. The arms beside
+            # it are still read.
+            yield annotation
+            return
+        yield from _union_arms(value)
+    elif get_origin(annotation) in UNION_TYPES:
+        for arm in get_args(annotation):
+            yield from _union_arms(arm)
+    else:
+        yield annotation
 
 
 def parse_api_return_responses(
