@@ -9,7 +9,12 @@ from hattori.errors import ConfigError
 from hattori.responses import APIReturn, resolve_api_return_schema
 from hattori.utils import is_async_callable
 
-__all__ = ["SecuritySchema", "AuthBase", "parse_api_return_responses"]
+__all__ = [
+    "SecuritySchema",
+    "AuthBase",
+    "parse_api_return_responses",
+    "return_annotation_arms",
+]
 
 
 class SecuritySchema(dict):
@@ -36,10 +41,10 @@ class AuthBase(ABC):
     every operation that uses this auth, both at runtime (returning an instance
     short-circuits to that HTTP response) and in the OpenAPI spec.
 
-    Auth classes without ``APIReturn`` variants in their return annotation
-    contribute nothing to the OpenAPI spec. Raising ``AuthenticationError``
-    still returns a 401 at runtime via the global exception handler — it just
-    won't be documented on every endpoint's spec entry.
+    Returning ``None``, or any other falsy value, declines the request. When
+    every auth on an operation declines, the framework answers ``401`` with the
+    ``HttpError`` body, which the OpenAPI spec documents on every operation
+    that has auth — beside any ``APIReturn`` variants declared for the same code.
     """
 
     def __init__(self) -> None:
@@ -64,6 +69,21 @@ class AuthBase(ABC):
         pass  # pragma: no cover
 
 
+def return_annotation_arms(target: Callable[..., Any]) -> tuple[Any, ...] | None:
+    """The union arms of ``target``'s return annotation, or ``None`` without one."""
+    try:
+        hints = get_type_hints(target)
+    except Exception:
+        return None
+
+    annotation = hints.get("return")
+    if annotation is None:
+        return None
+
+    origin = get_origin(annotation)
+    return get_args(annotation) if origin in UNION_TYPES else (annotation,)
+
+
 def parse_api_return_responses(
     target: Callable[..., Any], owner: str
 ) -> dict[int, Any]:
@@ -77,20 +97,8 @@ def parse_api_return_responses(
     ``owner`` is a human-readable label used in error messages (e.g.
     ``"BearerAuth.authenticate"``). No annotation means an empty result.
     """
-    try:
-        hints = get_type_hints(target)
-    except Exception:
-        return {}
-
-    annotation = hints.get("return")
-    if annotation is None:
-        return {}
-
-    origin = get_origin(annotation)
-    arms = get_args(annotation) if origin in UNION_TYPES else (annotation,)
-
     responses: dict[int, Any] = {}
-    for arm in arms:
+    for arm in return_annotation_arms(target) or ():
         if not (isinstance(arm, type) and issubclass(arm, APIReturn)):
             continue
         code = getattr(arm, "code", None)
@@ -118,7 +126,7 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
     Looks at ``authenticate`` first, falls back to ``__call__`` for custom auth
     classes that skip the ``authenticate`` convention. Only ``APIReturn``
     subclasses in the annotation contribute to the result. No annotation means
-    no auth entries in the OpenAPI spec.
+    no typed auth entries in the OpenAPI spec.
     """
     target: Callable[..., Any] | None = getattr(auth, "authenticate", None)
     if target is None:

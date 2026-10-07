@@ -1,12 +1,12 @@
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Literal, get_args, get_origin
 
 from hattori.constants import NOT_SET
 from hattori.errors import ConfigError
 from hattori.responses import APIReturn
-from hattori.security.base import parse_api_return_responses
+from hattori.security.base import parse_api_return_responses, return_annotation_arms
 from hattori.utils import is_async_callable
 
 __all__ = ["BasePermission", "validate_permissions"]
@@ -36,7 +36,10 @@ class BasePermission(ABC):
 
     * ``True`` (or any truthy value) — the check passes, move on.
     * ``False``/``None`` — denied; the framework returns a ``403`` using this
-      permission's :attr:`message`.
+      permission's :attr:`message`. The OpenAPI spec documents that ``403`` on
+      every operation the permission guards, unless ``check``'s return
+      annotation rules a falsy result out (as ``Literal[True] | NotAdmin`` does
+      below).
     * an :class:`~hattori.APIReturn` instance (e.g. a typed ``Forbidden(...)``) —
       short-circuits to that response. Declaring such variants in ``check``'s
       return annotation documents them on every operation's OpenAPI spec, exactly
@@ -86,6 +89,7 @@ class BasePermission(ABC):
         self.permission_responses: dict[int, Any] = parse_api_return_responses(
             self.check, f"{type(self).__name__}.check"
         )
+        self.can_return_falsy: bool = _can_return_falsy(self.check)
 
     # Declared as (*args, **kwargs) rather than (request, **path_params) so that
     # narrower overrides naming their own path params — the documented pattern
@@ -117,6 +121,29 @@ class BasePermission(ABC):
             for name, value in path_params.items()
             if name in self._path_param_names
         }
+
+
+def _can_return_falsy(check: Callable[..., Any]) -> bool:
+    """Whether ``check``'s return annotation leaves room for a falsy result.
+
+    A falsy result is answered with the framework's own ``403``, so this
+    answers "is that 403 *impossible*": anything it can't prove truthy counts.
+    Only two kinds of arm are provably safe — an ``APIReturn``, which
+    short-circuits before the truthiness test, and a ``Literal`` of truthy values.
+    """
+    arms = return_annotation_arms(check)
+    if arms is None:
+        return True
+    for arm in arms:
+        origin = get_origin(arm)
+        if origin is Literal:
+            if not all(get_args(arm)):
+                return True
+            continue
+        api_return = origin or arm
+        if not (isinstance(api_return, type) and issubclass(api_return, APIReturn)):
+            return True
+    return False
 
 
 def validate_permissions(permissions: Any) -> None:

@@ -178,7 +178,7 @@ This applies equally to endpoints and auth classes. Exceptions like `Authenticat
 - **Input validation** — `SignupIn` validates and type-casts the request body
 - **Output filtering** — `UserOut` strips fields like `password` from the response
 - **Multiple responses** — `UserRegistered | UsernameTaken` union types map directly to OpenAPI response schemas
-- **Auth** — `401 Unauthorized` is auto-documented when `auth=` is set
+- **Auth** — `401 Unauthorized` is auto-documented when `auth=` is set, and `403 Forbidden` when a permission can deny the request
 - **422 errors** — validation error responses are added to the schema automatically
 - **Interactive docs** — visit `/api/docs` for Swagger UI with everything above
 
@@ -218,7 +218,7 @@ class BearerAuth(HttpBearer):
         return user
 ```
 
-Every operation using `auth=BearerAuth()` auto-documents `401` (with the union of `BadToken` + `ExpiredToken` bodies) and `403` (`AccountLocked`) in its OpenAPI response map — no per-endpoint wiring.
+Every operation using `auth=BearerAuth()` auto-documents `401` (with the union of `BadToken` + `ExpiredToken` bodies) and `403` (`AccountLocked`) in its OpenAPI response map — no per-endpoint wiring. The `401` also lists the default `{"detail": "Unauthorized"}` body, which is what a request with no token at all gets.
 
 ## Typing `request.auth`
 

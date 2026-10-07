@@ -18,6 +18,7 @@ from hattori.errors import (
 from hattori.operation import Operation
 from hattori.params.models import TModels
 from hattori.schema import HattoriGenerateJsonSchema
+from hattori.security.apikey import APIKeyCookie
 from hattori.utils import normalize_path
 
 if TYPE_CHECKING:
@@ -34,6 +35,9 @@ BODY_CONTENT_TYPES: dict[str, str] = {
     "form": "application/x-www-form-urlencoded",
     "file": "multipart/form-data",
 }
+
+# Methods Django's CSRF check lets through without a token.
+CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
 type _SchemaField = (
     core_schema.ModelField
@@ -302,7 +306,7 @@ class OpenAPISchema(dict):
         result: dict[str, Any] = {
             "operationId": op_id,
             "parameters": self.operation_parameters(operation),
-            "responses": self.responses(operation),
+            "responses": self.responses(operation, method),
         }
 
         if operation.summary:
@@ -538,7 +542,13 @@ class OpenAPISchema(dict):
             "required": required,
         }
 
-    def responses(self, operation: Operation) -> dict[int, dict[str, Any]]:
+    def responses(
+        self, operation: Operation, method: str | None = None
+    ) -> dict[int, dict[str, Any]]:
+        """The responses of ``operation``, as answered to ``method``.
+
+        Without a ``method`` they are those of every method it declares.
+        """
         assert bool(operation.response_models), f"{operation.response_models} empty"
 
         generator = type(
@@ -593,10 +603,15 @@ class OpenAPISchema(dict):
         if any(m.__hattori_param_source__ == "body" for m in operation.models):
             # JSON decoding fails before Pydantic validation. Preserve explicitly
             # declared 400 responses alongside the framework's HttpError body.
-            http_error_schema = {
-                "$ref": REF_TEMPLATE.format(model=self._get_http_error_title())
-            }
-            self._add_response_schema(result, 400, http_error_schema)
+            self._add_response_schema(result, 400, self._http_error_schema())
+
+        if operation.auth_callbacks:
+            # Every auth declining is answered with the framework's own 401,
+            # whatever typed responses the auth classes declare beside it.
+            self._add_response_schema(result, 401, self._http_error_schema())
+
+        if self._can_send_default_403(operation, method):
+            self._add_response_schema(result, 403, self._http_error_schema())
 
         if operation.models and self._can_fail_validation(operation):
             validation_schema = {
@@ -619,6 +634,29 @@ class OpenAPISchema(dict):
             schema
             if existing is None or existing == schema
             else {"anyOf": [existing, schema]}
+        )
+
+    def _http_error_schema(self) -> dict[str, str]:
+        return {"$ref": REF_TEMPLATE.format(model=self._get_http_error_title())}
+
+    def _can_send_default_403(self, operation: Operation, method: str | None) -> bool:
+        """Whether the framework's own 403 can answer this operation.
+
+        It answers a permission whose ``check`` returns a falsy value, and a
+        request that fails the CSRF check cookie auth runs on unsafe methods.
+        """
+        if any(
+            permission.can_return_falsy for permission in operation.permission_callbacks
+        ):
+            return True
+        methods = operation.methods if method is None else [method]
+        return (
+            not operation.csrf_exempt
+            and any(method.upper() not in CSRF_SAFE_METHODS for method in methods)
+            and any(
+                isinstance(auth, APIKeyCookie) and auth.csrf
+                for auth in operation.auth_callbacks
+            )
         )
 
     def _can_fail_validation(self, operation: Operation) -> bool:
