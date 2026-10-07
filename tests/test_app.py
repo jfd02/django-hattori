@@ -1,12 +1,15 @@
 import contextlib
 import warnings
+from functools import wraps
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import pytest
+from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 
 from hattori import SSE, HattoriAPI
+from hattori.decorators import decorate_view
 from hattori.errors import ConfigError
 from hattori.testing import TestAsyncClient, TestClient
 
@@ -174,6 +177,37 @@ def test_head_does_not_pull_a_hand_built_stream():
     assert response.content == b""
     assert pulled == []
     assert client.get("/download").content == b"chunk"
+
+
+def test_head_does_not_pull_a_stream_an_exception_handler_answers_with():
+    api = HattoriAPI()
+    pulled = []
+
+    def chunks():
+        pulled.append(True)
+        yield b"chunk"
+
+    @api.exception_handler(PermissionDenied)
+    def streamed(request, exc):
+        return StreamingHttpResponse(chunks(), status=403)
+
+    def denies(view):
+        @wraps(view)
+        def wrapper(request, *args, **kwargs):
+            raise PermissionDenied
+
+        return wrapper
+
+    @api.get("/limited")
+    @decorate_view(denies)
+    def limited(request) -> str:
+        return "ok"
+
+    response = TestClient(api).request("HEAD", "/limited")
+
+    assert response.status_code == 403
+    assert response.content == b""
+    assert pulled == []
 
 
 @pytest.mark.django_db  # closing a response signals request_finished

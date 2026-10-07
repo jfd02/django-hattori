@@ -1104,7 +1104,7 @@ class PathView:
             response = await cast(AsyncOperation, operation).run(request, *a, **kw)
         except Exception as exc:
             escaped = sync_to_async(self._escaped_exception)
-            return await escaped(request, operation, exc)
+            response = await escaped(request, operation, exc)
         return self._without_stream(request, response)
 
     def _run(
@@ -1113,7 +1113,7 @@ class PathView:
         try:
             response = operation.run(request, *a, **kw)
         except Exception as exc:
-            return self._escaped_exception(request, operation, exc)
+            response = self._escaped_exception(request, operation, exc)
         return self._without_stream(request, response)
 
     def _escaped_exception(
