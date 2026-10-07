@@ -10,12 +10,17 @@ from django.core.exceptions import (
     TooManyFieldsSent,
 )
 from django.core.handlers.exception import response_for_exception
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.http.multipartparser import MultiPartParserError
 from django.test import RequestFactory
 
-from hattori import Form, HattoriAPI, Schema
-from hattori.errors import AuthorizationError, HttpError
+from hattori import BasePermission, Form, HattoriAPI, Schema
+from hattori.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    ConfigError,
+    HttpError,
+)
 from hattori.testing import TestAsyncClient, TestClient
 
 api = HattoriAPI()
@@ -275,6 +280,122 @@ def test_request_body_over_the_size_limit_is_a_bad_request(settings):
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Bad Request"}
+
+
+def test_handler_that_returns_no_response_is_a_config_error():
+    api = HattoriAPI()
+
+    @api.exception_handler(CustomException)
+    def forgetful(request, exc):
+        pass
+
+    @api.get("/error")
+    def thrower(request) -> None:
+        raise CustomException()
+
+    with pytest.raises(ConfigError, match="CustomException returned NoneType") as e:
+        TestClient(api).get("/error")
+
+    assert isinstance(e.value.__cause__, CustomException)
+
+
+def test_handler_that_returns_nothing_for_a_django_exception_is_a_config_error():
+    api = HattoriAPI()
+
+    @api.exception_handler(HttpError)
+    def forgetful(request, exc):
+        pass
+
+    @api.get("/denied")
+    def denied(request) -> None:
+        raise PermissionDenied("no")
+
+    with pytest.raises(ConfigError, match="AuthorizationError returned NoneType") as e:
+        TestClient(api).get("/denied")
+
+    assert isinstance(e.value.__cause__, AuthorizationError)
+    assert isinstance(e.value.__cause__.__cause__, PermissionDenied)
+
+
+def _declines(request):
+    return None
+
+
+class _Refuses(BasePermission):
+    def check(self, request) -> bool:
+        return False
+
+
+_REFUSALS = [
+    pytest.param({"auth": _declines}, AuthenticationError, id="auth"),
+    pytest.param({"permissions": [_Refuses()]}, AuthorizationError, id="permissions"),
+]
+
+
+@pytest.mark.parametrize("guard,refusal", _REFUSALS)
+def test_handler_that_returns_nothing_lets_no_refusal_through(guard, refusal):
+    api = HattoriAPI()
+    reached = []
+
+    @api.exception_handler(refusal)
+    def forgetful(request, exc):
+        reached.append("handler")
+
+    @api.get("/guarded", **guard)
+    def guarded(request) -> None:
+        reached.append("view")
+
+    with pytest.raises(ConfigError, match=f"{refusal.__name__} returned NoneType"):
+        TestClient(api).get("/guarded")
+
+    assert reached == ["handler"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guard,refusal", _REFUSALS)
+async def test_handler_that_returns_nothing_lets_no_async_refusal_through(
+    guard, refusal
+):
+    api = HattoriAPI()
+    reached = []
+
+    @api.exception_handler(refusal)
+    def forgetful(request, exc):
+        reached.append("handler")
+
+    @api.get("/guarded", **guard)
+    async def guarded(request) -> None:
+        reached.append("view")
+
+    with pytest.raises(ConfigError, match=f"{refusal.__name__} returned NoneType"):
+        await TestAsyncClient(api).get("/guarded")
+
+    assert reached == ["handler"]
+
+
+@pytest.mark.parametrize("guard,refusal", _REFUSALS)
+def test_refusal_answered_with_a_falsy_response_is_still_a_refusal(guard, refusal):
+    class SizedResponse(HttpResponse):
+        def __len__(self):
+            return len(self.content)
+
+    api = HattoriAPI()
+    reached = []
+
+    @api.exception_handler(refusal)
+    def bodiless(request, exc):
+        return SizedResponse(status=exc.status_code)
+
+    @api.get("/guarded", **guard)
+    def guarded(request) -> None:
+        reached.append("view")
+
+    assert not SizedResponse(status=401)
+
+    response = TestClient(api).get("/guarded")
+
+    assert response.status_code == refusal().status_code
+    assert reached == []
 
 
 @pytest.mark.asyncio

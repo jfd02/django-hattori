@@ -1,7 +1,9 @@
+import functools
 from base64 import b64encode
 from unittest.mock import Mock
 
 import pytest
+from django.http import HttpResponseForbidden
 from django.utils.asyncio import async_unsafe
 
 from hattori import HattoriAPI, Schema
@@ -324,67 +326,128 @@ def test_async_auth_no_unawaited_coroutine_on_sync_endpoint():
         assert not runtime_warnings, f"Unawaited coroutine warnings: {runtime_warnings}"
 
 
-@pytest.mark.parametrize(
-    "auth_value,response_type,expected_body",
-    [
-        (0, "int", 0),
-        (False, "bool", False),
-        ("", "str", ""),
-    ],
-)
-def test_sync_auth_accepts_falsy_principals(auth_value, response_type, expected_body):
+@pytest.mark.parametrize("auth_value", [None, False, 0, "", [], {}])
+def test_sync_auth_rejects_falsy_results(auth_value):
     class FalsyAuth(APIKeyQuery):
         def authenticate(self, request, key):
-            if key == "ok":
-                return auth_value
+            return auth_value
 
     api = HattoriAPI()
 
-    if response_type == "int":
+    @api.get("/falsy", auth=FalsyAuth())
+    def view(request) -> str:
+        return "reached"
 
-        @api.get("/falsy", auth=FalsyAuth())
-        def view(request) -> int:
-            return request.auth
-
-    elif response_type == "bool":
-
-        @api.get("/falsy", auth=FalsyAuth())
-        def view(request) -> bool:
-            return request.auth
-
-    else:
-
-        @api.get("/falsy", auth=FalsyAuth())
-        def view(request) -> str:
-            return request.auth
-
-    client = TestClient(api)
-
-    response = client.get("/falsy?key=ok")
-    assert response.status_code == 200
-    assert response.json() == expected_body
+    response = TestClient(api).get("/falsy?key=ok")
+    assert response.status_code == 401
 
 
-def test_sync_multi_auth_accepts_later_falsy_principal():
+def test_sync_auth_written_as_a_comparison_rejects_a_wrong_key():
+    class KeyMatches(APIKeyQuery):
+        def authenticate(self, request, key):
+            return key == "secret"
+
     api = HattoriAPI()
 
-    def auth_1(request):
-        return None
-
-    def auth_2(request):
-        if request.GET.get("key") == "ok":
-            return 0
-        return None
-
-    @api.get("/falsy", auth=[auth_1, auth_2])
-    def view(request) -> int:
+    @api.get("/comparison", auth=KeyMatches())
+    def view(request) -> bool:
         return request.auth
 
     client = TestClient(api)
 
+    assert client.get("/comparison").status_code == 401
+    assert client.get("/comparison?key=wrong").status_code == 401
+    response = client.get("/comparison?key=secret")
+    assert response.status_code == 200
+    assert response.json() is True
+
+
+def test_sync_multi_auth_moves_past_a_falsy_result():
+    api = HattoriAPI()
+
+    def auth_1(request):
+        return False
+
+    def auth_2(request):
+        return request.GET.get("key")
+
+    @api.get("/falsy", auth=[auth_1, auth_2])
+    def view(request) -> str:
+        return request.auth
+
+    client = TestClient(api)
+
+    assert client.get("/falsy").status_code == 401
     response = client.get("/falsy?key=ok")
     assert response.status_code == 200
-    assert response.json() == 0
+    assert response.json() == "ok"
+
+
+def test_sync_auth_returning_a_response_answers_with_it():
+    reached = []
+
+    class RefusingAuth(APIKeyQuery):
+        def authenticate(self, request, key):
+            return HttpResponseForbidden("go away")
+
+    api = HattoriAPI()
+
+    @api.get("/refused", auth=RefusingAuth())
+    def view(request) -> str:
+        reached.append("view")
+        return "reached"
+
+    response = TestClient(api).get("/refused?key=any")
+    assert response.status_code == 403
+    assert response.content == b"go away"
+    assert reached == []
+
+
+def _sync_decorator(func):
+    """Wrap ``func`` so that nothing about the wrapper says ``func`` is async."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def test_async_auth_behind_a_sync_decorator_is_awaited_on_sync_endpoint(recwarn):
+    class WrappedBearerAuth(HttpBearer):
+        @_sync_decorator
+        async def authenticate(self, request, token):
+            return token if token == "secret" else None
+
+    @_sync_decorator
+    async def wrapped_key_auth(request):
+        key = request.GET.get("key")
+        return key if key == "secret" else None
+
+    api = HattoriAPI()
+
+    @api.get("/class", auth=WrappedBearerAuth())
+    def by_class(request) -> str:
+        return request.auth
+
+    @api.get("/function", auth=wrapped_key_auth)
+    def by_function(request) -> str:
+        return request.auth
+
+    client = TestClient(api)
+
+    denied = client.get("/class", headers={"Authorization": "Bearer wrong"})
+    assert denied.status_code == 401
+    allowed = client.get("/class", headers={"Authorization": "Bearer secret"})
+    assert allowed.status_code == 200
+    assert allowed.json() == "secret"
+
+    assert client.get("/function?key=wrong").status_code == 401
+    allowed = client.get("/function?key=secret")
+    assert allowed.status_code == 200
+    assert allowed.json() == "secret"
+
+    assert not recwarn
 
 
 def test_schema():

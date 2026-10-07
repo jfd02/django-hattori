@@ -237,12 +237,14 @@ def test_docs_cookie_auth():
 
     api = HattoriAPI(auth=CookieAuth())
     client = TestClient(api)
-    resp = client.get("/docs")
+    assert client.get("/docs").status_code == 401
+    resp = client.get("/docs", COOKIES={"key": "test"})
     csrf_token = re.findall(r'data-csrf-token="(.*?)"', resp.content.decode("utf8"))[0]
     assert len(csrf_token) > 0
 
     api = HattoriAPI(auth=HeaderAuth())
     client = TestClient(api)
-    resp = client.get("/docs")
+    assert client.get("/docs").status_code == 401
+    resp = client.get("/docs", headers={"key": "test"})
     csrf_token = re.findall(r'data-csrf-token="(.*?)"', resp.content.decode("utf8"))[0]
     assert len(csrf_token) == 0

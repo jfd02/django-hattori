@@ -9,6 +9,7 @@ from typing import (
 )
 
 from django.http import HttpRequest, HttpResponse
+from django.http.response import HttpResponseBase
 from django.urls import URLPattern, URLResolver, get_resolver, get_urlconf, reverse
 from django.utils.module_loading import import_string
 
@@ -722,7 +723,16 @@ class HattoriAPI:
         try:
             if handler is None:
                 raise exc
-            return handler(request, exc)
+            response = handler(request, exc)
+            if not isinstance(response, HttpResponseBase):
+                # Not an answer, and auth and permissions read "no response"
+                # as "allowed": a handler that forgets its return must not
+                # turn their refusal into a pass.
+                raise ConfigError(
+                    f"The exception handler for {type(exc).__name__} returned "
+                    f"{type(response).__name__}, not a response."
+                ) from exc
+            return response
         except Exception as unanswered:
             # Noted so that PathView, which may catch this again on its way to
             # Django, does not offer it to the handlers twice.
