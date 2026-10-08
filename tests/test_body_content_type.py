@@ -7,6 +7,8 @@ endpoints.
 """
 
 import pytest
+from django.test import Client
+from django.urls import path
 
 from hattori import ApiError, Body, Form, HattoriAPI, HttpErrorBody, Schema
 from hattori.errors import get_http_error_model, set_http_error_model
@@ -46,6 +48,13 @@ def mixed(request, start: int = Body(2), end: int = Form(1)) -> list[int]:
 def form(request, end: int = Form(1)) -> int:
     return end
 
+
+@api.post("/optional")
+def optional(request, start: int = Body(2)) -> int:
+    return start
+
+
+urlpatterns = [path("api/", api.urls)]
 
 client = TestClient(api)
 
@@ -89,6 +98,22 @@ def test_body_sent_as_anything_else_is_refused(content_type):
 @pytest.mark.parametrize("content_type", ["", "application/", "+json", "json"])
 def test_no_media_type_is_not_a_json_one(content_type):
     assert not is_json_media_type(content_type)
+
+
+@pytest.mark.parametrize("content_type", ["", "; charset=utf-8"])
+def test_body_sent_with_no_media_type_is_refused(settings, content_type):
+    settings.ROOT_URLCONF = __name__
+
+    response = Client().generic(
+        "POST", "/api/item", data=b'{"a": 1}', content_type=content_type
+    )
+
+    assert response.status_code == 415
+
+
+def test_request_with_no_body_still_reaches_an_optional_body():
+    # Which is why the media type is no stand-in for a CSRF check.
+    assert client.post("/optional", content_type="text/plain").json() == 2
 
 
 def test_body_is_refused_before_it_is_read():

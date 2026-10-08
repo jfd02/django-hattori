@@ -424,16 +424,17 @@ Two cases are left to Django: a path under the API that matches no route gets it
 A body is read as JSON only when the request says it is JSON: its
 `Content-Type` has to be `application/json` or another `application/*+json`
 type. A body sent as anything else, or as nothing, is answered with a 415 before
-it is read, and the spec documents that 415 on every operation with a JSON
+it is decoded, and the spec documents that 415 on every operation with a JSON
 body. A request with no body is not held to a media type.
 
 The reason is the browser. A page on another site can make a visitor's browser
 send a form, cookies included, as `text/plain`, as form data or with no type,
 without asking the API first; a JSON type it has to ask for with a CORS
-preflight. Reading only what is labelled JSON keeps that request off JSON
+preflight. Reading only what is labelled JSON keeps a forged body off JSON
 endpoints.
 
-It does not keep it off the rest, which is what CSRF checks are for. Every
+It does not keep a forged request off the rest: an endpoint that takes a form,
+or no body, or a JSON body it can do without. That is what CSRF checks are for. Every
 hattori view is exempt from Django's CSRF middleware, because an API that
 authenticates by header gives a forged request nothing to ride on. Auth that
 reads a cookie does, so the cookie auth hattori ships checks the token itself:
