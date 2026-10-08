@@ -664,7 +664,10 @@ class OpenAPISchema(dict):
             if status == Ellipsis:
                 continue  # it's not yet clear what it means if user wants to output any other code
 
-            description = HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
+            # What the response classes say of themselves, else the status phrase.
+            description = operation.response_descriptions.get(
+                status
+            ) or HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
             details: dict[int, Any] = {status: {"description": description}}
             if model is not None:
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""

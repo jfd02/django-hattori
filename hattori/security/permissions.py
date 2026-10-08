@@ -6,7 +6,11 @@ from typing import Any, Literal, get_args, get_origin
 from hattori.constants import NOT_SET
 from hattori.errors import ConfigError
 from hattori.responses import APIReturn
-from hattori.security.base import parse_api_return_responses, return_annotation_arms
+from hattori.security.base import (
+    parse_api_return_descriptions,
+    parse_api_return_responses,
+    return_annotation_arms,
+)
 from hattori.utils import is_async_callable
 
 __all__ = ["BasePermission", "validate_permissions"]
@@ -92,6 +96,9 @@ class BasePermission(ABC):
         self.is_async = is_async_callable(self.check)
         self.permission_responses: dict[int, Any] = parse_api_return_responses(
             self.check, f"{type(self).__name__}.check"
+        )
+        self.permission_descriptions: dict[int, list[str]] = (
+            parse_api_return_descriptions(self.check)
         )
         self.can_return_falsy: bool = _can_return_falsy(self.check)
 

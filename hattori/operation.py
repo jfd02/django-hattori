@@ -36,7 +36,11 @@ from hattori.errors import (
 from hattori.params.models import TModels
 from hattori.responses import APIReturn, json_default, resolve_api_return_schema
 from hattori.schema import Schema, pydantic_version
-from hattori.security.base import declared_auth_responses
+from hattori.security.base import (
+    add_api_return_description,
+    declared_auth_descriptions,
+    declared_auth_responses,
+)
 from hattori.security.permissions import validate_permissions
 from hattori.signature import ViewSignature
 from hattori.streaming import StreamFormat, _serialize_item, _StreamAlias
@@ -116,10 +120,11 @@ def _reject_unrun_result(result: Any, owner: str) -> None:
 
 
 class _ParsedAnnotation:
-    __slots__ = ("response_models", "stream_alias")
+    __slots__ = ("descriptions", "response_models", "stream_alias")
 
     def __init__(self) -> None:
         self.response_models: dict[int, Any] = {}
+        self.descriptions: dict[int, list[str]] = {}
         self.stream_alias: _StreamAlias | None = None
 
 
@@ -224,6 +229,7 @@ def _parse_return_annotation(view_func: Callable) -> _ParsedAnnotation:
         resolved = _resolve_type_alias(arm)
         if _is_api_return_subclass(resolved):
             status_code, schema_type = _parse_api_return_arm(resolved, view_func)
+            add_api_return_description(parsed.descriptions, resolved)
         else:
             status_code = 200
             schema_type = resolved
@@ -360,6 +366,7 @@ class Operation:
         # so response_models can be rebuilt whenever auth/permissions are attached
         # after __init__ (e.g. inherited from a router or the API at bind time).
         self._annotated_responses: dict[Any, Any] = dict(parsed.response_models)
+        self._annotated_descriptions: dict[int, list[str]] = parsed.descriptions
         self._build_response_models()
 
         if need_to_fix_request_files(methods, self.models):
@@ -421,6 +428,23 @@ class Operation:
             first_model = next(iter(self.response_models.values()))
             self.stream_item_model = first_model
 
+        # What each response class says of itself, for the spec: the endpoint's
+        # own first, then its auth's and its permissions', without repeats.
+        described: dict[int, list[str]] = {}
+        declared = [self._annotated_descriptions]
+        declared += [declared_auth_descriptions(cb) for cb in self.auth_callbacks]
+        declared += [
+            getattr(permission, "permission_descriptions", None) or {}
+            for permission in self.permission_callbacks
+        ]
+        for descriptions in declared:
+            for code, found in descriptions.items():
+                known = described.setdefault(code, [])
+                known.extend(text for text in found if text not in known)
+        self.response_descriptions: dict[int, str] = {
+            code: "\n\n".join(found) for code, found in described.items()
+        }
+
     def clone(self) -> Operation:
         """
         Create a fresh copy of this operation for binding to an API.
@@ -465,6 +489,8 @@ class Operation:
         # Return-annotation responses, so the clone can rebuild response_models
         # if auth/permissions are attached during binding (read-only, safe to share).
         cloned._annotated_responses = self._annotated_responses
+        cloned._annotated_descriptions = self._annotated_descriptions
+        cloned.response_descriptions = dict(self.response_descriptions)
 
         # Copy metadata
         cloned.operation_id = self.operation_id
@@ -819,7 +845,11 @@ class Operation:
         temporal_response.status_code = status
 
         if response_model is None:
-            # Empty response.
+            # Nothing is rendered. Unless the view wrote a body of its own to
+            # the response it was handed, there is none, and so no media type
+            # to name for it either.
+            if not temporal_response.content:
+                del temporal_response["Content-Type"]
             return temporal_response
 
         ctx = {"request": request, "response_status": status}

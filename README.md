@@ -287,6 +287,19 @@ Hattori ships typed response classes for the common status codes. Use these dire
 | `Created[T]` | 201 | `return Created(body)` |
 | `Accepted[T]` | 202 | `return Accepted(body)` (queued / async work) |
 | `NoContent` | 204 | `return NoContent()` (no body) |
+| `None` | 200 | `-> None` (no body) |
+
+A response with no body is sent without a `Content-Type`, whichever of the two declares it.
+
+Give a response class a `description` and the spec uses it for that status in place of the stock phrase ("Not Found"), on every operation, auth or permission that returns the class. A subclass inherits it, and classes that share a status have their descriptions put one after the other.
+
+```python
+class UserNotFound(ApiError):
+    code = 404
+    error_code = "user_not_found"
+    message = "No such user"
+    description = "No user has this id, or the caller may not see them."
+```
 
 ### Errors (semantic `HTTPError` bases)
 
