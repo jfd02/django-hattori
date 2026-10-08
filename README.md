@@ -442,7 +442,7 @@ Every error the API answers on your behalf is an `HttpError` too, so it takes th
 | A JSON body sent as anything but JSON | 415 |
 | The API's root URL | 404 |
 
-This holds wherever the exception is raised: the endpoint, its auth or permissions, or a view decorator around it. The Django exception is the `__cause__` of the `HttpError` your handler receives, and a handler registered for the Django exception itself takes precedence. Handlers run in a sync thread, so they can use the ORM even for an `async` endpoint. A handler has to return a response: one that returns anything else raises a `ConfigError`, so a handler that forgets its `return` can't turn a 401 or 403 into a request that goes through.
+This holds wherever the exception is raised: the endpoint, its auth or permissions, or a view decorator around it. The Django exception is the `__cause__` of the `HttpError` your handler receives, and a handler registered for the Django exception itself takes precedence. A handler written as a plain function runs in a sync thread, so it can use the ORM even for an `async` endpoint; one written as `async def` is awaited, on the request's event loop where it has one. A handler has to return a response: one that returns anything else raises a `ConfigError`, so a handler that forgets its `return` can't turn a 401 or 403 into a request that goes through.
 
 A `GET` route also answers `HEAD`: the endpoint runs and the body is not sent. A streaming route is the exception. Every path answers `OPTIONS` with its `Allow` header, without running auth or the endpoint. Declare either operation yourself to replace that.
 
