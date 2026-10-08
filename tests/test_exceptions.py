@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pytest
@@ -400,6 +401,119 @@ def test_refusal_answered_with_a_falsy_response_is_still_a_refusal(guard, refusa
 
     assert response.status_code == refusal().status_code
     assert reached == []
+
+
+def _api_answering_asynchronously(loops):
+    """An API whose handlers are all ``async def``, and note the loop they ran on."""
+    api = HattoriAPI()
+
+    @api.exception_handler(CustomException)
+    async def on_custom(request, exc):
+        loops.append(asyncio.get_running_loop())
+        await asyncio.sleep(0)
+        return api.create_response(request, {"custom": True}, status=418)
+
+    @api.exception_handler(HttpError)
+    async def on_http_error(request, exc):
+        loops.append(asyncio.get_running_loop())
+        await asyncio.sleep(0)
+        return api.create_response(
+            request, {"status": exc.status_code}, status=exc.status_code
+        )
+
+    @api.get("/sync")
+    def sync_view(request) -> None:
+        raise CustomException
+
+    @api.get("/async")
+    async def async_view(request) -> None:
+        raise CustomException
+
+    @api.get("/guarded", auth=_declines)
+    def guarded(request) -> None:
+        return None
+
+    @api.get("/async-guarded", auth=_declines)
+    async def async_guarded(request) -> None:
+        return None
+
+    return api
+
+
+def test_async_handler_answers_for_a_sync_view():
+    loops = []
+    client = TestClient(_api_answering_asynchronously(loops))
+
+    response = client.get("/sync")
+    assert response.status_code == 418
+    assert response.json() == {"custom": True}
+
+    # And for the errors the API answers itself, wherever they come from.
+    assert client.get("/guarded").json() == {"status": 401}
+    assert client.post("/sync").json() == {"status": 405}
+    assert client.get("/").json() == {"status": 404}
+    assert len(loops) == 4
+
+
+@pytest.mark.asyncio
+async def test_async_handler_answers_for_an_async_view_on_its_event_loop():
+    loops = []
+    client = TestAsyncClient(_api_answering_asynchronously(loops))
+
+    response = await client.get("/async")
+    assert response.status_code == 418
+    assert response.json() == {"custom": True}
+
+    assert (await client.get("/async-guarded")).json() == {"status": 401}
+    assert (await client.post("/async")).json() == {"status": 405}
+    assert loops == [asyncio.get_running_loop()] * 3
+
+
+def test_async_handler_answers_a_refusal_on_the_docs():
+    loops = []
+    api = HattoriAPI(auth=_declines)
+
+    @api.exception_handler(HttpError)
+    async def on_http_error(request, exc):
+        loops.append(asyncio.get_running_loop())
+        return api.create_response(request, {"status": exc.status_code}, status=401)
+
+    assert TestClient(api).get("/docs").json() == {"status": 401}
+    assert len(loops) == 1
+
+
+def test_async_handler_that_returns_no_response_is_a_config_error():
+    api = HattoriAPI()
+
+    @api.exception_handler(CustomException)
+    async def forgetful(request, exc):
+        pass
+
+    @api.get("/error")
+    def thrower(request) -> None:
+        raise CustomException()
+
+    with pytest.raises(ConfigError, match="CustomException returned NoneType"):
+        TestClient(api).get("/error")
+
+
+def test_async_handler_that_fails_is_not_offered_the_exception_twice():
+    api = HattoriAPI()
+    offered = []
+
+    @api.exception_handler(CustomException)
+    async def broken(request, exc):
+        offered.append(exc)
+        raise RuntimeError("renderer failed")
+
+    @api.get("/error")
+    def thrower(request) -> None:
+        raise CustomException()
+
+    with pytest.raises(RuntimeError, match="renderer failed"):
+        TestClient(api).get("/error")
+
+    assert len(offered) == 1
 
 
 @pytest.mark.asyncio

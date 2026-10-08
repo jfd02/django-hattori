@@ -1,4 +1,5 @@
 import collections.abc
+import inspect
 import re
 import threading
 from collections.abc import Callable
@@ -8,6 +9,7 @@ from typing import (
     TypeVar,
 )
 
+from asgiref.sync import async_to_sync
 from django.http import HttpRequest, HttpResponse
 from django.http.response import HttpResponseBase
 from django.urls import URLPattern, URLResolver, get_resolver, get_urlconf, reverse
@@ -41,7 +43,14 @@ __all__ = ["HattoriAPI"]
 
 _E = TypeVar("_E", bound=Exception)
 type Exc[E: Exception] = E | type[E]
-type ExcHandler[E: Exception] = Callable[[HttpRequest, Exc[E]], HttpResponse]
+type ExcHandler[E: Exception] = Callable[
+    [HttpRequest, Exc[E]],
+    HttpResponse | collections.abc.Awaitable[HttpResponse],
+]
+
+
+async def _await_response(response: collections.abc.Awaitable[Any]) -> Any:
+    return await response
 
 
 class HattoriAPI:
@@ -724,6 +733,12 @@ class HattoriAPI:
             if handler is None:
                 raise exc
             response = handler(request, exc)
+            if inspect.isawaitable(response):
+                # An async handler. Everything that gets here is sync code,
+                # in a thread of its own where the request is async, so the
+                # handler is run to its end from here, on the event loop there
+                # is or on one made for it.
+                response = async_to_sync(_await_response)(response)
             if not isinstance(response, HttpResponseBase):
                 # Not an answer, and auth and permissions read "no response"
                 # as "allowed": a handler that forgets its return must not
