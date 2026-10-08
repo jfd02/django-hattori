@@ -1,8 +1,10 @@
+import asyncio
 import inspect
 from collections.abc import Callable
 from typing import Any, ClassVar
 from urllib.parse import urljoin
 
+from asgiref.sync import async_to_sync, sync_to_async
 from django.contrib.auth.models import AnonymousUser
 from django.core.handlers.base import BaseHandler
 from django.http import HttpRequest, QueryDict, StreamingHttpResponse
@@ -48,6 +50,8 @@ class HattoriClientBase:
     ) -> tuple[Callable, HttpRequest, dict]:
         if json is not None:
             request_params["body"] = json_dumps(json)
+            # What ``json=`` sends is JSON; an explicit content_type still wins.
+            request_params.setdefault("content_type", "application/json")
         if data is None:
             data = {}
         if self.headers or request_params.get("headers"):
@@ -94,8 +98,14 @@ class HattoriClientBase:
     def _build_request(
         self, method: str, path: str, data: dict, request_params: Any
     ) -> HttpRequest:
+        query_data = None
+        if method.upper() in {"GET", "HEAD"} and isinstance(data, dict):
+            # As in Django's test client, what a GET is given is its query.
+            query_data, data = data, {}
         post, body = self._resolve_payload(data, request_params)
-        full_path = self._fold_query_params(path, request_params)
+        full_path = self._fold_query_params(
+            path, query_data, request_params.pop("query_params", None)
+        )
         request = self._make_request(method, full_path, body, request_params)
         self._apply_request_attrs(request, post, request_params)
         return request
@@ -104,6 +114,8 @@ class HattoriClientBase:
     def _to_querydict(values: dict) -> QueryDict:
         """Build a QueryDict from a plain dict, expanding list values into the
         repeated-key form (``{"k": [1, 2]}`` -> ``k=1&k=2``)."""
+        if isinstance(values, QueryDict):
+            return values
         qd = QueryDict(mutable=True)
         for key, value in values.items():
             if isinstance(value, list):
@@ -131,14 +143,22 @@ class HattoriClientBase:
                 post = self._to_querydict(data)
         return post, body
 
-    def _fold_query_params(self, path: str, request_params: Any) -> str:
-        """Return ``path`` with any ``query_params=`` folded into its query
-        string, so the real request parses GET for us."""
+    def _fold_query_params(self, path: str, *sources: dict | None) -> str:
+        """Return ``path`` with each of ``sources`` folded into its query
+        string, so the real request parses GET for us.
+
+        A later source replaces the keys it shares with an earlier one, the
+        path's own query being the earliest, and leaves the rest alone.
+        """
+        given = [values for values in sources if values]
+        if not given:
+            return path
         url_path, _, query_string = path.partition("?")
-        query_params = request_params.pop("query_params", None)
-        if not query_string and query_params:
-            query_string = self._to_querydict(query_params).urlencode()
-        return f"{url_path}?{query_string}" if query_string else url_path
+        merged = QueryDict(query_string, mutable=True)
+        for values in given:
+            for key, items in self._to_querydict(values).lists():
+                merged.setlist(key, items)
+        return f"{url_path}?{merged.urlencode()}"
 
     def _make_request(
         self, method: str, full_path: str, body: Any, request_params: Any
@@ -249,7 +269,26 @@ class TestClient(HattoriClientBase):
     def _call(
         self, func: Callable, request: HttpRequest, kwargs: dict
     ) -> HattoriTestResponse:
-        return HattoriTestResponse(func(request, **kwargs))
+        response = func(request, **kwargs)
+        if inspect.iscoroutine(response):
+            # An async view: run it to its end, as Django does under WSGI.
+            response = self._finish(response)
+        return HattoriTestResponse(response)
+
+    @staticmethod
+    def _finish(pending: Any) -> HttpResponse | StreamingHttpResponse:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            finished: HttpResponse | StreamingHttpResponse = async_to_sync(
+                _finish_async_response
+            )(pending)
+            return finished
+        pending.close()
+        raise RuntimeError(
+            "TestClient reached an async view from inside a running event loop. "
+            "Use TestAsyncClient there and await the request."
+        )
 
 
 class TestAsyncClient(HattoriClientBase):
@@ -310,19 +349,31 @@ class TestAsyncClient(HattoriClientBase):
     async def _call(
         self, func: Callable, request: HttpRequest, kwargs: dict
     ) -> HattoriTestResponse:
-        http_response = await func(request, **kwargs)
-        if http_response.streaming and inspect.isasyncgen(
-            http_response.streaming_content
-        ):
-            # Async streaming: consume async iterator into bytes
-            chunks = []
-            async for chunk in http_response.streaming_content:
-                chunks.append(
-                    chunk.encode("utf-8") if isinstance(chunk, str) else chunk
-                )
-            # Replace with sync content for HattoriTestResponse
-            http_response.streaming_content = iter(chunks)
-        return HattoriTestResponse(http_response)
+        if inspect.iscoroutinefunction(func):
+            return HattoriTestResponse(
+                await _finish_async_response(func(request, **kwargs))
+            )
+
+        # A sync view: off the event loop, as Django runs it under ASGI. Its
+        # response is read there too, since a sync stream is still sync code.
+        def call() -> HattoriTestResponse:
+            return HattoriTestResponse(func(request, **kwargs))
+
+        return await sync_to_async(call, thread_sensitive=True)()
+
+
+async def _finish_async_response(pending: Any) -> HttpResponse | StreamingHttpResponse:
+    """Await an async view's response, reading an async stream while its loop runs."""
+    http_response = await pending
+    if http_response.streaming and inspect.isasyncgen(http_response.streaming_content):
+        # Async streaming: consume async iterator into bytes
+        chunks = []
+        async for chunk in http_response.streaming_content:
+            chunks.append(chunk.encode("utf-8") if isinstance(chunk, str) else chunk)
+        # Replace with sync content for HattoriTestResponse
+        http_response.streaming_content = iter(chunks)
+    finished: HttpResponse | StreamingHttpResponse = http_response
+    return finished
 
 
 class HattoriTestResponse:

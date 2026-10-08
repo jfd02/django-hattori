@@ -1,11 +1,13 @@
+import threading
 from datetime import datetime
 from http import HTTPStatus
 from unittest import mock
 
 import pytest
+from django.http import QueryDict
 from django.utils import timezone
 
-from hattori import Router
+from hattori import JSONL, Router
 from hattori.schema import Schema
 from hattori.testing import TestClient
 
@@ -262,3 +264,141 @@ async def test_async_client_methods_preserve_request_options(method):
     }
     assert (await getattr(client, method)("/echo", **options)).json() == expected
     assert (await client.request(method.upper(), "/echo", **options)).json() == expected
+
+
+echo_router = Router()
+
+
+@echo_router.api_operation(["GET", "POST"], "/echo")
+def echo(request) -> dict:
+    return {
+        "content_type": request.content_type,
+        "GET": {key: request.GET.getlist(key) for key in request.GET},
+        "POST": {key: request.POST.getlist(key) for key in request.POST},
+    }
+
+
+@echo_router.get("/async")
+async def async_echo(request) -> dict:
+    return {"GET": dict(request.GET.items())}
+
+
+@echo_router.get("/async-stream")
+async def async_stream(request) -> JSONL[int]:
+    for number in range(3):
+        yield number
+
+
+@echo_router.get("/sync-stream")
+def sync_stream(request) -> JSONL[int]:
+    yield from range(3)
+
+
+echo_client = TestClient(echo_router)
+
+
+def test_json_is_sent_as_json():
+    assert echo_client.post("/echo", json={"a": 1}).json()["content_type"] == (
+        "application/json"
+    )
+
+
+def test_explicit_content_type_wins_over_the_json_default():
+    response = echo_client.post("/echo", json={"a": 1}, content_type="text/plain")
+    assert response.json()["content_type"] == "text/plain"
+
+
+def test_query_params_are_merged_into_the_query_of_the_path():
+    response = echo_client.get(
+        "/echo?a=1&a=2&b=3", query_params={"b": "4", "c": ["5", "6"]}
+    )
+    assert response.json()["GET"] == {"a": ["1", "2"], "b": ["4"], "c": ["5", "6"]}
+
+
+def test_path_query_is_left_as_written_when_nothing_is_merged():
+    with mock.patch.object(echo_client, "_call") as call:
+        echo_client.get("/echo?b&a=%20")
+        assert call.call_args[0][1].get_full_path() == "/echo?b&a=%20"
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_data_of_a_get_is_its_query(method):
+    with mock.patch.object(echo_client, "_call") as call:
+        echo_client.request(method, "/echo?a=0", data={"a": "1", "b": ["2", "3"]})
+        request = call.call_args[0][1]
+    assert {key: request.GET.getlist(key) for key in request.GET} == {
+        "a": ["1"],
+        "b": ["2", "3"],
+    }
+    assert not request.POST
+
+
+def test_querydict_given_to_a_get_keeps_its_repeated_keys():
+    response = echo_client.get("/echo", data=QueryDict("a=1&a=2"))
+    assert response.json()["GET"] == {"a": ["1", "2"]}
+
+
+def test_query_params_win_over_the_data_of_a_get():
+    response = echo_client.get(
+        "/echo", data={"a": "1", "b": "2"}, query_params={"a": "9"}
+    )
+    assert response.json()["GET"] == {"a": ["9"], "b": ["2"]}
+    assert response.json()["POST"] == {}
+
+
+def test_data_of_a_post_is_still_its_form():
+    response = echo_client.post("/echo?a=1", data={"b": "2"})
+    assert response.json()["GET"] == {"a": ["1"]}
+    assert response.json()["POST"] == {"b": ["2"]}
+
+
+def test_sync_client_runs_an_async_view():
+    response = echo_client.get("/async", query_params={"a": "1"})
+    assert response.status_code == 200
+    assert response.json() == {"GET": {"a": "1"}}
+
+
+def test_sync_client_reads_an_async_stream():
+    assert echo_client.get("/async-stream").content == b"0\n1\n2\n"
+
+
+@pytest.mark.asyncio
+async def test_sync_client_inside_an_event_loop_names_the_async_client(recwarn):
+    with pytest.raises(RuntimeError, match="Use TestAsyncClient there"):
+        echo_client.get("/async")
+
+    assert not recwarn
+
+
+@pytest.mark.asyncio
+async def test_async_client_runs_a_sync_view():
+    from hattori.testing import TestAsyncClient
+
+    client = TestAsyncClient(echo_router)
+    response = await client.post("/echo?a=1", json={"b": 2})
+    assert response.status_code == 200
+    assert response.json() == {
+        "content_type": "application/json",
+        "GET": {"a": ["1"]},
+        "POST": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_async_client_reads_a_sync_stream_off_the_event_loop():
+    from hattori.testing import TestAsyncClient
+
+    router = Router()
+    threads = []
+
+    @router.get("/stream")
+    def stream(request) -> JSONL[int]:
+        threads.append(threading.current_thread())
+        yield 1
+        threads.append(threading.current_thread())
+
+    response = await TestAsyncClient(router).get("/stream")
+
+    assert response.content == b"1\n"
+    assert len(threads) == 2
+    assert threading.current_thread() not in threads
