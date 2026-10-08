@@ -315,7 +315,7 @@ def export(request, id: int) -> JSONL[Row] | ExportNotFound:
 
 Such a response has to be returned before anything is streamed, since the status line leaves with the first item. An endpoint that returns its stream, as above, can do that whether it is sync or `async`. One that is itself a generator can `return` it before its first `yield`, if it is sync; an async generator cannot return a value.
 
-Type checkers accept the annotation but not a generator returned as `JSONL[Row]`; that part of the declaration is for hattori and the spec.
+Type checkers accept the annotation but not a generator returned as `JSONL[Row]`; that part of the declaration is for hattori and the spec. Write the union in the annotation itself: a `type` alias that stands for it is not read.
 
 ### Errors (semantic `HTTPError` bases)
 
