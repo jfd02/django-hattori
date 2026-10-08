@@ -498,9 +498,12 @@ client.get("/dashboard", user=some_user)
 ```
 
 `json=` is sent as `application/json`; pass `content_type=` to send it as
-something else. `query_params=` is merged into the path's own query string,
-replacing the keys they share. As in Django's test client, the `data=` of a
-`GET` or `HEAD` is its query string, and of any other method its form.
+something else. As in Django's test client, a dict (or `QueryDict`) given as
+the `data=` of a `GET` or `HEAD` is its query string, and of any other method
+its form; a string or bytes is the raw body whatever the method. The query is
+built from the path's own query string, then that `data=`, then
+`query_params=`: each replaces the keys it shares with what came before and
+leaves the rest.
 
 Requests also include the resolved route in `request.resolver_match`, an async
 `request.auser()` returning `request.user`, and a fresh dictionary for

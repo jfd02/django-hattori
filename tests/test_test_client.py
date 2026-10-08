@@ -4,7 +4,7 @@ from http import HTTPStatus
 from unittest import mock
 
 import pytest
-from django.http import QueryDict
+from django.http import QueryDict, StreamingHttpResponse
 from django.utils import timezone
 
 from hattori import JSONL, Router
@@ -294,6 +294,15 @@ def sync_stream(request) -> JSONL[int]:
     yield from range(3)
 
 
+@echo_router.get("/sync-view-async-stream")
+def sync_view_async_stream(request) -> str:
+    async def chunks():
+        yield b"a"
+        yield b"b"
+
+    return StreamingHttpResponse(chunks())
+
+
 echo_client = TestClient(echo_router)
 
 
@@ -313,6 +322,20 @@ def test_query_params_are_merged_into_the_query_of_the_path():
         "/echo?a=1&a=2&b=3", query_params={"b": "4", "c": ["5", "6"]}
     )
     assert response.json()["GET"] == {"a": ["1", "2"], "b": ["4"], "c": ["5", "6"]}
+
+
+@pytest.mark.parametrize("emptied", [{"a": []}, QueryDict("", mutable=True)])
+def test_empty_list_removes_the_key_from_the_query_of_the_path(emptied):
+    if isinstance(emptied, QueryDict):
+        emptied.setlist("a", [])
+    response = echo_client.get("/echo?a=old&b=kept", query_params=emptied)
+    assert response.json()["GET"] == {"b": ["kept"]}
+
+
+def test_query_emptied_of_every_key_leaves_no_question_mark():
+    with mock.patch.object(echo_client, "_call") as call:
+        echo_client.get("/echo?a=old", query_params={"a": []})
+        assert call.call_args[0][1].get_full_path() == "/echo"
 
 
 def test_path_query_is_left_as_written_when_nothing_is_merged():
@@ -347,9 +370,9 @@ def test_query_params_win_over_the_data_of_a_get():
 
 
 def test_data_of_a_post_is_still_its_form():
-    response = echo_client.post("/echo?a=1", data={"b": "2"})
+    response = echo_client.post("/echo?a=1", data={"b": "2", "c": ["3", "4"]})
     assert response.json()["GET"] == {"a": ["1"]}
-    assert response.json()["POST"] == {"b": ["2"]}
+    assert response.json()["POST"] == {"b": ["2"], "c": ["3", "4"]}
 
 
 def test_sync_client_runs_an_async_view():
@@ -362,10 +385,24 @@ def test_sync_client_reads_an_async_stream():
     assert echo_client.get("/async-stream").content == b"0\n1\n2\n"
 
 
+def test_sync_client_reads_an_async_stream_a_sync_view_returns():
+    assert echo_client.get("/sync-view-async-stream").content == b"ab"
+
+
+@pytest.mark.asyncio
+async def test_async_client_reads_an_async_stream_a_sync_view_returns():
+    from hattori.testing import TestAsyncClient
+
+    response = await TestAsyncClient(echo_router).get("/sync-view-async-stream")
+    assert response.content == b"ab"
+
+
 @pytest.mark.asyncio
 async def test_sync_client_inside_an_event_loop_names_the_async_client(recwarn):
     with pytest.raises(RuntimeError, match="Use TestAsyncClient there"):
         echo_client.get("/async")
+    with pytest.raises(RuntimeError, match="Use TestAsyncClient there"):
+        echo_client.get("/sync-view-async-stream")
 
     assert not recwarn
 
