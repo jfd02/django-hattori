@@ -534,8 +534,8 @@ async def test_me():
 Either client reaches either kind of endpoint: `TestClient` runs an `async`
 endpoint to its end, and `TestAsyncClient` runs a sync one in a thread, as
 Django does for each. The one thing `TestClient` cannot do is call an `async`
-endpoint from inside a running event loop, such as an `async def` test: use
-`TestAsyncClient` there.
+endpoint, or a sync one that returns an async stream, from inside a running
+event loop, such as an `async def` test: use `TestAsyncClient` there.
 
 ### pytest fixtures
 
