@@ -497,6 +497,14 @@ client.post("/avatar", FILES={"file": SimpleUploadedFile("a.png", b"...")})
 client.get("/dashboard", user=some_user)
 ```
 
+`json=` is sent as `application/json`; pass `content_type=` to send it as
+something else. As in Django's test client, a dict (or `QueryDict`) given as
+the `data=` of a `GET` or `HEAD` is its query string, and of any other method
+its form; a string or bytes is the raw body whatever the method. The query is
+built from the path's own query string, then that `data=`, then
+`query_params=`: each replaces the keys it shares with what came before and
+leaves the rest.
+
 Requests also include the resolved route in `request.resolver_match`, an async
 `request.auser()` returning `request.user`, and a fresh dictionary for
 `request.session`. Pass `session=` or `auser=` to override those defaults.
@@ -522,6 +530,12 @@ async def test_me():
     resp = await client.get("/me")
     assert resp.status_code == 200
 ```
+
+Either client reaches either kind of endpoint: `TestClient` runs an `async`
+endpoint to its end, and `TestAsyncClient` runs a sync one in a thread, as
+Django does for each. The one thing `TestClient` cannot do is call an `async`
+endpoint, or a sync one that returns an async stream, from inside a running
+event loop, such as an `async def` test: use `TestAsyncClient` there.
 
 ### pytest fixtures
 
