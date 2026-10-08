@@ -3,10 +3,11 @@ import re
 
 import pytest
 from django.conf import settings
+from django.http import StreamingHttpResponse
 from django.test import override_settings
 
 from hattori import ApiError, BasePermission, HattoriAPI, Redoc, Swagger
-from hattori.errors import ConfigError
+from hattori.errors import AuthenticationError, ConfigError
 from hattori.security import APIKeyQuery
 from hattori.testing import TestClient
 
@@ -199,6 +200,60 @@ def test_exception_from_a_docs_check_no_handler_answers_is_offered_once():
             client.get(url)
 
     assert len(offered) == len(DOCS_URLS)
+
+
+def _refused_by_a_handler(chunks):
+    api = HattoriAPI(auth=Key())
+
+    @api.exception_handler(AuthenticationError)
+    def streamed(request, exc):
+        return StreamingHttpResponse(chunks(), status=401)
+
+    return api
+
+
+def _rejected_and_answered_by_a_handler(chunks):
+    api = HattoriAPI(permissions=[NoVerdict()])
+
+    @api.exception_handler(ConfigError)
+    def streamed(request, exc):
+        return StreamingHttpResponse(chunks(), status=401)
+
+    return api
+
+
+def _refused_by_the_auth_itself(chunks):
+    def streams(request):
+        return StreamingHttpResponse(chunks(), status=401)
+
+    return HattoriAPI(auth=streams)
+
+
+@pytest.mark.parametrize(
+    "refusing",
+    [
+        _refused_by_a_handler,
+        _rejected_and_answered_by_a_handler,
+        _refused_by_the_auth_itself,
+    ],
+)
+def test_head_does_not_pull_a_stream_the_docs_are_refused_with(refusing):
+    pulled = []
+
+    def chunks():
+        pulled.append(True)
+        yield b"chunk"
+
+    client = TestClient(refusing(chunks))
+    for url in DOCS_URLS:
+        response = client.request("HEAD", url)
+        assert response.status_code == 401
+        assert response.content == b""
+
+    assert pulled == []
+    # A request that does want the body still gets it.
+    for url in DOCS_URLS:
+        assert client.get(url).content == b"chunk"
 
 
 def test_docs_auth_none_makes_the_docs_public():
