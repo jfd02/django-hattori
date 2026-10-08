@@ -17,7 +17,9 @@ __all__ = [
     "auth_attribute",
     "auth_declaration",
     "auth_layers",
+    "declared_auth_descriptions",
     "declared_auth_responses",
+    "parse_api_return_descriptions",
     "parse_api_return_responses",
     "return_annotation_arms",
 ]
@@ -69,6 +71,9 @@ class AuthBase(ABC):
             self.is_async = is_async_callable(self.authenticate)
 
         self.auth_responses: dict[int, Any] = _parse_auth_responses(self)
+        self.auth_descriptions: dict[int, list[str]] = parse_api_return_descriptions(
+            _auth_target(self)
+        )
 
     @abstractmethod
     def __call__(self, request: HttpRequest) -> Any | None:
@@ -145,6 +150,38 @@ def parse_api_return_responses(
     return responses
 
 
+def parse_api_return_descriptions(target: Callable[..., Any]) -> dict[int, list[str]]:
+    """``{code: [description, ...]}`` for the ``APIReturn`` arms ``target`` returns.
+
+    Each arm's ``description``, its own or one it inherits, in the order the
+    arms are declared and without repeats. An arm that declares none adds none.
+    """
+    descriptions: dict[int, list[str]] = {}
+    for arm in return_annotation_arms(target) or ():
+        add_api_return_description(descriptions, arm)
+    return descriptions
+
+
+def add_api_return_description(descriptions: dict[int, list[str]], arm: Any) -> None:
+    """Note the ``description`` of ``arm`` under its status code, if it has both."""
+    # A generic alias such as Created[UserOut] declares them on its origin.
+    cls = get_origin(arm) or arm
+    if not (isinstance(cls, type) and issubclass(cls, APIReturn)):
+        return
+    code = getattr(cls, "code", None)
+    description = getattr(cls, "description", "")
+    if isinstance(code, int) and description:
+        found = descriptions.setdefault(code, [])
+        if description not in found:
+            found.append(description)
+
+
+def _auth_target(auth: AuthBase) -> Callable[..., Any]:
+    """``authenticate``, or ``__call__`` for auth that skips that convention."""
+    target: Callable[..., Any] | None = getattr(auth, "authenticate", None)
+    return auth.__call__ if target is None else target
+
+
 def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
     """Extract ``{code: body_schema}`` from ``authenticate``'s return annotation.
 
@@ -153,10 +190,9 @@ def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
     subclasses in the annotation contribute to the result. No annotation means
     no typed auth entries in the OpenAPI spec.
     """
-    target: Callable[..., Any] | None = getattr(auth, "authenticate", None)
-    if target is None:
-        target = auth.__call__
-    return parse_api_return_responses(target, f"{type(auth).__name__}.authenticate")
+    return parse_api_return_responses(
+        _auth_target(auth), f"{type(auth).__name__}.authenticate"
+    )
 
 
 def auth_layers(callback: Any) -> Iterator[Any]:
@@ -212,4 +248,27 @@ def declared_auth_responses(callback: Any) -> dict[int, Any]:
         if return_annotation_arms(target) is not None:
             owner = getattr(layer, "__qualname__", type(layer).__name__)
             return parse_api_return_responses(target, owner)
+    return {}
+
+
+def declared_auth_descriptions(callback: Any) -> dict[int, list[str]]:
+    """``{code: [description, ...]}`` for the typed responses of an auth callback.
+
+    Read off the same layer :func:`declared_auth_responses` reads the responses
+    off, so a description never documents a response that layer does not declare.
+    """
+    for layer in auth_layers(callback):
+        declared: dict[int, list[str]] | None = getattr(
+            layer, "auth_descriptions", _UNSET
+        )
+        if declared is not _UNSET:
+            return declared or {}
+        if getattr(layer, "auth_responses", _UNSET) is not _UNSET:
+            # It lists its responses itself, and no descriptions with them.
+            return {}
+        if isinstance(layer, functools.partial):
+            continue
+        target = layer if inspect.isroutine(layer) else layer.__call__
+        if return_annotation_arms(target) is not None:
+            return parse_api_return_descriptions(target)
     return {}
