@@ -132,7 +132,7 @@ def test_json_parse_errors_are_documented_alongside_declared_400(custom_error):
 
     document = export_contract(api)
     client = TestClient(api)
-    malformed = client.post("/body", body=b"{")
+    malformed = client.post("/body", body=b"{", content_type="application/json")
     assert malformed.status_code == 400
     validate_response(document, "/api/body", malformed, method="post")
     validate_response(

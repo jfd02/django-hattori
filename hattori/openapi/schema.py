@@ -17,7 +17,7 @@ from hattori.errors import (
     get_validation_error_model,
 )
 from hattori.operation import Operation
-from hattori.params.models import TModels
+from hattori.params.models import TModels, _MultiPartBodyModel
 from hattori.schema import HattoriGenerateJsonSchema
 from hattori.security.apikey import APIKeyCookie
 from hattori.security.base import auth_declaration, auth_layers
@@ -704,6 +704,10 @@ class OpenAPISchema(dict):
             # framework's HttpError body.
             self._add_response_schema(result, 400, self._http_error_schema())
 
+        if self._reads_json_body(operation):
+            # A body that does not say it is JSON is refused before it is read.
+            self._add_response_schema(result, 415, self._http_error_schema())
+
         if operation.auth_callbacks:
             # Every auth declining is answered with the framework's own 401,
             # whatever typed responses the auth classes declare beside it.
@@ -753,6 +757,18 @@ class OpenAPISchema(dict):
         methods = operation.methods if method is None else [method]
         return bool(sources & {"form", "file"}) and any(
             method.upper() == "POST" for method in methods
+        )
+
+    def _reads_json_body(self, operation: Operation) -> bool:
+        """Whether the operation reads its body as JSON, by its media type.
+
+        Body params declared beside a form or a file arrive as form fields
+        instead, and are read as JSON whatever the request calls itself.
+        """
+        return any(
+            model.__hattori_param_source__ == "body"
+            and not issubclass(model, _MultiPartBodyModel)
+            for model in operation.models
         )
 
     def _can_send_default_403(self, operation: Operation, method: str | None) -> bool:

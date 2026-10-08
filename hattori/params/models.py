@@ -137,6 +137,13 @@ class CookieModel(ParamModel):
         return request.COOKIES
 
 
+def is_json_media_type(content_type: str) -> bool:
+    """Whether ``content_type`` (lowercase, without parameters) is a JSON one."""
+    return content_type == "application/json" or (
+        content_type.startswith("application/") and content_type.endswith("+json")
+    )
+
+
 class BodyModel(ParamModel):
     __read_from_single_attr__: str
 
@@ -145,20 +152,32 @@ class BodyModel(ParamModel):
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         if request.body:
-            try:
-                data = json_loads(request.body)
-            except Exception as e:
-                msg = "Cannot parse request body"
-                if settings.DEBUG:
-                    msg += f" ({e})"
-                raise HttpError(400, msg) from e
-
-            varname = getattr(cls, "__read_from_single_attr__", None)
-            if varname:
-                data = {varname: data}
-            return cast("dict[str, Any]", data)
+            # A browser sends a form across sites as text/plain, as form data
+            # or as nothing at all, cookies included, without asking first. A
+            # JSON type it has to ask for, so a body is only read as JSON when
+            # it says it is.
+            if not is_json_media_type(request.content_type or ""):
+                raise HttpError(
+                    415, "Unsupported Media Type: send the body as application/json"
+                )
+            return cls._decode(request.body)
 
         return None
+
+    @classmethod
+    def _decode(cls, body: bytes | str) -> dict[str, Any]:
+        try:
+            data = json_loads(body)
+        except Exception as e:
+            msg = "Cannot parse request body"
+            if settings.DEBUG:
+                msg += f" ({e})"
+            raise HttpError(400, msg) from e
+
+        varname = getattr(cls, "__read_from_single_attr__", None)
+        if varname:
+            data = {varname: data}
+        return cast("dict[str, Any]", data)
 
 
 class FormModel(ParamModel):
@@ -179,10 +198,6 @@ class FileModel(ParamModel):
         return _parse_querydict(request.FILES, list_fields)
 
 
-class _HttpRequest(HttpRequest):
-    body: bytes = b""
-
-
 class _MultiPartBodyModel(BodyModel):
     __hattori_body_params__: dict[str, Any]
 
@@ -190,8 +205,6 @@ class _MultiPartBodyModel(BodyModel):
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
-        req = _HttpRequest()
-        get_request_data = super().get_request_data
         results: dict[str, Any] = {}
         for name, annotation in cls.__hattori_body_params__.items():
             if name in request.POST:
@@ -202,10 +215,12 @@ class _MultiPartBodyModel(BodyModel):
                     # BodyModel's JSON parser with every character preserved
                     # (interior/edge quotes, newlines, unicode) instead of the
                     # naive f'"{data}"' wrapping, which mangles or rejects them.
-                    req.body = json_dumps(data)
+                    body = json_dumps(data)
                 else:
-                    req.body = data.encode()
-                results[name] = get_request_data(req, api, path_params)
+                    body = data.encode()
+                # A form field, read as JSON by declaration: the request's
+                # media type is the form's, so there is none to hold it to.
+                results[name] = cls._decode(body) if body else None
         return results
 
 
