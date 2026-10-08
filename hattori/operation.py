@@ -845,8 +845,11 @@ class Operation:
         temporal_response.status_code = status
 
         if response_model is None:
-            # Empty response: no body, so no media type to name for it either.
-            del temporal_response["Content-Type"]
+            # Nothing is rendered. Unless the view wrote a body of its own to
+            # the response it was handed, there is none, and so no media type
+            # to name for it either.
+            if not temporal_response.content:
+                del temporal_response["Content-Type"]
             return temporal_response
 
         ctx = {"request": request, "response_status": status}

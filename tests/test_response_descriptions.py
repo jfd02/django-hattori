@@ -1,8 +1,10 @@
 """A response class's ``description`` is what the spec says of that status."""
 
+import functools
 from typing import Literal
 
 from hattori import (
+    JSONL,
     Accepted,
     ApiError,
     APIReturn,
@@ -13,6 +15,7 @@ from hattori import (
     Schema,
 )
 from hattori.security import APIKeyQuery
+from hattori.security.base import AuthBase
 from hattori.testing import TestClient
 
 
@@ -228,3 +231,86 @@ def test_description_changes_nothing_that_is_sent():
     response = TestClient(api).get("/item")
     assert response.status_code == 404
     assert response.json() == {"code": "missing", "message": "missing"}
+
+
+class CalledDirectly(AuthBase):
+    """Auth that skips ``authenticate`` and declares itself on ``__call__``."""
+
+    openapi_type = "apiKey"
+
+    def __call__(self, request) -> str | BadKey:
+        return request.GET.get("key") or BadKey()
+
+
+def wrapped_key_auth(request):
+    return key_auth(request)
+
+
+functools.update_wrapper(wrapped_key_auth, key_auth)
+
+
+def key_auth_for(realm, request) -> str | BadKey:
+    return request.GET.get(realm) or BadKey()
+
+
+def test_description_is_read_off_auth_however_it_is_written():
+    api = HattoriAPI()
+    auths = {
+        "called": CalledDirectly(),
+        "wrapped": wrapped_key_auth,
+        "partial": functools.partial(key_auth_for, "key"),
+    }
+    for name, auth in auths.items():
+
+        def view(request) -> Out:
+            return Out(id=1)
+
+        view.__name__ = name
+        api.get(f"/{name}", auth=auth)(view)
+
+    for name in auths:
+        assert descriptions(api, f"/{name}")[401] == (
+            "The key is unknown or has been revoked."
+        )
+
+
+def test_router_auth_is_described():
+    api = HattoriAPI()
+    router = Router(auth=Key())
+
+    @router.get("/item")
+    def item(request) -> Out:
+        return Out(id=1)
+
+    api.add_router("/guarded", router)
+
+    assert descriptions(api, "/guarded/item")[401] == (
+        "The key is unknown or has been revoked."
+    )
+
+
+def test_description_shared_by_endpoint_auth_and_permission_is_given_once():
+    api = HattoriAPI()
+
+    class HidesToo(APIKeyQuery):
+        def authenticate(self, request, key) -> str | Hidden:
+            return key or Hidden()
+
+    @api.get("/item", auth=HidesToo(), permissions=[AnyoneButHidden()])
+    def item(request) -> Out | Hidden:
+        return Out(id=1)
+
+    assert descriptions(api, "/item")[404] == "It exists, but not for this caller."
+
+
+def test_streaming_operation_is_described():
+    api = HattoriAPI()
+
+    @api.get("/stream", auth=Key())
+    def stream(request) -> JSONL[Out]:
+        yield Out(id=1)
+
+    assert descriptions(api, "/stream") == {
+        200: "OK",
+        401: "The key is unknown or has been revoked.",
+    }
