@@ -301,6 +301,22 @@ class UserNotFound(ApiError):
     description = "No user has this id, or the caller may not see them."
 ```
 
+### Streams
+
+`-> JSONL[Item]` or `-> SSE[Item]` streams what the endpoint yields. Its other responses are declared beside the stream, in a union, like any operation's:
+
+```python
+@api.get("/exports/{id}")
+def export(request, id: int) -> JSONL[Row] | ExportNotFound:
+    if not exists(id):
+        return ExportNotFound()      # a plain 404, as JSON
+    return rows(id)                  # a generator: the stream
+```
+
+Such a response has to be returned before anything is streamed, since the status line leaves with the first item. An endpoint that returns its stream, as above, can do that whether it is sync or `async`. One that is itself a generator can `return` it before its first `yield`, if it is sync; an async generator cannot return a value.
+
+Type checkers accept the annotation but not a generator returned as `JSONL[Row]`; that part of the declaration is for hattori and the spec.
+
 ### Errors (semantic `HTTPError` bases)
 
 Subclass parameterized on a service enum member; the wire `code` is derived from `member.value`. The base class supplies the HTTP status, and OpenAPI emits a per-subclass error schema whose `code` field is `Literal[member.value]`. Multiple errors with the same HTTP status are emitted as a `oneOf` discriminated by `code`.
