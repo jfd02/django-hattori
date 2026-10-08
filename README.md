@@ -368,6 +368,19 @@ class InvalidToken(ApiError):
 
 `ApiError` narrows `code` the same way the enum-keyed bases do: each subclass declaring an `error_code` gets its own OpenAPI schema with `code: Literal["invalid_token"]`, so generated clients can switch on it.
 
+To add fields to the body of every error, set a default body once, e.g. from `AppConfig.ready()`. A class that names its own `body=` keeps it:
+
+```python
+from hattori import ErrorBody, set_default_error_body
+
+class TracedError(ErrorBody):
+    trace_id: str = ""
+
+set_default_error_body(TracedError)
+```
+
+An error class takes the default in force when its body is first needed: when a route that returns it is declared, an auth or a permission that returns it is created, or it is instantiated. So it does not matter whether the error classes were defined before the call, but it has to come before the routes that return them are declared. From then on a class's body stays what it is. Like `set_http_error_model` and `set_validation_error_model` below, this is one setting for the whole process, shared by every API in it.
+
 For a different wire shape than `{code, message}`, subclass `APIReturn[YourBody]` directly:
 
 ```python
