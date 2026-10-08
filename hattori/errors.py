@@ -1,4 +1,5 @@
 import logging
+import threading
 import traceback
 from copy import deepcopy
 from dataclasses import replace
@@ -280,7 +281,19 @@ def set_default_error_body(body: type[ErrorBody]) -> None:
     :class:`~hattori.HTTPError`) subclass — and none of its parents — declares
     its own body via the ``body=`` class kwarg. Call once at startup, e.g. from
     an ``AppConfig.ready()`` hook.
+
+    An error class takes the default in force when its body is first needed:
+    when a route that returns it is declared, an auth or a permission that
+    returns it is created, or it is instantiated. From then on its body stays
+    what it is, so everything that has seen it agrees. Classes merely defined
+    before this call take the new default; set it before the routes are
+    declared for it to reach all of them.
+
+    The setting is process-wide, like the other two error models: every API in
+    the process shares it.
     """
+    if not (isinstance(body, type) and issubclass(body, ErrorBody)):
+        raise ConfigError(f"{body!r} must subclass hattori.ErrorBody.")
     global _default_error_body
     _default_error_body = body
 
@@ -332,6 +345,79 @@ def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
     return body
 
 
+class NarrowedBody:
+    """The body model of an error class, built when it is first asked for.
+
+    Stands in for ``__hattori_response_body__`` on a class that declares an
+    error code until something needs the body, so that the default body may be
+    set after the class is defined. The model is then narrowed from the nearest
+    ``body=`` in the class's MRO, else from the default in force, and put on
+    the class in this object's place: once anything has seen a class's body,
+    it is that class's body for good.
+
+    No lock is taken anywhere in this. Building a body and putting it on the
+    class both run code that is not ours - hooks of the body it is narrowed
+    from, a metaclass's ``__setattr__`` - which may ask for this or another
+    body, or wait on a thread that does. Two ``dict.setdefault`` calls, each
+    atomic, decide what a lock would: which body stands, and who puts it on
+    the class.
+
+    While a thread is building a body, a hook of its own that asks for that
+    body is answered with the inherited one, as on a class whose own is not
+    made yet. Another thread that asks meanwhile builds one too, and the first
+    in stands: it has to be handed a finished body, and cannot be made to wait.
+    So the one thing not served is a hook that waits on another thread which
+    asks for the very body being built - that thread's own build runs the hook
+    again.
+    """
+
+    # The bodies each thread is in the middle of building.
+    _building = threading.local()
+
+    def __init__(self, error: type, error_code: str) -> None:
+        self.error = error
+        self.error_code = error_code
+        self._first: dict[str, Any] = {}
+
+    def __get__(self, instance: Any, owner: type | None = None) -> type[ErrorBody]:
+        # A subclass that declares no code of its own reads its parent's body
+        # through here: the body is that of the class the code was declared on.
+        body: type[ErrorBody] | None = self._first.get("body")
+        if body is None:
+            building: set[NarrowedBody] | None = getattr(self._building, "now", None)
+            if building is None:
+                building = self._building.now = set()
+            if self in building:
+                # Asked for by a hook of the body it is being narrowed from,
+                # before there is one. It answers as a class does while its own
+                # body is still being made: with the one it inherits.
+                return self._inherited()
+            building.add(self)
+            try:
+                built = narrowed_error_body(self.error, self.error_code)
+            finally:
+                building.discard(self)
+            # The first one in is the only one ever handed out. Another built
+            # meanwhile, by another thread, is dropped.
+            body = self._first.setdefault("body", built)
+        placer = object()
+        if self._first.setdefault("placer", placer) is placer:
+            # Once, by whoever got here first: from now on the class has it.
+            self.error.__hattori_response_body__ = body  # type: ignore[attr-defined]
+        return body
+
+    def _inherited(self) -> type[ErrorBody]:
+        """The body the class would answer with if it declared none of its own."""
+        # ApiError pins one, so there is always a class to stop at.
+        parent: Any = next(
+            klass
+            for klass in self.error.__mro__[1:]
+            if "__hattori_response_body__" in vars(klass)
+        )
+        inherited: type[ErrorBody] = parent.__hattori_response_body__
+        return inherited
+
+
 class ApiError(APIReturn[ErrorBody]):
     """Default error-response base.
 
@@ -378,8 +464,8 @@ class ApiError(APIReturn[ErrorBody]):
 
     # Pinned so the schema resolver short-circuits its MRO walk. Subclasses that
     # declare an ``error_code`` replace this with a generated ErrorBody subclass
-    # whose ``code`` field is narrowed to that code.
-    __hattori_response_body__ = ErrorBody
+    # whose ``code`` field is narrowed to that code, built when first needed.
+    __hattori_response_body__: ClassVar[type[ErrorBody] | NarrowedBody] = ErrorBody
     __hattori_response_body_base__: ClassVar[type[ErrorBody] | None] = None
 
     def __init_subclass__(
@@ -395,7 +481,7 @@ class ApiError(APIReturn[ErrorBody]):
         # runs, and synthesizes the narrowed body itself.
         error_code = cls.__dict__.get("error_code")
         if isinstance(error_code, str):
-            cls.__hattori_response_body__ = narrowed_error_body(cls, error_code)
+            cls.__hattori_response_body__ = NarrowedBody(cls, error_code)
 
     def __init__(self, message: str | None = None, **body_fields: Any) -> None:
         body_type = self.__hattori_response_body__
