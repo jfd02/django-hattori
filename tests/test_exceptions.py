@@ -86,7 +86,9 @@ def test_default_handler(settings):
     assert response.status_code == 400
     assert response.json() == {"detail": "Bad Request: test"}
 
-    response = client.post("/error/custom", body="invalid_json")
+    response = client.post(
+        "/error/custom", body="invalid_json", content_type="application/json"
+    )
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert detail.startswith("Cannot parse request body (")
@@ -95,7 +97,9 @@ def test_default_handler(settings):
     with pytest.raises(RuntimeError):
         response = client.post("/error/base")
 
-    response = client.post("/error/custom", body="invalid_json")
+    response = client.post(
+        "/error/custom", body="invalid_json", content_type="application/json"
+    )
     assert response.status_code == 400
     assert response.json() == {"detail": "Cannot parse request body"}
 

@@ -384,7 +384,9 @@ def test_http_error_model_is_documented_as_it_is_sent(model, body):
         api = _api()
         document = export_contract(api)
 
-        response = TestClient(api).post("/items", data=b"{")
+        response = TestClient(api).post(
+            "/items", data=b"{", content_type="application/json"
+        )
 
         assert response.status_code == 400
         assert response.json() == body

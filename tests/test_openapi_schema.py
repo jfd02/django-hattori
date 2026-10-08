@@ -63,6 +63,17 @@ PARSE_ERROR_400 = {
     },
 }
 
+UNSUPPORTED_MEDIA_415 = {
+    "description": "Unsupported Media Type",
+    "content": {
+        "application/json": {
+            "schema": {
+                "$ref": "#/components/schemas/HttpErrorResponse",
+            }
+        }
+    },
+}
+
 
 class Payload(Schema):
     i: int
@@ -282,6 +293,7 @@ def test_schema(schema):
             "description": "OK",
         },
         400: PARSE_ERROR_400,
+        415: UNSUPPORTED_MEDIA_415,
         422: VALIDATION_ERROR_422,
     }
     assert schema.schemas == {
@@ -378,6 +390,7 @@ def test_schema_alias(schema):
             "description": "OK",
         },
         400: PARSE_ERROR_400,
+        415: UNSUPPORTED_MEDIA_415,
         422: VALIDATION_ERROR_422,
     }
     # ::TODO:: this is currently broken if not all responses for same schema use the same by_alias
@@ -434,6 +447,7 @@ def test_schema_list(schema):
             "description": "OK",
         },
         400: PARSE_ERROR_400,
+        415: UNSUPPORTED_MEDIA_415,
         422: VALIDATION_ERROR_422,
     }
 
@@ -541,6 +555,7 @@ def test_schema_body(schema):
             "description": "OK",
         },
         400: PARSE_ERROR_400,
+        415: UNSUPPORTED_MEDIA_415,
         422: VALIDATION_ERROR_422,
     }
 
@@ -564,6 +579,7 @@ def test_schema_body_schema(schema):
             "description": "OK",
         },
         400: PARSE_ERROR_400,
+        415: UNSUPPORTED_MEDIA_415,
         422: VALIDATION_ERROR_422,
     }
 

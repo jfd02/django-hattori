@@ -410,6 +410,7 @@ Every error the API answers on your behalf is an `HttpError` too, so it takes th
 | Django's `PermissionDenied` | 403, as an `AuthorizationError` |
 | Django's `BadRequest`, `SuspiciousOperation`, unreadable multipart data | 400 |
 | A method the path doesn't declare | 405, with an `Allow` header |
+| A JSON body sent as anything but JSON | 415 |
 | The API's root URL | 404 |
 
 This holds wherever the exception is raised: the endpoint, its auth or permissions, or a view decorator around it. The Django exception is the `__cause__` of the `HttpError` your handler receives, and a handler registered for the Django exception itself takes precedence. Handlers run in a sync thread, so they can use the ORM even for an `async` endpoint. A handler has to return a response: one that returns anything else raises a `ConfigError`, so a handler that forgets its `return` can't turn a 401 or 403 into a request that goes through.
@@ -417,6 +418,41 @@ This holds wherever the exception is raised: the endpoint, its auth or permissio
 A `GET` route also answers `HEAD`: the endpoint runs and the body is not sent. A streaming route is the exception. Every path answers `OPTIONS` with its `Allow` header, without running auth or the endpoint. Declare either operation yourself to replace that.
 
 Two cases are left to Django: a path under the API that matches no route gets its 404 (shaped by `handler404`), and an exception no handler answers is re-raised outside `DEBUG`, so Django reports it. Register `@api.exception_handler(Exception)` to answer the latter yourself.
+
+## Request bodies and CSRF
+
+A body is read as JSON only when the request says it is JSON: its
+`Content-Type` has to be `application/json` or another `application/*+json`
+type. A body sent as anything else, or as nothing, is answered with a 415 before
+it is decoded, and the spec documents that 415 on every operation with a JSON
+body. A request with no body is not held to a media type.
+
+The reason is the browser. A page on another site can make a visitor's browser
+send a form, cookies included, as `text/plain`, as form data or with no type,
+without asking the API first; a JSON type it has to ask for with a CORS
+preflight. Reading only what is labelled JSON keeps a forged body off JSON
+endpoints.
+
+It does not keep a forged request off the rest: an endpoint that takes a form,
+or no body, or a JSON body it can do without. That is what CSRF checks are for. Every
+hattori view is exempt from Django's CSRF middleware, because an API that
+authenticates by header gives a forged request nothing to ride on. Auth that
+reads a cookie does, so the cookie auth hattori ships checks the token itself:
+
+- `APIKeyCookie`, and `SessionAuth` / `django_auth` built on it, check CSRF on
+  every unsafe method and answer a failure with a 403. Pass `csrf=False` to turn
+  that off for one auth, or mark one endpoint with Django's `csrf_exempt`.
+- Auth that reads a cookie any other way is **not** checked: a plain callable,
+  or an `AuthBase` subclass of your own. hattori cannot tell that it reads a
+  cookie. Write cookie auth as an `APIKeyCookie` subclass so that it is.
+
+```python
+class SessionKey(APIKeyCookie):
+    param_name = "sid"
+
+    def authenticate(self, request, key):
+        return lookup_session(key)
+```
 
 ## Transactions
 

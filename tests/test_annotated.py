@@ -281,6 +281,16 @@ def test_openapi_schema():
                             }
                         },
                     },
+                    415: {
+                        "description": "Unsupported Media Type",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HttpErrorResponse"
+                                }
+                            }
+                        },
+                    },
                     422: VALIDATION_ERROR_422,
                 },
                 "requestBody": {

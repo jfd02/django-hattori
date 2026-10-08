@@ -98,7 +98,9 @@ def test_default_body_is_detail():
     api = _api()
     document = export_contract(api)
 
-    response = TestClient(api).post("/items", body=b"{")
+    response = TestClient(api).post(
+        "/items", body=b"{", content_type="application/json"
+    )
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Cannot parse request body"}
@@ -112,7 +114,9 @@ def test_custom_model_shapes_the_response_and_the_spec(problem_model):
     api = _api()
     document = export_contract(api)
 
-    response = TestClient(api).post("/items", body=b"{")
+    response = TestClient(api).post(
+        "/items", body=b"{", content_type="application/json"
+    )
 
     assert response.status_code == 400
     assert response.json() == {
@@ -139,7 +143,9 @@ def test_custom_model_is_documented_beside_a_declared_400(problem_model):
             {"$ref": "#/components/schemas/Problem"},
         ]
     }
-    malformed = TestClient(api).post("/unique-items", body=b"{")
+    malformed = TestClient(api).post(
+        "/unique-items", body=b"{", content_type="application/json"
+    )
     validate_response(document, "/api/unique-items", malformed, method="post")
 
 
