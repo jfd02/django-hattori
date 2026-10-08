@@ -743,6 +743,10 @@ class HattoriAPI:
                 # Not an answer, and auth and permissions read "no response"
                 # as "allowed": a handler that forgets its return must not
                 # turn their refusal into a pass.
+                if inspect.iscoroutine(response):
+                    # What an async handler returned without awaiting it. It is
+                    # not going to be awaited, and this error says so already.
+                    response.close()
                 raise ConfigError(
                     f"The exception handler for {type(exc).__name__} returned "
                     f"{type(response).__name__}, not a response."

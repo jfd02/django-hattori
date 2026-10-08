@@ -497,6 +497,26 @@ def test_async_handler_that_returns_no_response_is_a_config_error():
         TestClient(api).get("/error")
 
 
+def test_async_handler_that_forgets_an_await_is_a_config_error(recwarn):
+    api = HattoriAPI()
+
+    async def answer(request, exc):
+        return api.create_response(request, {"custom": True}, status=418)
+
+    @api.exception_handler(CustomException)
+    async def forgets_an_await(request, exc):
+        return answer(request, exc)
+
+    @api.get("/error")
+    def thrower(request) -> None:
+        raise CustomException()
+
+    with pytest.raises(ConfigError, match="CustomException returned coroutine"):
+        TestClient(api).get("/error")
+
+    assert not recwarn
+
+
 def test_async_handler_that_fails_is_not_offered_the_exception_twice():
     api = HattoriAPI()
     offered = []
