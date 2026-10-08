@@ -591,6 +591,7 @@ class TestCloneCompleteness:
             # Streaming
             "stream_format",
             "stream_item_model",
+            "_stream_status",
             # OpenAPI metadata
             "operation_id",
             "summary",

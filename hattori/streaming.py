@@ -1,4 +1,4 @@
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, Union
 
 from hattori.responses import json_dumps
 
@@ -17,6 +17,14 @@ class _StreamAlias:
     def __init__(self, format_cls: type[StreamFormat[Any]], item_type: type) -> None:
         self.format_cls = format_cls
         self.item_type = item_type
+
+    # ``JSONL[Item] | NotFound``: the other responses a streaming operation
+    # declares sit beside the stream in a union, as they do for any operation.
+    def __or__(self, other: Any) -> Any:
+        return Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: Any) -> Any:
+        return Union[other, self]  # noqa: UP007
 
 
 class StreamFormat(Generic[_T]):

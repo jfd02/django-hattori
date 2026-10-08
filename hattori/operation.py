@@ -120,12 +120,13 @@ def _reject_unrun_result(result: Any, owner: str) -> None:
 
 
 class _ParsedAnnotation:
-    __slots__ = ("descriptions", "response_models", "stream_alias")
+    __slots__ = ("descriptions", "response_models", "stream_alias", "stream_status")
 
     def __init__(self) -> None:
         self.response_models: dict[int, Any] = {}
         self.descriptions: dict[int, list[str]] = {}
         self.stream_alias: _StreamAlias | None = None
+        self.stream_status: int | None = None
 
 
 def _resolve_type_alias(tp: Any) -> Any:
@@ -235,9 +236,23 @@ def _parse_return_annotation(view_func: Callable) -> _ParsedAnnotation:
             schema_type = resolved
 
         if isinstance(schema_type, _StreamAlias):
+            if parsed.stream_alias is not None:
+                raise ConfigError(
+                    f"{view_func.__name__} declares more than one stream in its "
+                    f"return type. An operation streams one thing."
+                )
             parsed.stream_alias = schema_type
+            parsed.stream_status = status_code
             schema_type = schema_type.item_type
         collected.setdefault(status_code, []).append(schema_type)
+
+    if parsed.stream_status is not None and len(collected[parsed.stream_status]) > 1:
+        # Which of the two a result is could only be guessed at.
+        raise ConfigError(
+            f"{view_func.__name__} declares both a stream and another response "
+            f"for status {parsed.stream_status}. Give the other one a status of "
+            f"its own."
+        )
 
     for status_code, types in collected.items():
         if len(types) == 1:
@@ -359,6 +374,7 @@ class Operation:
 
         # Parse response schema from return type annotation
         parsed = _parse_return_annotation(view_func)
+        self._stream_status: int | None = parsed.stream_status
         if parsed.stream_alias is not None:
             self.stream_format = parsed.stream_alias.format_cls
 
@@ -424,9 +440,9 @@ class Operation:
                 self.response_models[status_code] = self._create_response_model(
                     schema_type
                 )
-        if self.stream_format and self.response_models:
-            first_model = next(iter(self.response_models.values()))
-            self.stream_item_model = first_model
+        if self.stream_format:
+            # The stream's own response, wherever in the annotation it stands.
+            self.stream_item_model = self.response_models[self._stream_status]
 
         # What each response class says of itself, for the spec: the endpoint's
         # own first, then its auth's and its permissions', without repeats.
@@ -483,6 +499,7 @@ class Operation:
         # Copy streaming attributes
         cloned.stream_format = self.stream_format
         cloned.stream_item_model = self.stream_item_model
+        cloned._stream_status = self._stream_status
 
         # Copy response models (dict copy for isolation)
         cloned.response_models = dict(self.response_models)
@@ -607,10 +624,16 @@ class Operation:
         request: HttpRequest,
         generator: Any,
         temporal_response: HttpResponse,
-    ) -> StreamingHttpResponse:
-        """Create a StreamingHttpResponse from a sync generator."""
+    ) -> HttpResponseBase:
+        """Create a StreamingHttpResponse from a sync generator.
+
+        Unless the view answered with one of the other responses it declares
+        beside the stream, which is then sent as any operation's would be.
+        """
         assert self.stream_format is not None
         fmt = self.stream_format
+        if isinstance(generator, (APIReturn, HttpResponseBase)):
+            return self._result_to_response(request, generator, temporal_response)
 
         # Prime the generator up to its first yield (running the view body up to
         # that point) so any headers/cookies/status it sets before streaming are
@@ -620,7 +643,11 @@ class Operation:
         # Headers set mid-stream cannot be honored; this is documented behavior.
         try:
             first_item = next(generator)
-        except StopIteration:
+        except StopIteration as stop:
+            if isinstance(stop.value, (APIReturn, HttpResponseBase)):
+                # A generator that returned one before its first yield. After
+                # that the headers are out, and a returned value has no way out.
+                return self._result_to_response(request, stop.value, temporal_response)
             first_item = _NO_FIRST_ITEM
 
         # Built after priming so a status set before the first yield is reflected.
@@ -922,6 +949,10 @@ class AsyncOperation(Operation):
             values = self._get_values(request, kw, temporal_response)
             if self.stream_format:
                 result = self.view_func(request, **values)
+                if inspect.isawaitable(result):
+                    # No async generator but a coroutine: it returns the
+                    # stream, or one of the other responses declared beside it.
+                    result = await result
                 return await self._async_stream_response(
                     request, result, temporal_response
                 )
@@ -942,10 +973,17 @@ class AsyncOperation(Operation):
         request: HttpRequest,
         generator: Any,
         temporal_response: HttpResponse,
-    ) -> StreamingHttpResponse:
-        """Create a StreamingHttpResponse from an async generator."""
+    ) -> HttpResponseBase:
+        """Create a StreamingHttpResponse from an async generator.
+
+        Unless the view answered with one of the other responses it declares
+        beside the stream. An async generator cannot return a value, so it is
+        only a view that returns its stream which can.
+        """
         assert self.stream_format is not None
         fmt = self.stream_format
+        if isinstance(generator, (APIReturn, HttpResponseBase)):
+            return self._result_to_response(request, generator, temporal_response)
 
         # Prime the generator up to its first yield so headers/cookies/status the
         # view sets before streaming are captured now. ASGI flushes the response
