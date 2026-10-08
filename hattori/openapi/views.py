@@ -76,9 +76,10 @@ def guard_docs(
             # handlers answer it, unless it is they who left it unanswered.
             if exc is getattr(request, "_hattori_unanswered", None):
                 raise
-            return guard._on_exception(request, exc)
+            denied = guard._on_exception(request, exc)
         if denied is not None:
-            return denied
+            # A handler, or the auth itself, may refuse with a stream.
+            return drop_stream_for_head(request, denied)
         return view(request, **kwargs)
 
     return guarded
