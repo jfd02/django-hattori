@@ -178,7 +178,7 @@ This applies equally to endpoints and to auth, whether `auth=` is given an auth 
 - **Input validation** — `SignupIn` validates and type-casts the request body
 - **Output filtering** — `UserOut` strips fields like `password` from the response
 - **Multiple responses** — `UserRegistered | UsernameTaken` union types map directly to OpenAPI response schemas
-- **Auth** — `401 Unauthorized` is auto-documented when `auth=` is set, and `403 Forbidden` when a permission can deny the request
+- **Auth** — `401 Unauthorized` is auto-documented when `auth=` is set, unless the auth says it never declines, and `403 Forbidden` when a permission can deny the request
 - **422 errors** — validation error responses are added to the schema automatically
 - **Interactive docs** — visit `/api/docs` for Swagger UI with everything above
 
@@ -219,6 +219,19 @@ class BearerAuth(HttpBearer):
 ```
 
 Every operation using `auth=BearerAuth()` auto-documents `401` (with the union of `BadToken` + `ExpiredToken` bodies) and `403` (`AccountLocked`) in its OpenAPI response map — no per-endpoint wiring. The `401` also lists the default `{"detail": "Unauthorized"}` body, which is what a request with no token at all gets.
+
+That default `401` is what the framework answers when every auth on the operation declines. An auth that never declines, because it answers every request itself with a principal or a response of its own, can say so:
+
+```python
+class SessionAuth(APIKeyCookie):
+    param_name = "session"
+    can_decline = False
+
+    def authenticate(self, request, key) -> Customer | NotLoggedIn:
+        return customer_for(key) or NotLoggedIn()
+```
+
+The default `401` is then left out of the spec for the operations it guards, and the auth is held to its word: a falsy result from it is a `ConfigError`, not a declined request. It is not for `HttpBearer` or `HttpBasicAuth`, which decline by themselves when the header is missing. A plain function says it with an attribute, `by_session.can_decline = False`.
 
 ## Typing `request.auth`
 

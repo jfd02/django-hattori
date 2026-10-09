@@ -18,6 +18,7 @@ __all__ = [
     "SecuritySchema",
     "AuthBase",
     "auth_attribute",
+    "auth_can_decline",
     "auth_declaration",
     "auth_layers",
     "declared_auth_responses",
@@ -51,8 +52,20 @@ class AuthBase(ABC):
     Returning ``None``, or any other falsy value, declines the request. When
     every auth on an operation declines, the framework answers ``401`` with the
     ``HttpError`` body, which the OpenAPI spec documents on every operation
-    that has auth — beside any ``APIReturn`` variants declared for the same code.
+    whose auths may all decline — beside any ``APIReturn`` variants declared
+    for the same code.
+
+    An auth that answers every request itself, with a principal or with a
+    response of its own, says so by setting :attr:`can_decline` to ``False``.
     """
+
+    #: Whether this auth may decline a request by returning a falsy value. Set
+    #: it to ``False`` on an auth that never does: the framework's own ``401``
+    #: is then left out of the spec for the operations it guards, and a falsy
+    #: result from it is a :class:`~hattori.errors.ConfigError`. Not for an
+    #: auth that declines by itself when the request carries no credentials, as
+    #: ``HttpBearer`` and ``HttpBasicAuth`` do.
+    can_decline: bool = True
 
     def __init__(self) -> None:
         if not hasattr(self, "openapi_type"):
@@ -122,6 +135,24 @@ def auth_declaration(callback: Any, name: str) -> tuple[Any, Any]:
 def auth_attribute(callback: Any, name: str) -> Any:
     """``name`` as the outermost layer of ``callback`` that sets it has it."""
     return auth_declaration(callback, name)[1]
+
+
+def auth_can_decline(callback: Any) -> bool:
+    """Whether an auth callback may decline a request by returning a falsy value.
+
+    Any callback may, unless it says otherwise: ``can_decline = False``, on an
+    auth class or on a plain function, as the outermost layer that sets it has
+    it. So a wrapper that declines for itself says ``True`` over what it wraps.
+    """
+    layer, declared = auth_declaration(callback, "can_decline")
+    if layer is None:
+        return True
+    if not isinstance(declared, bool):
+        owner = getattr(layer, "__qualname__", type(layer).__name__)
+        raise ConfigError(
+            f"{owner}.can_decline must be True or False, got {declared!r}."
+        )
+    return declared
 
 
 def declared_auth_responses(callback: Any) -> DeclaredResponses:
