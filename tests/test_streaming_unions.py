@@ -6,7 +6,7 @@ from typing import Union
 import pytest
 from django.http import HttpResponse
 
-from hattori import JSONL, SSE, ApiError, HattoriAPI, Schema
+from hattori import JSONL, SSE, ApiError, Created, HattoriAPI, Schema
 from hattori.errors import ConfigError
 from hattori.testing import TestAsyncClient, TestClient
 
@@ -180,3 +180,75 @@ def test_stream_and_another_response_for_one_status_are_rejected(other):
 
     with pytest.raises(ConfigError, match="both a stream and another response"):
         api.get("/ambiguous")(ambiguous)
+
+
+def test_stream_declared_under_another_status_answers_with_it():
+    api = HattoriAPI()
+
+    @api.get("/yielded")
+    def yielded(request) -> Created[JSONL[Item]]:
+        yield Item(name="a")
+
+    @api.get("/returned/{name}")
+    def returned(request, name: str) -> Created[JSONL[Item]] | Missing:
+        if name == "none":
+            return Missing()
+        return Created(Item(name=each) for each in [name])
+
+    @api.get("/overridden")
+    def overridden(request, response: HttpResponse) -> Created[JSONL[Item]]:
+        response.status_code = 202
+        yield Item(name="a")
+
+    client = TestClient(api)
+    for path in ("/yielded", "/returned/a"):
+        streamed = client.get(path)
+        assert streamed.status_code == 201
+        assert streamed.content == b'{"name":"a"}\n'
+    assert client.get("/returned/none").status_code == 404
+    # A status the view sets before it starts still has the last word.
+    assert client.get("/overridden").status_code == 202
+
+    responses = api.get_openapi_schema()["paths"]["/api/yielded"]["get"]["responses"]
+    assert list(responses) == [201]
+    assert list(responses[201]["content"]) == ["application/jsonl"]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_declared_under_another_status_answers_with_it():
+    api = HattoriAPI()
+
+    async def items():
+        yield Item(name="a")
+
+    @api.get("/yielded")
+    async def yielded(request) -> Created[SSE[Item]]:
+        yield Item(name="a")
+
+    @api.get("/returned")
+    async def returned(request) -> Created[SSE[Item]]:
+        return Created(items())
+
+    client = TestAsyncClient(api)
+    for path in ("/yielded", "/returned"):
+        streamed = await client.get(path)
+        assert streamed.status_code == 201
+        assert streamed.content == b'data: {"name":"a"}\n\n'
+
+
+@pytest.mark.parametrize("other", [Item, None])
+def test_bare_response_beside_a_stream_under_another_status_is_rejected(other):
+    api = HattoriAPI()
+
+    def ambiguous(request):
+        yield Item(name="a")
+
+    ambiguous.__annotations__["return"] = Created[JSONL[Item]] | other
+
+    with pytest.raises(ConfigError, match="a stream and a bare response beside it"):
+        api.get("/ambiguous")(ambiguous)
+
+
+def test_stream_takes_one_item_type():
+    with pytest.raises(TypeError, match="takes one item type"):
+        JSONL[Item, Missing]

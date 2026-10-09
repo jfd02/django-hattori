@@ -31,7 +31,6 @@ from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 from hattori.errors import (
     ApiError,
     ErrorBody,
-    NarrowedBody,
     get_default_error_body,
     set_default_error_body,
 )
@@ -106,22 +105,15 @@ class HTTPError(ApiError, Generic[EnumT]):
     ``.value``.
     """
 
-    # Pin the abstract bases to ErrorBody so the framework's MRO-walking schema
-    # resolver doesn't mistake our `Literal[E.X]` parameter for a body type.
-    # Concrete subclasses replace this with a generated ErrorBody subclass whose
-    # `code` field is narrowed to the bound enum member value.
-    __hattori_response_body__: ClassVar[type[ErrorBody] | NarrowedBody] = ErrorBody
-
     def __init_subclass__(
         cls, *, body: type[ErrorBody] | None = None, **kwargs: Any
     ) -> None:
-        # ApiError records ``body=``; it won't narrow the body itself here,
-        # because ``error_code`` is set from the enum member below.
         super().__init_subclass__(body=body, **kwargs)
+        # Declared on every class a member is bound for, so each has a body of
+        # its own whose `code` is narrowed to the member's value.
         member = _resolve_enum_member(cls)
         if member is not None:
             cls.error_code = member.value
-            cls.__hattori_response_body__ = NarrowedBody(cls, member.value)
 
 
 class BadRequest(HTTPError[EnumT]):

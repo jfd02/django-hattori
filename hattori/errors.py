@@ -1,5 +1,4 @@
 import logging
-import threading
 import traceback
 from copy import deepcopy
 from dataclasses import replace
@@ -29,7 +28,7 @@ from django.http import Http404, HttpRequest, HttpResponse
 from django.http.multipartparser import MultiPartParserError
 from django.utils.log import log_response
 
-from hattori.responses import APIReturn
+from hattori.responses import APIReturn, dump_model
 
 if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
@@ -121,7 +120,9 @@ class HttpErrorBody(pydantic.BaseModel):
     documents its schema as the 400 every operation with a request body can
     return (a body that cannot be parsed raises ``HttpError(400)``). Subclass
     it and install the subclass with :func:`set_http_error_model` to change the
-    shape without the spec and the wire drifting apart::
+    shape without the spec and the wire drifting apart. It is dumped in JSON
+    mode, whatever the renderer, and by alias if its own config sets
+    ``serialize_by_alias``, which then holds for everything inside it::
 
         class Problem(HttpErrorBody):
             code: str
@@ -164,12 +165,26 @@ def set_http_error_model(model: type[HttpErrorBody]) -> None:
         raise ConfigError(
             f"{model!r} must subclass hattori.HttpErrorBody and implement from_error()."
         )
+    _refuse_model_dump_override(model)
     global _http_error_model
     _http_error_model = model
 
 
 def get_http_error_model() -> type[HttpErrorBody]:
     return _http_error_model
+
+
+def _refuse_model_dump_override(model: type[pydantic.BaseModel]) -> None:
+    # The body is documented as pydantic's serializer writes it, and an
+    # override could send something else. Only the model itself is looked at:
+    # pydantic calls no override on a model inside it.
+    if model.model_dump is not pydantic.BaseModel.model_dump:
+        raise ConfigError(
+            f"{model.__name__} overrides model_dump. An error body is sent and "
+            f"documented as pydantic's serializer writes it, which an override "
+            f"has no say in. Use @model_serializer or Field(exclude=True) to "
+            f"shape the output instead."
+        )
 
 
 class ValidationErrorBody(pydantic.BaseModel):
@@ -179,7 +194,8 @@ class ValidationErrorBody(pydantic.BaseModel):
     generated from it, and the default ``ValidationError`` handler builds the
     response by calling :meth:`from_errors`. Subclass it and install the
     subclass with :func:`set_validation_error_model` to change the shape
-    without the spec and the wire drifting apart::
+    without the spec and the wire drifting apart. It is sent the way an
+    :class:`HttpErrorBody` is::
 
         class Problem(ValidationErrorBody):
             code: Literal["validation_error"] = "validation_error"
@@ -237,6 +253,7 @@ def set_validation_error_model(model: type[ValidationErrorBody]) -> None:
             f"{model!r} must subclass hattori.ValidationErrorBody and implement "
             "from_errors()."
         )
+    _refuse_model_dump_override(model)
     global _validation_error_model
     _validation_error_model = model
 
@@ -345,77 +362,8 @@ def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
     return body
 
 
-class NarrowedBody:
-    """The body model of an error class, built when it is first asked for.
-
-    Stands in for ``__hattori_response_body__`` on a class that declares an
-    error code until something needs the body, so that the default body may be
-    set after the class is defined. The model is then narrowed from the nearest
-    ``body=`` in the class's MRO, else from the default in force, and put on
-    the class in this object's place: once anything has seen a class's body,
-    it is that class's body for good.
-
-    No lock is taken anywhere in this. Building a body and putting it on the
-    class both run code that is not ours - hooks of the body it is narrowed
-    from, a metaclass's ``__setattr__`` - which may ask for this or another
-    body, or wait on a thread that does. Two ``dict.setdefault`` calls, each
-    atomic, decide what a lock would: which body stands, and who puts it on
-    the class.
-
-    While a thread is building a body, a hook of its own that asks for that
-    body is answered with the inherited one, as on a class whose own is not
-    made yet. Another thread that asks meanwhile builds one too, and the first
-    in stands: it has to be handed a finished body, and cannot be made to wait.
-    So the one thing not served is a hook that waits on another thread which
-    asks for the very body being built - that thread's own build runs the hook
-    again.
-    """
-
-    # The bodies each thread is in the middle of building.
-    _building = threading.local()
-
-    def __init__(self, error: type, error_code: str) -> None:
-        self.error = error
-        self.error_code = error_code
-        self._first: dict[str, Any] = {}
-
-    def __get__(self, instance: Any, owner: type | None = None) -> type[ErrorBody]:
-        # A subclass that declares no code of its own reads its parent's body
-        # through here: the body is that of the class the code was declared on.
-        body: type[ErrorBody] | None = self._first.get("body")
-        if body is None:
-            building: set[NarrowedBody] | None = getattr(self._building, "now", None)
-            if building is None:
-                building = self._building.now = set()
-            if self in building:
-                # Asked for by a hook of the body it is being narrowed from,
-                # before there is one. It answers as a class does while its own
-                # body is still being made: with the one it inherits.
-                return self._inherited()
-            building.add(self)
-            try:
-                built = narrowed_error_body(self.error, self.error_code)
-            finally:
-                building.discard(self)
-            # The first one in is the only one ever handed out. Another built
-            # meanwhile, by another thread, is dropped.
-            body = self._first.setdefault("body", built)
-        placer = object()
-        if self._first.setdefault("placer", placer) is placer:
-            # Once, by whoever got here first: from now on the class has it.
-            self.error.__hattori_response_body__ = body  # type: ignore[attr-defined]
-        return body
-
-    def _inherited(self) -> type[ErrorBody]:
-        """The body the class would answer with if it declared none of its own."""
-        # ApiError pins one, so there is always a class to stop at.
-        parent: Any = next(
-            klass
-            for klass in self.error.__mro__[1:]
-            if "__hattori_response_body__" in vars(klass)
-        )
-        inherited: type[ErrorBody] = parent.__hattori_response_body__
-        return inherited
+# The body of each error class that declares a code, once it has been needed.
+_narrowed_bodies: dict[type, type[ErrorBody]] = {}
 
 
 class ApiError(APIReturn[ErrorBody]):
@@ -462,10 +410,6 @@ class ApiError(APIReturn[ErrorBody]):
     error_code: ClassVar[str]
     message: ClassVar[str] = ""
 
-    # Pinned so the schema resolver short-circuits its MRO walk. Subclasses that
-    # declare an ``error_code`` replace this with a generated ErrorBody subclass
-    # whose ``code`` field is narrowed to that code, built when first needed.
-    __hattori_response_body__: ClassVar[type[ErrorBody] | NarrowedBody] = ErrorBody
     __hattori_response_body_base__: ClassVar[type[ErrorBody] | None] = None
 
     def __init_subclass__(
@@ -474,17 +418,33 @@ class ApiError(APIReturn[ErrorBody]):
         super().__init_subclass__(**kwargs)
         if body is not None:
             cls.__hattori_response_body_base__ = body
-        # Only classes that declare their own ``error_code`` get a narrowed
-        # body. An abstract intermediate that just pins ``code`` keeps whatever
-        # its parent resolved to, and HTTPError subclasses are left alone —
-        # HTTPError assigns ``error_code`` from its enum member *after* this
-        # runs, and synthesizes the narrowed body itself.
-        error_code = cls.__dict__.get("error_code")
-        if isinstance(error_code, str):
-            cls.__hattori_response_body__ = NarrowedBody(cls, error_code)
+
+    @classmethod
+    def body_schema(cls) -> type[ErrorBody]:
+        """The body model this error answers with.
+
+        A class that declares an ``error_code`` has a body of its own, narrowed
+        to that code. One that declares none, such as an abstract intermediate
+        that just pins ``code``, answers with the body of the nearest class
+        above it that does, and with a plain :class:`ErrorBody` if there is none.
+
+        The body is built the first time it is asked for, from the nearest
+        ``body=`` or else the default body in force then, and is that class's
+        body from then on: everything that has seen it agrees.
+        """
+        for klass in cls.__mro__:
+            if issubclass(klass, ApiError) and "error_code" in vars(klass):
+                body = _narrowed_bodies.get(klass)
+                if body is None:
+                    # Threads that ask together may each build one. The first
+                    # in is the one all of them are handed.
+                    built = narrowed_error_body(klass, klass.error_code)
+                    body = _narrowed_bodies.setdefault(klass, built)
+                return body
+        return ErrorBody
 
     def __init__(self, message: str | None = None, **body_fields: Any) -> None:
-        body_type = self.__hattori_response_body__
+        body_type = self.body_schema()
         super().__init__(
             body_type(
                 code=self.error_code,
@@ -570,14 +530,32 @@ def _default_http_error(
     request: HttpRequest, exc: HttpError, api: HattoriAPI
 ) -> HttpResponse:
     body = get_http_error_model().from_error(exc)
-    return api.create_response(request, body, status=exc.status_code)
+    return _error_body_response(request, api, body, exc.status_code)
 
 
 def _default_validation_error(
     request: HttpRequest, exc: ValidationError, api: HattoriAPI
 ) -> HttpResponse:
     body = get_validation_error_model().from_errors(exc.errors)
-    return api.create_response(request, body, status=422)
+    return _error_body_response(request, api, body, 422)
+
+
+def error_body_by_alias(model: type[pydantic.BaseModel]) -> bool:
+    """Whether one of the framework's own error bodies is written by alias.
+
+    Its own config says, for everything inside it too. The response is dumped
+    with this answer and the OpenAPI schema is generated with it.
+    """
+    return bool(model.model_config.get("serialize_by_alias"))
+
+
+def _error_body_response(
+    request: HttpRequest, api: HattoriAPI, body: pydantic.BaseModel, status: int
+) -> HttpResponse:
+    # In JSON mode whatever the renderer, which is what the schema that
+    # documents the body describes.
+    data = dump_model(body, "json", by_alias=error_body_by_alias(type(body)))
+    return api.create_response(request, data, status=status)
 
 
 def _default_exception(

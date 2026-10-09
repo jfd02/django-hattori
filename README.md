@@ -315,7 +315,9 @@ def export(request, id: int) -> JSONL[Row] | ExportNotFound:
 
 Such a response has to be returned before anything is streamed, since the status line leaves with the first item. An endpoint that returns its stream, as above, can do that whether it is sync or `async`. One that is itself a generator can `return` it before its first `yield`, if it is sync; an async generator cannot return a value.
 
-Type checkers accept the annotation but not a generator returned as `JSONL[Row]`; that part of the declaration is for hattori and the spec. Write the union in the annotation itself: a `type` alias that stands for it is not read.
+A stream answers with a 200. Declared inside a response class it answers with that class's status: `-> Created[JSONL[Row]]` streams as a 201, and may be returned as `Created(rows(id))`. What an endpoint returns bare is its stream, so the responses beside it are response classes: `JSONL[Row] | Row` is refused when the route is declared.
+
+Type checkers accept the annotation but not a generator returned as `JSONL[Row]`; that part of the declaration is for hattori and the spec.
 
 ### Errors (semantic `HTTPError` bases)
 
@@ -442,7 +444,7 @@ set_http_error_model(Problem)   # e.g. from AppConfig.ready()
 
 The default is `{"detail": "<message>"}`.
 
-Both this model and the 422 one reach the renderer as `model_dump()` writes them when given no arguments, and the spec describes that dump rather than the model's validation schema. Field serializers, computed fields and excluded fields are documented as they are sent. Fields go under their own names, or under their aliases wherever pydantic's `serialize_by_alias` setting is in force for that part of the dump, and a serializer declared `when_used="json"` does not run, because the dump is in Python mode.
+Both this model and the 422 one are dumped in JSON mode, whatever the renderer, and the spec describes that dump rather than the model's validation schema. So field serializers, computed fields and excluded fields are documented as they are sent. Fields go under their own names, or all of them under their aliases if the model's own config sets pydantic's `serialize_by_alias`; that one answer holds for everything inside the body. A model that overrides `model_dump` is refused when it is installed: the body is sent as pydantic's serializer writes it, which an override has no say in.
 
 Every error the API answers on your behalf is an `HttpError` too, so it takes the same body and the same `@api.exception_handler(HttpError)` override:
 

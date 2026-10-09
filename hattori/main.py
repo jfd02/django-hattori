@@ -35,6 +35,7 @@ from hattori.renderers import BaseRenderer, JSONRenderer
 from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
 from hattori.security.permissions import validate_permissions
 from hattori.types import TCallable
+from hattori.utils import await_result, close_unawaited
 
 if TYPE_CHECKING:
     from .operation import Operation  # pragma: no cover
@@ -47,10 +48,6 @@ type ExcHandler[E: Exception] = Callable[
     [HttpRequest, Exc[E]],
     HttpResponse | collections.abc.Awaitable[HttpResponse],
 ]
-
-
-async def _await_response(response: collections.abc.Awaitable[Any]) -> Any:
-    return await response
 
 
 class HattoriAPI:
@@ -738,25 +735,29 @@ class HattoriAPI:
                 # in a thread of its own where the request is async, so the
                 # handler is run to its end from here, on the event loop there
                 # is or on one made for it.
-                response = async_to_sync(_await_response)(response)
+                response = async_to_sync(await_result)(response)
             if not isinstance(response, HttpResponseBase):
                 # Not an answer, and auth and permissions read "no response"
                 # as "allowed": a handler that forgets its return must not
                 # turn their refusal into a pass.
-                if inspect.iscoroutine(response):
-                    # What an async handler returned without awaiting it. It is
-                    # not going to be awaited, and this error says so already.
-                    response.close()
+                close_unawaited(response)
                 raise ConfigError(
                     f"The exception handler for {type(exc).__name__} returned "
                     f"{type(response).__name__}, not a response."
                 ) from exc
             return response
         except Exception as unanswered:
-            # Noted so that PathView, which may catch this again on its way to
-            # Django, does not offer it to the handlers twice.
+            # Noted so that whoever catches this again on its way to Django can
+            # tell, with left_unanswered, not to offer it to the handlers twice.
             request._hattori_unanswered = unanswered  # type: ignore[attr-defined]
             raise
+
+    def left_unanswered(self, request: HttpRequest, exc: Exception) -> bool:
+        """Whether ``exc`` is what :meth:`on_exception` last raised for ``request``.
+
+        The handlers were offered it and left it unanswered, so it is Django's.
+        """
+        return exc is getattr(request, "_hattori_unanswered", None)
 
     def validation_error_from_error_contexts(
         self, error_contexts: list[ValidationErrorContext]

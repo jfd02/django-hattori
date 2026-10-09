@@ -1,10 +1,9 @@
 """The framework's error bodies are documented the way they are sent.
 
-The ``HttpError`` and 422 models are handed to the renderer, which dumps them
-as ``model_dump()`` does when given no arguments. Their schemas used to be
-generated for validation and by alias instead, so a serializer, a computed
-field, an alias or an excluded field made the spec describe a body the API
-never sent.
+The ``HttpError`` and 422 models are dumped in JSON mode, whatever the renderer,
+and by alias if the model's own config sets ``serialize_by_alias``. The spec is
+generated with the same two answers, so a serializer, a computed field, an
+alias or an excluded field cannot make it describe a body the API never sends.
 """
 
 import dataclasses
@@ -18,6 +17,7 @@ from pydantic_core import core_schema
 
 from hattori import HattoriAPI, HttpErrorBody, Schema
 from hattori.errors import (
+    ConfigError,
     HttpError,
     ValidationErrorBody,
     get_http_error_model,
@@ -25,7 +25,8 @@ from hattori.errors import (
     set_http_error_model,
     set_validation_error_model,
 )
-from hattori.openapi.schema import DumpedModelJsonSchema
+from hattori.renderers import BaseRenderer
+from hattori.responses import json_dumps
 from hattori.testing import TestClient
 
 MESSAGE = "Cannot parse request body"
@@ -48,7 +49,7 @@ class Serialized(HttpErrorBody):
 
 
 class SerializedForJsonOnly(HttpErrorBody):
-    """The body is dumped in Python mode, where this serializer does not run."""
+    """The JSON renderer has the body dumped in JSON mode, where this runs."""
 
     status: int
 
@@ -72,7 +73,7 @@ class _BuiltinSerializer:
 
 
 class SerializedByBuiltins(HttpErrorBody):
-    """Neither serializer says when it is used, and neither runs in Python mode."""
+    """Neither serializer says when it is used, and both run in JSON mode."""
 
     status: Annotated[int, _BuiltinSerializer(core_schema.to_string_ser_schema())]
     padded: Annotated[int, _BuiltinSerializer(core_schema.format_ser_schema("04d"))]
@@ -147,8 +148,8 @@ class DataclassByAlias(HttpErrorBody):
         return cls(status_code=error.status_code, inner=inner)
 
 
-# A typed dict's own setting is not what decides how it is written, so each
-# of these is given the opposite of the model it is used in.
+# What decides how a body is written is the config of the body itself, so each
+# of these is given the opposite of the body it is used in.
 class TypedByAlias(TypedDict):
     __pydantic_config__ = ConfigDict(serialize_by_alias=True)  # type: ignore[misc]
 
@@ -168,7 +169,7 @@ class PlainDataclass:
 
 @dataclasses.dataclass
 class ConfiguredDataclass:
-    """A plain dataclass that carries a pydantic config is written by that config."""
+    """A plain dataclass that carries a pydantic config of its own."""
 
     __pydantic_config__ = ConfigDict(serialize_by_alias=True)
 
@@ -176,7 +177,7 @@ class ConfiguredDataclass:
 
 
 class TypedDictUnderFieldNames(HttpErrorBody):
-    """A typed dict and a plain dataclass are written as the model around them is."""
+    """Everything inside a body is written as the body is."""
 
     typed: TypedByAlias
     plain: PlainDataclass
@@ -208,7 +209,7 @@ class TypedDictUnderAliases(HttpErrorBody):
 
 
 class SharedTypedDictUnderAliases(HttpErrorBody):
-    """Used twice, the typed dict is defined once, outside the model that holds it."""
+    """Used twice, the typed dict is defined once, and written as the body is."""
 
     model_config = ConfigDict(serialize_by_alias=True)
 
@@ -222,7 +223,7 @@ class SharedTypedDictUnderAliases(HttpErrorBody):
 
 
 class InnerByAlias(HttpErrorBody):
-    """Each model is written by alias only where its own config says so."""
+    """A model inside the body is written as the body is, whatever its own config."""
 
     status_code: int = Field(serialization_alias="statusCode")
     inner: AliasedInner
@@ -245,6 +246,16 @@ class OuterByAlias(HttpErrorBody):
         return cls(status_code=error.status_code, inner=inner)
 
 
+class AliasedHolder(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+
+    typed: TypedByName
+
+
+class PlainHolder(BaseModel):
+    typed: TypedByName
+
+
 class NestedByAlias(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
 
@@ -255,7 +266,7 @@ class NestedByAlias(BaseModel):
 
 
 class SharedUnderANestedModel(HttpErrorBody):
-    """What is shared is written as the model that holds it is, not as the root is."""
+    """What is shared is written as the body is, not as the model that holds it."""
 
     status_code: int = Field(serialization_alias="statusCode")
     nested: NestedByAlias
@@ -268,17 +279,16 @@ class SharedUnderANestedModel(HttpErrorBody):
         return cls(status_code=error.status_code, nested=nested)
 
 
-class Node(HttpErrorBody):
-    """A model that refers to itself is defined apart from its uses too."""
+class SharedBetweenTwoPolicies(HttpErrorBody):
+    """One typed dict under two models that would each write it differently."""
 
-    model_config = ConfigDict(serialize_by_alias=True)
-
-    error_message: str = Field(serialization_alias="errorMessage")
-    child: Node | None = None
+    aliased: AliasedHolder
+    plain: PlainHolder
 
     @classmethod
     def from_error(cls, error: HttpError) -> Self:
-        return cls(error_message=str(error), child=cls(error_message="child"))
+        typed: TypedByName = {"error_message": str(error)}
+        return cls(aliased=AliasedHolder(typed=typed), plain=PlainHolder(typed=typed))
 
 
 class SerializedProblems(ValidationErrorBody):
@@ -338,21 +348,21 @@ def _assert_same_keys(document, schema, body):
     ("model", "body"),
     [
         (Serialized, {"status": "400"}),
-        (SerializedForJsonOnly, {"status": 400}),
-        (SerializedByBuiltins, {"status": 400, "padded": 400}),
+        (SerializedForJsonOnly, {"status": "400"}),
+        (SerializedByBuiltins, {"status": "400", "padded": "0400"}),
         (Computed, {"detail": MESSAGE, "kind": "http_error"}),
         (Aliased, {"error_message": MESSAGE}),
         (SerializedByAlias, {"errorMessage": MESSAGE}),
         (Excluded, {"detail": MESSAGE}),
-        (InnerByAlias, {"status_code": 400, "inner": {"errorMessage": MESSAGE}}),
-        (DataclassByAlias, {"status_code": 400, "inner": {"errorMessage": MESSAGE}}),
-        (OuterByAlias, {"statusCode": 400, "inner": {"error_message": MESSAGE}}),
+        (InnerByAlias, {"status_code": 400, "inner": {"error_message": MESSAGE}}),
+        (DataclassByAlias, {"status_code": 400, "inner": {"error_message": MESSAGE}}),
+        (OuterByAlias, {"statusCode": 400, "inner": {"errorMessage": MESSAGE}}),
         (
             TypedDictUnderFieldNames,
             {
                 "typed": {"error_message": MESSAGE},
                 "plain": {"error_message": MESSAGE},
-                "configured": {"errorMessage": MESSAGE},
+                "configured": {"error_message": MESSAGE},
             },
         ),
         (
@@ -368,11 +378,18 @@ def _assert_same_keys(document, schema, body):
             {
                 "status_code": 400,
                 "nested": {
-                    "first": {"errorMessage": MESSAGE},
-                    "second": {"errorMessage": MESSAGE},
-                    "third": {"errorMessage": MESSAGE},
-                    "fourth": {"errorMessage": MESSAGE},
+                    "first": {"error_message": MESSAGE},
+                    "second": {"error_message": MESSAGE},
+                    "third": {"error_message": MESSAGE},
+                    "fourth": {"error_message": MESSAGE},
                 },
+            },
+        ),
+        (
+            SharedBetweenTwoPolicies,
+            {
+                "aliased": {"typed": {"error_message": MESSAGE}},
+                "plain": {"typed": {"error_message": MESSAGE}},
             },
         ),
     ],
@@ -395,25 +412,6 @@ def test_http_error_model_is_documented_as_it_is_sent(model, body):
         set_http_error_model(original)
 
 
-def test_model_that_refers_to_itself_is_defined_once_as_it_is_written():
-    # Generated directly: the OpenAPI validator the other tests export through
-    # does not terminate on a schema that refers to itself.
-    schema = Node.model_json_schema(
-        mode="serialization", schema_generator=DumpedModelJsonSchema, by_alias=False
-    )
-
-    assert schema["$ref"] == "#/$defs/Node"
-    assert set(schema["$defs"]) == {"Node"}
-    properties = schema["$defs"]["Node"]["properties"]
-    assert set(properties) == {"errorMessage", "child"}
-    assert properties["child"]["anyOf"][0] == {"$ref": "#/$defs/Node"}
-    dumped = Node.from_error(HttpError(400, MESSAGE)).model_dump()
-    assert dumped == {
-        "errorMessage": MESSAGE,
-        "child": {"errorMessage": "child", "child": None},
-    }
-
-
 def test_validation_error_model_is_documented_as_it_is_sent():
     original = get_validation_error_model()
     set_validation_error_model(SerializedProblems)
@@ -426,13 +424,164 @@ def test_validation_error_model_is_documented_as_it_is_sent():
         assert response.status_code == 422
         assert response.json() == {
             "count": "1",
-            "total": 1,
-            "inner": {"errorMessage": "Field required"},
+            "total": "1",
+            "inner": {"error_message": "Field required"},
             "kind": "validation_error",
         }
         _assert_documented_as_sent(document, "SerializedProblems", response)
     finally:
         set_validation_error_model(original)
+
+
+def test_error_body_is_dumped_in_json_mode_whatever_the_renderer():
+    class PythonRenderer(BaseRenderer):
+        media_type = "application/json"
+        serialization_mode = "python"
+
+        def render(self, request, data, *, response_status):
+            return json_dumps(data)
+
+    original = get_http_error_model()
+    set_http_error_model(SerializedForJsonOnly)
+    try:
+        api = HattoriAPI(renderer=PythonRenderer())
+
+        @api.post("/items")
+        def create_item(request, item: Item) -> Item:
+            return item
+
+        document = export_contract(api)
+        response = TestClient(api).post(
+            "/items", data=b"{", content_type="application/json"
+        )
+
+        assert response.json() == {"status": "400"}
+        _assert_documented_as_sent(document, "SerializedForJsonOnly", response)
+    finally:
+        set_http_error_model(original)
+
+
+def test_error_body_that_refers_to_itself_is_documented_as_it_is_sent():
+    class Node(HttpErrorBody):
+        model_config = ConfigDict(serialize_by_alias=True)
+
+        error_message: str = Field(serialization_alias="errorMessage")
+        child: Node | None = None
+
+        @classmethod
+        def from_error(cls, error: HttpError) -> Self:
+            return cls(error_message=str(error), child=cls(error_message="child"))
+
+    original = get_http_error_model()
+    set_http_error_model(Node)
+    try:
+        api = _api()
+        # Read off the spec directly: the OpenAPI validator the other tests
+        # export through does not terminate on a schema that refers to itself.
+        document = api.get_openapi_schema()
+        response = TestClient(api).post(
+            "/items", data=b"{", content_type="application/json"
+        )
+
+        assert response.json() == {
+            "errorMessage": MESSAGE,
+            "child": {"errorMessage": "child", "child": None},
+        }
+        documented = document["paths"]["/api/items"]["post"]["responses"][400]
+        assert documented["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/Node"
+        }
+        node = document["components"]["schemas"]["Node"]
+        assert set(node["properties"]) == {"errorMessage", "child"}
+        assert node["properties"]["child"]["anyOf"][0] == {
+            "$ref": "#/components/schemas/Node"
+        }
+        assert "Node_2" not in document["components"]["schemas"]
+    finally:
+        set_http_error_model(original)
+
+
+@pytest.mark.parametrize(
+    ("base", "install"),
+    [
+        (HttpErrorBody, set_http_error_model),
+        (ValidationErrorBody, set_validation_error_model),
+    ],
+)
+@pytest.mark.parametrize(
+    "shape",
+    ["built", "build-deferred", "not-built-yet"],
+)
+def test_error_model_that_overrides_model_dump_is_refused(base, install, shape):
+    # The body is sent as pydantic's serializer writes it, so an override could
+    # only be ignored.
+    class Redacting(base):
+        model_config = ConfigDict(defer_build=shape == "build-deferred")
+
+        secret: str = "secret"
+        if shape == "not-built-yet":
+            later: NotDefinedYet  # noqa: F821
+
+        def model_dump(self, **kwargs):
+            return {"detail": "safe"}
+
+    with pytest.raises(ConfigError, match="Redacting overrides model_dump"):
+        install(Redacting)
+
+
+def test_model_dump_override_inside_an_error_body_is_not_called():
+    # Pydantic never calls one there, so the body is sent and documented as
+    # its serializer writes it.
+    class Inner(BaseModel):
+        detail: str
+
+        def model_dump(self, **kwargs):
+            return {"detail": "overridden"}
+
+    class Holding(HttpErrorBody):
+        inner: Inner
+
+        @classmethod
+        def from_error(cls, error: HttpError) -> Self:
+            return cls(inner=Inner(detail=str(error)))
+
+    original = get_http_error_model()
+    set_http_error_model(Holding)
+    try:
+        api = _api()
+        document = export_contract(api)
+
+        response = TestClient(api).post(
+            "/items", data=b"{", content_type="application/json"
+        )
+
+        assert response.json() == {"inner": {"detail": MESSAGE}}
+        _assert_documented_as_sent(document, "Holding", response)
+    finally:
+        set_http_error_model(original)
+
+
+def test_error_model_that_refers_to_a_type_defined_later_is_installed():
+    class RefersAhead(HttpErrorBody):
+        later: list[DefinedLater]
+
+        @classmethod
+        def from_error(cls, error: HttpError) -> Self:
+            return cls(later=[DefinedLater(detail=str(error))])
+
+    class DefinedLater(BaseModel):
+        detail: str
+
+    original = get_http_error_model()
+    set_http_error_model(RefersAhead)
+    try:
+        response = TestClient(_api()).post(
+            "/items", data=b"{", content_type="application/json"
+        )
+
+        assert response.json() == {"later": [{"detail": MESSAGE}]}
+    finally:
+        set_http_error_model(original)
 
 
 def test_default_models_are_documented_as_before():

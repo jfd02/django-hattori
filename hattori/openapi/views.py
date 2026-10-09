@@ -8,11 +8,12 @@ from django.http.response import HttpResponseBase
 from hattori.constants import NOT_SET
 from hattori.openapi.docs import DocsBase
 from hattori.operation import (
-    Operation,
+    Guard,
     drop_stream_for_head,
     rollback_atomic_requests,
 )
 from hattori.responses import JsonResponse
+from hattori.returns import DeclaredResponses
 
 if TYPE_CHECKING:
     # if anyone knows a cleaner way to make mypy happy - welcome
@@ -42,10 +43,6 @@ def openapi_view(request: HttpRequest, api: HattoriAPI, **kwargs: Any) -> HttpRe
     return docs.render_page(request, api, **kwargs)
 
 
-def _docs(request: HttpRequest) -> None:
-    pass  # pragma: no cover
-
-
 def guard_docs(
     api: HattoriAPI, view: Callable[..., HttpResponse]
 ) -> Callable[..., HttpResponseBase]:
@@ -58,25 +55,14 @@ def guard_docs(
         auth, permissions = api.auth, api.permissions
     else:
         auth, permissions = api.docs_auth, None
-    # Never routed to: an operation is what knows how to run these checks and
-    # how to answer for them, typed auth responses and exception handlers
-    # included.
-    guard = Operation("", ["GET"], _docs, auth=auth, permissions=permissions)
+    # The docs answer with a page of their own: a 200 that no model renders.
+    page = DeclaredResponses({200: type(None)})
+    guard = Guard(api, auth=auth, permissions=permissions, responses=page)
     if not (guard.auth_callbacks or guard.permission_callbacks):
         return view
-    guard.api = api
 
     def guarded(request: HttpRequest, **kwargs: Any) -> HttpResponseBase:
-        try:
-            denied = guard._run_checks(
-                request, api.create_temporal_response(request), kwargs
-            )
-        except Exception as exc:
-            # A check whose result was rejected. As for an operation, the
-            # handlers answer it, unless it is they who left it unanswered.
-            if exc is getattr(request, "_hattori_unanswered", None):
-                raise
-            denied = guard._on_exception(request, exc)
+        denied = guard.refuse(request, kwargs)
         if denied is not None:
             # A handler, or the auth itself, may refuse with a stream.
             return drop_stream_for_head(request, denied)

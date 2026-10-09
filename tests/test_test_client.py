@@ -6,6 +6,7 @@ from unittest import mock
 import pytest
 from django.http import QueryDict, StreamingHttpResponse
 from django.utils import timezone
+from django.utils.asyncio import async_unsafe
 
 from hattori import JSONL, Router
 from hattori.schema import Schema
@@ -439,3 +440,30 @@ async def test_async_client_reads_a_sync_stream_off_the_event_loop():
     assert response.content == b"1\n"
     assert len(threads) == 2
     assert threading.current_thread() not in threads
+
+
+@pytest.mark.asyncio
+async def test_async_client_reads_a_sync_stream_an_async_view_returns_off_the_loop():
+    from hattori.testing import TestAsyncClient
+
+    router = Router()
+
+    @async_unsafe("read on the event loop")
+    def chunk():
+        return b"a"
+
+    @router.get("/stream")
+    async def stream(request) -> str:
+        return StreamingHttpResponse(chunk() for _ in range(2))
+
+    assert (await TestAsyncClient(router).get("/stream")).content == b"aa"
+
+
+def test_sync_client_reads_a_sync_stream_an_async_view_returns():
+    router = Router()
+
+    @router.get("/stream")
+    async def stream(request) -> str:
+        return StreamingHttpResponse(iter([b"a", b"b"]))
+
+    assert TestClient(router).get("/stream").content == b"ab"
