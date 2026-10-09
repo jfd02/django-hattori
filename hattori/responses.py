@@ -1,6 +1,7 @@
 from dataclasses import fields, is_dataclass
 from datetime import timedelta
 from decimal import Decimal
+from functools import partial
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 
@@ -11,6 +12,8 @@ from django.utils.functional import Promise
 from pydantic import AnyUrl, BaseModel
 from pydantic_core import Url
 
+from hattori.schema import pydantic_version
+
 __all__ = [
     "APIReturn",
     "Created",
@@ -18,6 +21,7 @@ __all__ = [
     "NoContent",
     "resolve_api_return_schema",
     "JsonResponse",
+    "dump_model",
     "json_default",
     "json_dumps",
     "json_loads",
@@ -55,42 +59,42 @@ class APIReturn(Generic[T]):
     def __init__(self, value: T) -> None:
         self.value = value
 
+    @classmethod
+    def body_schema(cls) -> Any:
+        """The body type this response carries: the ``T`` of ``APIReturn[T]``.
 
-def resolve_api_return_schema(cls: type) -> Any:
-    """Walk the MRO of an APIReturn subclass and return the resolved ``T`` it was
-    parameterized with (e.g. ``APIReturn[ErrorBody]`` → ``ErrorBody``).
+        Read off the class's bases, however far up they declare it:
+        ``class UserNotFound(AppError)`` where ``AppError`` is
+        ``APIReturn[ErrorBody]`` carries an ``ErrorBody``.
 
-    Handles multi-level inheritance: ``class UserNotFound(AppError)`` where
-    ``AppError`` is ``APIReturn[ErrorBody]`` resolves ``UserNotFound`` → ``ErrorBody``.
+        A class whose generic parameter is not its body overrides this to say
+        what its body is, as :class:`hattori.ApiError` does.
+        """
+        for klass in cls.__mro__:
+            for base in getattr(klass, "__orig_bases__", ()):
+                origin = get_origin(base)
+                if origin is None:
+                    continue
+                try:
+                    is_api_return = isinstance(origin, type) and issubclass(
+                        origin, APIReturn
+                    )
+                except TypeError:
+                    is_api_return = False
+                if not is_api_return:
+                    continue
+                args = get_args(base)
+                if args and not isinstance(args[0], TypeVar):
+                    return args[0]
+        raise ValueError(
+            f"{cls.__name__} must parameterize APIReturn with a schema type, "
+            f"e.g. `class {cls.__name__}(APIReturn[MyModel])`."
+        )
 
-    A subclass may pin the response body explicitly by setting
-    ``__hattori_response_body__``; this short-circuits the MRO walk and is used
-    by :class:`hattori.HTTPError`, whose generic parameter is metadata
-    (an enum member) rather than the body type.
-    """
-    explicit = getattr(cls, "__hattori_response_body__", None)
-    if explicit is not None:
-        return explicit
-    for klass in cls.__mro__:
-        for base in getattr(klass, "__orig_bases__", ()):
-            origin = get_origin(base)
-            if origin is None:
-                continue
-            try:
-                is_api_return = isinstance(origin, type) and issubclass(
-                    origin, APIReturn
-                )
-            except TypeError:
-                is_api_return = False
-            if not is_api_return:
-                continue
-            args = get_args(base)
-            if args and not isinstance(args[0], TypeVar):
-                return args[0]
-    raise ValueError(
-        f"{cls.__name__} must parameterize APIReturn with a schema type, "
-        f"e.g. `class {cls.__name__}(APIReturn[MyModel])`."
-    )
+
+def resolve_api_return_schema(cls: type[APIReturn[Any]]) -> Any:
+    """The body type of an ``APIReturn`` subclass: :meth:`APIReturn.body_schema`."""
+    return cls.body_schema()
 
 
 class Created(APIReturn[T]):
@@ -136,6 +140,20 @@ def json_default(obj: Any) -> Any:
     if isinstance(obj, Promise):
         return str(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def dump_model(model: BaseModel, mode: str, **options: Any) -> Any:
+    """``model.model_dump`` in the renderer's ``mode``, with its ``options``.
+
+    In JSON mode what pydantic cannot encode goes to :func:`json_default`.
+    """
+    dump = model.model_dump
+    if mode == "json":
+        if pydantic_version < [2, 11]:
+            # Older model_dump versions do not expose fallback.
+            dump = partial(model.__pydantic_serializer__.to_python, model)
+        options["fallback"] = json_default
+    return dump(mode=mode, **options)
 
 
 def json_dumps(data: Any) -> bytes:

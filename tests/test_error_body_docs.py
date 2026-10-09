@@ -61,7 +61,7 @@ def test_error_codes_are_not_normalized(constraints, wire_code, normalized, enum
     assert code["minLength"] == 2
     assert CustomBody(errorCode=wire_code, message="Error").code == normalized
     with pytest.raises(ValidationError):
-        CustomError.__hattori_response_body__(errorCode=normalized, message="Error")
+        CustomError.body_schema()(errorCode=normalized, message="Error")
 
 
 @pytest.mark.parametrize("enum_error", [False, True])
@@ -87,7 +87,7 @@ def test_grouped_strict_constraints_on_error_codes(annotation, enum_error):
     with pytest.raises(ValidationError):
         CustomBody(errorCode=1, message="Invalid")
     with pytest.raises(ValidationError):
-        CustomError.__hattori_response_body__(errorCode="wrong", message="Invalid")
+        CustomError.body_schema()(errorCode="wrong", message="Invalid")
 
     api = HattoriAPI()
 
@@ -124,7 +124,7 @@ def test_custom_error_fields_keep_validation_and_wire_contract(
         error_code = "item_not_found"
         message = "Item not found"
 
-    body_type = CustomError.__hattori_response_body__
+    body_type = CustomError.body_schema()
     original_metadata = CustomBody.model_fields["code"].metadata
     assert any(getattr(item, "strict", None) is strict for item in original_metadata)
     assert CustomBody.model_config["validate_by_name"] is False

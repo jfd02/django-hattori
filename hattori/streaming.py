@@ -1,4 +1,5 @@
-from typing import Any, Generic, TypeVar, Union
+from types import GenericAlias
+from typing import Any, Generic, TypeVar
 
 from hattori.responses import json_dumps
 
@@ -9,22 +10,6 @@ _T = TypeVar("_T")
 
 def _serialize_item(item: Any) -> str:
     return json_dumps(item).decode()
-
-
-class _StreamAlias:
-    """Marker created by StreamFormat[ItemType]."""
-
-    def __init__(self, format_cls: type[StreamFormat[Any]], item_type: type) -> None:
-        self.format_cls = format_cls
-        self.item_type = item_type
-
-    # ``JSONL[Item] | NotFound``: the other responses a streaming operation
-    # declares sit beside the stream in a union, as they do for any operation.
-    def __or__(self, other: Any) -> Any:
-        return Union[self, other]  # noqa: UP007
-
-    def __ror__(self, other: Any) -> Any:
-        return Union[other, self]  # noqa: UP007
 
 
 class StreamFormat(Generic[_T]):
@@ -42,8 +27,14 @@ class StreamFormat(Generic[_T]):
 
     media_type: str
 
-    def __class_getitem__(cls, item_type: type) -> _StreamAlias:
-        return _StreamAlias(cls, item_type)
+    def __class_getitem__(cls, item_type: Any) -> GenericAlias:
+        # ``JSONL[Item]``, for any format: one that does not say it is generic
+        # is subscripted all the same. ``typing`` subscripts with a tuple when
+        # it rebuilds the alias.
+        args = item_type if isinstance(item_type, tuple) else (item_type,)
+        if len(args) != 1:
+            raise TypeError(f"{cls.__name__}[...] takes one item type.")
+        return GenericAlias(cls, args)
 
     @classmethod
     def format_chunk(cls, data: str) -> str:

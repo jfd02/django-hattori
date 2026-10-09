@@ -1,6 +1,6 @@
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from django.http import HttpRequest, HttpResponseForbidden
@@ -38,6 +38,20 @@ def is_async_callable(f: Callable[..., Any]) -> bool:
     return inspect.iscoroutinefunction(f) or inspect.iscoroutinefunction(
         getattr(f, "__call__", None)
     )
+
+
+async def await_result(result: Awaitable[Any]) -> Any:
+    """Await the existing result without invoking its callback a second time."""
+    return await result
+
+
+def close_unawaited(result: Any) -> None:
+    """Close a coroutine that is refused rather than awaited.
+
+    The error it is refused with says already that its code has not run.
+    """
+    if inspect.iscoroutine(result):
+        result.close()
 
 
 def is_optional_type(t: type[Any]) -> bool:

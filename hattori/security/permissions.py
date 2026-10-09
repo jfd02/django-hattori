@@ -1,15 +1,15 @@
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, get_args, get_origin
 
 from hattori.constants import NOT_SET
 from hattori.errors import ConfigError
 from hattori.responses import APIReturn
-from hattori.security.base import (
-    parse_api_return_descriptions,
-    parse_api_return_responses,
+from hattori.returns import (
+    declared_responses,
     return_annotation_arms,
+    without_metadata,
 )
 from hattori.utils import is_async_callable
 
@@ -94,13 +94,11 @@ class BasePermission(ABC):
             )
         }
         self.is_async = is_async_callable(self.check)
-        self.permission_responses: dict[int, Any] = parse_api_return_responses(
-            self.check, f"{type(self).__name__}.check"
-        )
-        self.permission_descriptions: dict[int, list[str]] = (
-            parse_api_return_descriptions(self.check)
-        )
-        self.can_return_falsy: bool = _can_return_falsy(self.check)
+        arms = return_annotation_arms(self.check)
+        declared = declared_responses(arms or (), f"{type(self).__name__}.check")
+        self.permission_responses: dict[int, Any] = declared.schemas
+        self.permission_descriptions: dict[int, list[str]] = declared.descriptions
+        self.can_return_falsy: bool = _can_return_falsy(arms)
 
     # Declared as (*args, **kwargs) rather than (request, **path_params) so that
     # narrower overrides naming their own path params — the documented pattern
@@ -134,8 +132,8 @@ class BasePermission(ABC):
         }
 
 
-def _can_return_falsy(check: Callable[..., Any]) -> bool:
-    """Whether ``check``'s return annotation leaves room for a falsy result.
+def _can_return_falsy(arms: tuple[Any, ...] | None) -> bool:
+    """Whether the arms of ``check``'s return annotation leave room for a falsy result.
 
     ``False`` or ``None`` is answered with the framework's own ``403``, so this
     answers "is that 403 *impossible*": anything it can't prove truthy counts.
@@ -143,10 +141,10 @@ def _can_return_falsy(check: Callable[..., Any]) -> bool:
     short-circuits before the result is read as a verdict, and a ``Literal`` of
     truthy values.
     """
-    arms = return_annotation_arms(check)
     if arms is None:
         return True
     for arm in arms:
+        arm = without_metadata(arm)
         origin = get_origin(arm)
         if origin is Literal:
             if not all(get_args(arm)):

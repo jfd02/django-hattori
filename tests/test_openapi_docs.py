@@ -6,7 +6,7 @@ from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.test import override_settings
 
-from hattori import ApiError, BasePermission, HattoriAPI, Redoc, Swagger
+from hattori import ApiError, BasePermission, HattoriAPI, NoContent, Redoc, Swagger
 from hattori.errors import AuthenticationError, ConfigError
 from hattori.security import APIKeyQuery
 from hattori.testing import TestClient
@@ -294,6 +294,17 @@ def test_docs_answer_with_the_typed_response_of_the_auth():
         response = client.get(url)
         assert response.status_code == 401
         assert response.json() == {"code": "bad_key", "message": "Unknown key"}
+
+
+def test_docs_answer_with_a_bodyless_response_the_auth_does_not_declare():
+    def auth(request):
+        return NoContent()
+
+    client = TestClient(HattoriAPI(docs_auth=auth))
+    for url in DOCS_URLS:
+        response = client.get(url)
+        assert response.status_code == 204
+        assert response.content == b""
 
 
 def test_docs_run_async_auth():

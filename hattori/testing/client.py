@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 from urllib.parse import urljoin
 
@@ -13,6 +13,7 @@ from django.test import RequestFactory
 from hattori import HattoriAPI, Router
 from hattori.responses import JsonResponse as HttpResponse
 from hattori.responses import json_dumps, json_loads
+from hattori.utils import close_unawaited
 
 
 def build_absolute_uri(location: str | None = None) -> str:
@@ -277,23 +278,24 @@ class TestClient(HattoriClientBase):
         self, func: Callable, request: HttpRequest, kwargs: dict
     ) -> HattoriTestResponse:
         response = func(request, **kwargs)
-        if inspect.iscoroutine(response) or _streams_async(response):
-            # An async view, or a stream only an event loop can read: run it
-            # to its end, as Django does under WSGI.
-            response = self._finish(response)
+        if inspect.iscoroutine(response):
+            # An async view: run to its end, as Django does under WSGI.
+            return self._on_an_event_loop(_await_and_read, response)
+        if _streams_async(response):
+            # A stream only an event loop can read.
+            return self._on_an_event_loop(_read, response)
         return HattoriTestResponse(response)
 
     @staticmethod
-    def _finish(pending: Any) -> HttpResponse | StreamingHttpResponse:
+    def _on_an_event_loop(
+        finish: Callable[[Any], Awaitable[HattoriTestResponse]], pending: Any
+    ) -> HattoriTestResponse:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            finished: HttpResponse | StreamingHttpResponse = async_to_sync(
-                _finish_async_response
-            )(pending)
+            finished: HattoriTestResponse = async_to_sync(finish)(pending)
             return finished
-        if inspect.iscoroutine(pending):
-            pending.close()
+        close_unawaited(pending)
         raise RuntimeError(
             "TestClient reached an async view or stream from inside a running "
             "event loop. Use TestAsyncClient there and await the request."
@@ -359,41 +361,36 @@ class TestAsyncClient(HattoriClientBase):
         self, func: Callable, request: HttpRequest, kwargs: dict
     ) -> HattoriTestResponse:
         if inspect.iscoroutinefunction(func):
-            return HattoriTestResponse(
-                await _finish_async_response(func(request, **kwargs))
-            )
-
-        # A sync view: off the event loop, as Django runs it under ASGI. Its
-        # response is read there too, since a sync stream is still sync code;
-        # an async stream is the one thing a sync view leaves for the loop.
-        def call() -> Any:
-            response = func(request, **kwargs)
-            if _streams_async(response):
-                return response
-            return HattoriTestResponse(response)
-
-        result = await sync_to_async(call, thread_sensitive=True)()
-        if isinstance(result, HattoriTestResponse):
-            return result
-        return HattoriTestResponse(await _finish_async_response(result))
+            return await _await_and_read(func(request, **kwargs))
+        # A sync view: off the event loop, as Django runs it under ASGI.
+        response = await sync_to_async(func, thread_sensitive=True)(request, **kwargs)
+        return await _read(response)
 
 
 def _streams_async(response: Any) -> bool:
     return bool(getattr(response, "streaming", False) and response.is_async)
 
 
-async def _finish_async_response(pending: Any) -> HttpResponse | StreamingHttpResponse:
-    """Finish what only an event loop can: a pending response, an async stream."""
-    http_response = await pending if inspect.isawaitable(pending) else pending
-    if _streams_async(http_response):
-        # Async streaming: consume async iterator into bytes
-        chunks = []
-        async for chunk in http_response.streaming_content:
-            chunks.append(chunk.encode("utf-8") if isinstance(chunk, str) else chunk)
-        # Replace with sync content for HattoriTestResponse
-        http_response.streaming_content = iter(chunks)
-    finished: HttpResponse | StreamingHttpResponse = http_response
-    return finished
+async def _await_and_read(pending: Awaitable[Any]) -> HattoriTestResponse:
+    """Run an async view to its end, and read its response to its end."""
+    return await _read(await pending)
+
+
+async def _read(response: HttpResponse | StreamingHttpResponse) -> HattoriTestResponse:
+    """Read a response to its end, its body where that can be read.
+
+    An async stream is read here, on the event loop. A sync one is still sync
+    code, and is read off it, as Django reads one under ASGI.
+    """
+    if _streams_async(response):
+        assert isinstance(response, StreamingHttpResponse)
+        chunks = [chunk async for chunk in response.streaming_content]  # type: ignore[union-attr]
+        # Handed on as the chunks it gave, for HattoriTestResponse to join.
+        response.streaming_content = iter(chunks)
+        return HattoriTestResponse(response)
+    if response.streaming:
+        return await sync_to_async(HattoriTestResponse, thread_sensitive=True)(response)
+    return HattoriTestResponse(response)
 
 
 class HattoriTestResponse:

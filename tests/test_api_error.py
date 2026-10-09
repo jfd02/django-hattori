@@ -222,12 +222,9 @@ def test_apierror_code_is_const_in_openapi():
 
 
 def test_apierror_each_subclass_gets_its_own_body_model():
-    assert UserNotFound.__hattori_response_body__ is not ErrorBody
-    assert PaymentFailed.__hattori_response_body__ is not ErrorBody
-    assert (
-        UserNotFound.__hattori_response_body__
-        is not PaymentFailed.__hattori_response_body__
-    )
+    assert UserNotFound.body_schema() is not ErrorBody
+    assert PaymentFailed.body_schema() is not ErrorBody
+    assert UserNotFound.body_schema() is not PaymentFailed.body_schema()
 
 
 def test_apierror_same_status_union_is_discriminated():
@@ -283,11 +280,8 @@ def test_apierror_abstract_intermediate_is_not_narrowed():
     class WidgetNotFound(AppNotFound):
         error_code = "widget_not_found"
 
-    assert AppNotFound.__hattori_response_body__ is ErrorBody
-    assert (
-        WidgetNotFound.__hattori_response_body__.model_fields["code"].annotation
-        is not str
-    )
+    assert AppNotFound.body_schema() is ErrorBody
+    assert WidgetNotFound.body_schema().model_fields["code"].annotation is not str
     assert WidgetNotFound().value.model_dump() == {
         "code": "widget_not_found",
         "message": "",
@@ -300,9 +294,7 @@ def test_apierror_inherited_error_code_keeps_parent_body():
     class Specialized(UserNotFound):
         message = "different wording"
 
-    assert Specialized.__hattori_response_body__ is (
-        UserNotFound.__hattori_response_body__
-    )
+    assert Specialized.body_schema() is (UserNotFound.body_schema())
     assert Specialized().value.model_dump() == {
         "code": "user_not_found",
         "message": "different wording",

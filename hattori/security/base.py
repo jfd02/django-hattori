@@ -2,13 +2,16 @@ import functools
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
-from typing import Any, TypeAliasType, get_args, get_origin, get_type_hints
+from typing import Any
 
 from django.http import HttpRequest
 
-from hattori.compatibility.util import UNION_TYPES
 from hattori.errors import ConfigError
-from hattori.responses import APIReturn, resolve_api_return_schema
+from hattori.returns import (
+    DeclaredResponses,
+    declared_responses,
+    return_annotation_arms,
+)
 from hattori.utils import is_async_callable
 
 __all__ = [
@@ -17,11 +20,7 @@ __all__ = [
     "auth_attribute",
     "auth_declaration",
     "auth_layers",
-    "declared_auth_descriptions",
     "declared_auth_responses",
-    "parse_api_return_descriptions",
-    "parse_api_return_responses",
-    "return_annotation_arms",
 ]
 
 
@@ -70,129 +69,22 @@ class AuthBase(ABC):
         if hasattr(self, "authenticate"):  # pragma: no branch
             self.is_async = is_async_callable(self.authenticate)
 
-        self.auth_responses: dict[int, Any] = _parse_auth_responses(self)
-        self.auth_descriptions: dict[int, list[str]] = parse_api_return_descriptions(
-            _auth_target(self)
-        )
+        # Only the APIReturn arms of the annotation contribute. No annotation
+        # means no typed auth entries in the OpenAPI spec.
+        arms = return_annotation_arms(_auth_target(self))
+        declared = declared_responses(arms or (), f"{type(self).__name__}.authenticate")
+        self.auth_responses: dict[int, Any] = declared.schemas
+        self.auth_descriptions: dict[int, list[str]] = declared.descriptions
 
     @abstractmethod
     def __call__(self, request: HttpRequest) -> Any | None:
         pass  # pragma: no cover
 
 
-def return_annotation_arms(target: Callable[..., Any]) -> tuple[Any, ...] | None:
-    """The union arms of ``target``'s return annotation, or ``None`` without one.
-
-    A ``type`` alias counts as the type it names, so the arms behind it are read
-    too. One whose value cannot be resolved stays an arm of its own.
-    """
-    try:
-        hints = get_type_hints(target)
-    except Exception:
-        return None
-
-    annotation = hints.get("return")
-    if annotation is None:
-        return None
-    return tuple(_union_arms(annotation))
-
-
-def _union_arms(annotation: Any) -> Iterator[Any]:
-    if isinstance(annotation, TypeAliasType):
-        try:
-            value = annotation.__value__
-        except Exception:
-            # It names something only the type checker can see. The arms beside
-            # it are still read.
-            yield annotation
-            return
-        yield from _union_arms(value)
-    elif get_origin(annotation) in UNION_TYPES:
-        for arm in get_args(annotation):
-            yield from _union_arms(arm)
-    else:
-        yield annotation
-
-
-def parse_api_return_responses(
-    target: Callable[..., Any], owner: str
-) -> dict[int, Any]:
-    """Extract ``{code: body_schema}`` from a callable's return annotation.
-
-    Walks the union arms of ``target``'s return type and, for every
-    :class:`~hattori.APIReturn` subclass found, records its ``code`` and resolved
-    body schema. Shared by auth (``authenticate``) and permissions (``check``) so
-    both contribute their typed responses to the OpenAPI spec the same way.
-
-    ``owner`` is a human-readable label used in error messages (e.g.
-    ``"BearerAuth.authenticate"``). No annotation means an empty result.
-    """
-    responses: dict[int, Any] = {}
-    for arm in return_annotation_arms(target) or ():
-        if not (isinstance(arm, type) and issubclass(arm, APIReturn)):
-            continue
-        code = getattr(arm, "code", None)
-        if not isinstance(code, int):
-            raise ConfigError(
-                f"{arm.__name__} (in return type of {owner}) must define a "
-                f"concrete `code: ClassVar[int]`."
-            )
-        try:
-            schema = resolve_api_return_schema(arm)
-        except ValueError as e:
-            raise ConfigError(str(e)) from e
-        existing = responses.get(code)
-        if existing is None or existing is schema:
-            responses[code] = schema
-        else:
-            responses[code] = existing | schema
-
-    return responses
-
-
-def parse_api_return_descriptions(target: Callable[..., Any]) -> dict[int, list[str]]:
-    """``{code: [description, ...]}`` for the ``APIReturn`` arms ``target`` returns.
-
-    Each arm's ``description``, its own or one it inherits, in the order the
-    arms are declared and without repeats. An arm that declares none adds none.
-    """
-    descriptions: dict[int, list[str]] = {}
-    for arm in return_annotation_arms(target) or ():
-        add_api_return_description(descriptions, arm)
-    return descriptions
-
-
-def add_api_return_description(descriptions: dict[int, list[str]], arm: Any) -> None:
-    """Note the ``description`` of ``arm`` under its status code, if it has both."""
-    # A generic alias such as Created[UserOut] declares them on its origin.
-    cls = get_origin(arm) or arm
-    if not (isinstance(cls, type) and issubclass(cls, APIReturn)):
-        return
-    code = getattr(cls, "code", None)
-    description = getattr(cls, "description", "")
-    if isinstance(code, int) and description:
-        found = descriptions.setdefault(code, [])
-        if description not in found:
-            found.append(description)
-
-
 def _auth_target(auth: AuthBase) -> Callable[..., Any]:
     """``authenticate``, or ``__call__`` for auth that skips that convention."""
     target: Callable[..., Any] | None = getattr(auth, "authenticate", None)
     return auth.__call__ if target is None else target
-
-
-def _parse_auth_responses(auth: AuthBase) -> dict[int, Any]:
-    """Extract ``{code: body_schema}`` from ``authenticate``'s return annotation.
-
-    Looks at ``authenticate`` first, falls back to ``__call__`` for custom auth
-    classes that skip the ``authenticate`` convention. Only ``APIReturn``
-    subclasses in the annotation contribute to the result. No annotation means
-    no typed auth entries in the OpenAPI spec.
-    """
-    return parse_api_return_responses(
-        _auth_target(auth), f"{type(auth).__name__}.authenticate"
-    )
 
 
 def auth_layers(callback: Any) -> Iterator[Any]:
@@ -232,43 +124,24 @@ def auth_attribute(callback: Any, name: str) -> Any:
     return auth_declaration(callback, name)[1]
 
 
-def declared_auth_responses(callback: Any) -> dict[int, Any]:
-    """``{code: body_schema}`` for the typed responses an auth callback declares.
+def declared_auth_responses(callback: Any) -> DeclaredResponses:
+    """The typed responses an auth callback declares, and their descriptions.
 
     An :class:`AuthBase` read them off ``authenticate`` when it was created. Any
-    other callable declares them the same way, on its own return annotation.
+    other callable declares them the same way, on its own return annotation. A
+    layer that lists ``auth_responses`` itself is taken at its word, with the
+    ``auth_descriptions`` it lists beside them, if any.
     """
     for layer in auth_layers(callback):
-        declared: dict[int, Any] | None = getattr(layer, "auth_responses", _UNSET)
-        if declared is not _UNSET:
-            return declared or {}
+        listed: dict[int, Any] | None = getattr(layer, "auth_responses", _UNSET)
+        if listed is not _UNSET:
+            described = getattr(layer, "auth_descriptions", None)
+            return DeclaredResponses(listed or {}, described or {})
         if isinstance(layer, functools.partial):
             continue
         target = layer if inspect.isroutine(layer) else layer.__call__
-        if return_annotation_arms(target) is not None:
+        arms = return_annotation_arms(target)
+        if arms is not None:
             owner = getattr(layer, "__qualname__", type(layer).__name__)
-            return parse_api_return_responses(target, owner)
-    return {}
-
-
-def declared_auth_descriptions(callback: Any) -> dict[int, list[str]]:
-    """``{code: [description, ...]}`` for the typed responses of an auth callback.
-
-    Read off the same layer :func:`declared_auth_responses` reads the responses
-    off, so a description never documents a response that layer does not declare.
-    """
-    for layer in auth_layers(callback):
-        declared: dict[int, list[str]] | None = getattr(
-            layer, "auth_descriptions", _UNSET
-        )
-        if declared is not _UNSET:
-            return declared or {}
-        if getattr(layer, "auth_responses", _UNSET) is not _UNSET:
-            # It lists its responses itself, and no descriptions with them.
-            return {}
-        if isinstance(layer, functools.partial):
-            continue
-        target = layer if inspect.isroutine(layer) else layer.__call__
-        if return_annotation_arms(target) is not None:
-            return parse_api_return_descriptions(target)
-    return {}
+            return declared_responses(arms, owner)
+    return DeclaredResponses()

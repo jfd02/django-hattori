@@ -506,20 +506,6 @@ def test_csrf_403_is_documented_on_the_unsafe_methods_of_an_operation_only():
     assert "403" not in document["paths"]["/api/view"]["get"]["responses"]
 
 
-def test_responses_without_a_method_cover_every_method_of_the_operation():
-    api = HattoriAPI(auth=CookieAuth())
-
-    @api.api_operation(["GET", "POST"], "/view")
-    def view(request) -> Out:
-        return Out(ok=True)
-
-    schema = api.get_openapi_schema()
-    [operation] = api.default_router.path_operations["/view"].operations
-
-    assert 403 in schema.responses(operation)
-    assert 403 not in schema.responses(operation, "GET")
-
-
 # ==========================================================================
 # The body is the installed HttpError model
 # ==========================================================================

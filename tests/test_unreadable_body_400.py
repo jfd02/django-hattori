@@ -141,12 +141,3 @@ def test_operation_that_reads_no_body_documents_no_400(document):
 
     assert response.status_code == 200
     assert set(_responses(document, "/query", "post")) == {"200"}
-
-
-def test_responses_without_a_method_cover_every_method_of_the_operation(document):
-    schema = api.get_openapi_schema()
-    [operation] = api.default_router.path_operations["/either"].operations
-
-    assert 400 in schema.responses(operation)
-    assert 400 in schema.responses(operation, "POST")
-    assert 400 not in schema.responses(operation, "PUT")

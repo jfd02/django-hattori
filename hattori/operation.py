@@ -1,11 +1,12 @@
 import collections.abc
 import inspect
-from collections.abc import Callable
-from functools import partial
+from collections import Counter
+from collections.abc import Callable, Iterator
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
-    Union,
+    TypeAliasType,
     cast,
     get_args,
     get_origin,
@@ -34,22 +35,27 @@ from hattori.errors import (
     ValidationErrorContext,
 )
 from hattori.params.models import TModels
-from hattori.responses import APIReturn, json_default, resolve_api_return_schema
-from hattori.schema import Schema, pydantic_version
-from hattori.security.base import (
-    add_api_return_description,
-    declared_auth_descriptions,
-    declared_auth_responses,
+from hattori.responses import APIReturn, dump_model
+from hattori.returns import (
+    DeclaredResponse,
+    DeclaredResponses,
+    alias_value,
+    declared_response,
+    is_alias,
+    union_arms,
+    without_metadata,
 )
+from hattori.schema import Schema
+from hattori.security.base import declared_auth_responses
 from hattori.security.permissions import validate_permissions
 from hattori.signature import ViewSignature
-from hattori.streaming import StreamFormat, _serialize_item, _StreamAlias
-from hattori.utils import is_async_callable
+from hattori.streaming import StreamFormat, _serialize_item
+from hattori.utils import await_result, close_unawaited, is_async_callable
 
 if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
 
-__all__ = ["Operation", "PathView"]
+__all__ = ["Guard", "Operation", "PathView"]
 
 # Sentinel marking that a streamed generator produced no items at all.
 _NO_FIRST_ITEM = object()
@@ -89,11 +95,6 @@ async def _no_chunks() -> collections.abc.AsyncIterator[bytes]:
         yield chunk
 
 
-async def _await_result(result: collections.abc.Awaitable[Any]) -> Any:
-    """Await the existing result without invoking its callback a second time."""
-    return await result
-
-
 def _reject_unrun_result(result: Any, owner: str) -> None:
     """Refuse a ``result`` that stands for code which has not run.
 
@@ -110,9 +111,7 @@ def _reject_unrun_result(result: Any, owner: str) -> None:
         or inspect.isasyncgen(result)
     ):
         return
-    if inspect.iscoroutine(result):
-        # Not going to be awaited, and this error says so already.
-        result.close()
+    close_unawaited(result)
     raise ConfigError(
         f"{owner} returned {type(result).__name__} where a result was expected: "
         f"its code has not run, so nothing was checked."
@@ -120,47 +119,12 @@ def _reject_unrun_result(result: Any, owner: str) -> None:
 
 
 class _ParsedAnnotation:
-    __slots__ = ("descriptions", "response_models", "stream_alias", "stream_status")
+    __slots__ = ("responses", "stream_format", "stream_status")
 
     def __init__(self) -> None:
-        self.response_models: dict[int, Any] = {}
-        self.descriptions: dict[int, list[str]] = {}
-        self.stream_alias: _StreamAlias | None = None
+        self.responses = DeclaredResponses()
+        self.stream_format: type[StreamFormat] | None = None
         self.stream_status: int | None = None
-
-
-def _resolve_type_alias(tp: Any) -> Any:
-    """Resolve Python 3.12+ type aliases (TypeAliasType) to their underlying types."""
-    origin = get_origin(tp)
-    if origin is None:
-        return tp
-    if type(origin).__name__ == "TypeAliasType":
-        args = get_args(tp)
-        type_params = origin.__type_params__
-        resolved = origin.__value__
-        if type_params and args:
-            mapping = dict(zip(type_params, args, strict=False))
-            resolved = _substitute_typevars(resolved, mapping)
-        return resolved
-    return tp
-
-
-def _substitute_typevars(tp: Any, mapping: dict) -> Any:
-    """Recursively substitute TypeVars in a type according to the mapping."""
-    if tp in mapping:
-        return mapping[tp]
-    origin = get_origin(tp)
-    args = get_args(tp)
-    # Handle Pydantic models (get_args returns () but metadata has the args)
-    if not args and origin is None:
-        meta = getattr(tp, "__pydantic_generic_metadata__", None)
-        if meta and meta.get("args"):
-            origin = meta["origin"]
-            args = meta["args"]
-    if origin is None or not args:
-        return tp
-    new_args = tuple(_substitute_typevars(a, mapping) for a in args)
-    return origin[new_args] if len(new_args) > 1 else origin[new_args[0]]
 
 
 def _find_model_dump_override(schema: Any) -> type | None:
@@ -182,20 +146,50 @@ def _find_model_dump_override(schema: Any) -> type | None:
     return None
 
 
-def _is_api_return_subclass(arm: Any) -> bool:
-    if isinstance(arm, type) and issubclass(arm, APIReturn):
-        return True
-    # Generic alias like Created[UserOut] — origin is the APIReturn subclass.
-    origin = get_origin(arm)
-    return (
-        origin is not None
-        and isinstance(origin, type)
-        and issubclass(origin, APIReturn)
-    )
+def _stream_format(tp: Any) -> type[StreamFormat] | None:
+    """The format ``tp`` streams in, if it is a stream such as ``JSONL[Item]``."""
+    origin = get_origin(tp)
+    if isinstance(origin, type) and issubclass(origin, StreamFormat):
+        return origin
+    return None
+
+
+def _is_response(arm: Any) -> bool:
+    """Whether ``arm`` is a response of its own: an ``APIReturn`` or a stream."""
+    arm = without_metadata(arm)
+    cls = get_origin(arm) or arm
+    return isinstance(cls, type) and issubclass(cls, (APIReturn, StreamFormat))
+
+
+def _response_arms(annotation: Any) -> Iterator[Any]:
+    """The arms of an endpoint's return annotation.
+
+    A ``type`` alias, or ``Annotated``, is opened up where a response of its
+    own stands behind it, an ``APIReturn`` or a stream, so the union may be
+    written behind one. With none behind it, it names a body: it stays whole,
+    to be documented as it is written, but for a generic alias, which is
+    filled in.
+    """
+    if get_origin(annotation) in UNION_TYPES:
+        for arm in get_args(annotation):
+            yield from _response_arms(arm)
+        return
+    wraps = is_alias(annotation) or get_origin(annotation) is Annotated
+    if wraps and any(_is_response(arm) for arm in union_arms(annotation)):
+        behind = (
+            alias_value(annotation)
+            if is_alias(annotation)
+            else without_metadata(annotation)
+        )
+        yield from _response_arms(behind)
+    elif isinstance(get_origin(annotation), TypeAliasType):
+        yield alias_value(annotation)
+    else:
+        yield annotation
 
 
 def _parse_return_annotation(view_func: Callable) -> _ParsedAnnotation:
-    """Extract {status_code: schema_type} from the function's return type annotation.
+    """Read the responses declared by the function's return type annotation.
 
     Supports two arm forms (mixable in a Union):
         -> UserOut                    # bare type = implicit status 200
@@ -215,89 +209,53 @@ def _parse_return_annotation(view_func: Callable) -> _ParsedAnnotation:
             f"Function {view_func.__name__} must have a return type annotation."
         )
 
-    # Collect all arms of a Union (or just the single annotation)
-    origin = get_origin(annotation)
-    if origin in UNION_TYPES:
-        arms = get_args(annotation)
-    else:
-        arms = (annotation,)
-
     parsed = _ParsedAnnotation()
-    # Accumulate schema types per status code so multiple arms with the same
-    # code (e.g. two different 409 error types) are combined into a Union.
-    collected: dict[int, list[Any]] = {}
-    for arm in arms:
-        resolved = _resolve_type_alias(arm)
-        if _is_api_return_subclass(resolved):
-            status_code, schema_type = _parse_api_return_arm(resolved, view_func)
-            add_api_return_description(parsed.descriptions, resolved)
-        else:
-            status_code = 200
-            schema_type = resolved
+    arms_per_status: Counter[int] = Counter()
+    bare_bodies = 0
+    for arm in _response_arms(annotation):
+        declared = declared_response(arm, view_func.__name__)
+        is_bare = declared is None
+        if declared is None:
+            declared = DeclaredResponse(code=200, body=arm, description="")
 
-        if isinstance(schema_type, _StreamAlias):
-            if parsed.stream_alias is not None:
+        # Bare, or as the body of a response: ``Created[JSONL[Item]]``.
+        body = declared.body
+        stream = without_metadata(body)
+        stream_format = _stream_format(stream)
+        if stream_format is not None:
+            if parsed.stream_format is not None:
                 raise ConfigError(
                     f"{view_func.__name__} declares more than one stream in its "
                     f"return type. An operation streams one thing."
                 )
-            parsed.stream_alias = schema_type
-            parsed.stream_status = status_code
-            schema_type = schema_type.item_type
-        collected.setdefault(status_code, []).append(schema_type)
+            parsed.stream_format = stream_format
+            parsed.stream_status = declared.code
+            body = get_args(stream)[0]
+        elif is_bare:
+            bare_bodies += 1
 
-    if parsed.stream_status is not None and len(collected[parsed.stream_status]) > 1:
+        # Arms that share a status (e.g. two different 409 error types) are
+        # combined into a union.
+        parsed.responses.add(declared.code, body, declared.description)
+        arms_per_status[declared.code] += 1
+
+    if parsed.stream_status is not None and arms_per_status[parsed.stream_status] > 1:
         # Which of the two a result is could only be guessed at.
         raise ConfigError(
             f"{view_func.__name__} declares both a stream and another response "
             f"for status {parsed.stream_status}. Give the other one a status of "
             f"its own."
         )
-
-    for status_code, types in collected.items():
-        if len(types) == 1:
-            parsed.response_models[status_code] = types[0]
-        else:
-            # Dynamic n-ary union from a runtime list; `|` has no variadic form.
-            parsed.response_models[status_code] = Union[tuple(types)]  # noqa: UP007
+    if parsed.stream_format is not None and bare_bodies:
+        # What the view returns bare is its stream, so the other could not be
+        # told from it either.
+        raise ConfigError(
+            f"{view_func.__name__} declares a stream and a bare response beside "
+            f"it. What it returns bare is its stream: declare the other as a "
+            f"response class."
+        )
 
     return parsed
-
-
-def _parse_api_return_arm(arm: Any, view_func: Callable) -> tuple[int, Any]:
-    # Generic alias such as Created[UserOut]: status from origin's `code`,
-    # body schema from the type argument.
-    origin = get_origin(arm)
-    if (
-        origin is not None
-        and isinstance(origin, type)
-        and issubclass(origin, APIReturn)
-    ):
-        code = getattr(origin, "code", None)
-        if not isinstance(code, int):
-            raise ConfigError(
-                f"{origin.__name__} (used in return type of {view_func.__name__}) "
-                f"must define a concrete `code: ClassVar[int]` on the class."
-            )
-        args = get_args(arm)
-        if not args:
-            raise ConfigError(
-                f"{origin.__name__} (used in return type of {view_func.__name__}) "
-                f"must be parameterized with a body type, e.g. {origin.__name__}[MyModel]."
-            )
-        return code, args[0]
-
-    code = getattr(arm, "code", None)
-    if not isinstance(code, int):
-        raise ConfigError(
-            f"{arm.__name__} (used in return type of {view_func.__name__}) must "
-            f"define a concrete `code: ClassVar[int]` on the class."
-        )
-    try:
-        schema = resolve_api_return_schema(arm)
-    except ValueError as e:
-        raise ConfigError(str(e)) from e
-    return code, schema
 
 
 def _merge_response_schemas(
@@ -318,7 +276,409 @@ def _merge_response_schemas(
             collected[code] = existing | schema_type
 
 
-class Operation:
+class Guard:
+    """The auth and permissions in front of a view, and the answers they give.
+
+    An :class:`Operation` is a guard with an endpoint behind it. A view that is
+    not an operation, such as the docs, is put behind one on its own.
+    """
+
+    def __init__(
+        self,
+        api: HattoriAPI | None = None,
+        *,
+        auth: collections.abc.Sequence[Callable]
+        | Callable
+        | NOT_SET_TYPE
+        | None = NOT_SET,
+        permissions: collections.abc.Sequence[Any]
+        | Any
+        | NOT_SET_TYPE
+        | None = NOT_SET,
+        csrf_exempt: bool = False,
+        responses: DeclaredResponses | None = None,
+        by_alias: bool = False,
+        exclude_unset: bool = False,
+        exclude_defaults: bool = False,
+        exclude_none: bool = False,
+    ) -> None:
+        # An operation is given its API when it is bound to one.
+        self.api: HattoriAPI = cast("HattoriAPI", api)
+        self.csrf_exempt: bool = csrf_exempt
+
+        self.auth_param: (
+            collections.abc.Sequence[Callable] | Callable | object | None
+        ) = auth
+        self.auth_callbacks: collections.abc.Sequence[Callable] = []
+        self._set_auth(auth)
+
+        self.permissions_param: collections.abc.Sequence[Any] | Any | None = permissions
+        self.permission_callbacks: collections.abc.Sequence[Any] = []
+        self._set_permissions(permissions)
+
+        # Exporting models params
+        self.by_alias = by_alias
+        self.exclude_unset = exclude_unset
+        self.exclude_defaults = exclude_defaults
+        self.exclude_none = exclude_none
+
+        # The responses declared by what is guarded itself, kept separate so
+        # response_models can be rebuilt whenever auth/permissions are attached
+        # after __init__ (e.g. inherited from a router or the API at bind time).
+        declared = responses or DeclaredResponses()
+        self._annotated_responses: dict[Any, Any] = declared.schemas
+        self._annotated_descriptions: dict[int, list[str]] = declared.descriptions
+        self.response_models: dict[Any, Any]
+        self._build_response_models()
+
+    def _label(self) -> str:
+        """What this is called in an error message."""
+        return "The guard"
+
+    def _build_response_models(self) -> None:
+        """(Re)build ``response_models`` from the responses declared by what is
+        guarded plus any auth/permission-declared ones currently attached.
+
+        Auth and permissions may be attached *after* ``__init__`` — inherited
+        from a router or the API when the operation is bound — so this folds
+        their typed ``APIReturn`` responses in again. Keeping this idempotent and
+        callable at bind time keeps both the OpenAPI spec and the runtime
+        short-circuit dispatch (:meth:`_result_to_response`) in sync with the
+        effective auth, no matter how it was supplied.
+        """
+        # Their APIReturn subclasses become valid response types both at
+        # runtime (short-circuit) and in the OpenAPI spec. What each response
+        # class says of itself goes to the spec: the endpoint's own first, then
+        # its auth's and its permissions'.
+        collected = dict(self._annotated_responses)
+        described = [self._annotated_descriptions]
+        for auth_cb in self.auth_callbacks:
+            declared = declared_auth_responses(auth_cb)
+            _merge_response_schemas(collected, declared.schemas)
+            described.append(declared.descriptions)
+        for permission in self.permission_callbacks:
+            _merge_response_schemas(collected, permission.permission_responses)
+            described.append(permission.permission_descriptions)
+
+        self.response_models = {}
+        for status_code, schema_type in collected.items():
+            if schema_type is type(None):
+                self.response_models[status_code] = None
+            else:
+                self.response_models[status_code] = self._create_response_model(
+                    schema_type
+                )
+
+        # Descriptions that share a status follow one another, without repeats.
+        by_code: dict[int, list[str]] = {}
+        for descriptions in described:
+            for code, found in descriptions.items():
+                known = by_code.setdefault(code, [])
+                known.extend(text for text in found if text not in known)
+        self.response_descriptions: dict[int, str] = {
+            code: "\n\n".join(found) for code, found in by_code.items()
+        }
+
+    def _set_auth(
+        self, auth: collections.abc.Sequence[Callable] | Callable | object | None
+    ) -> None:
+        if auth is not None and auth is not NOT_SET:
+            self.auth_callbacks = (
+                auth
+                if isinstance(auth, collections.abc.Sequence)
+                else [cast("Callable[..., Any]", auth)]
+            )
+        self._index_auth_callbacks()
+
+    def _index_auth_callbacks(self) -> None:
+        """Precompute each auth callback's async-ness once, off the request path.
+
+        ``is_async_callable`` walks ``inspect`` internals and the async-ness of a
+        callback never changes, so pairing each callback with its flag here keeps
+        that work off the per-request authentication loop. Called from every place
+        that assigns ``auth_callbacks`` (``__init__`` and bind-time inheritance via
+        ``_set_auth``) so the cache can never go stale.
+        """
+        self.auth_callbacks_with_async: list[tuple[Callable, bool]] = [
+            (cb, is_async_callable(cb) or getattr(cb, "is_async", False))
+            for cb in self.auth_callbacks
+        ]
+
+    def _set_permissions(
+        self, permissions: collections.abc.Sequence[Any] | Any | None
+    ) -> None:
+        validate_permissions(permissions)
+        if permissions is not None and permissions is not NOT_SET:
+            self.permission_callbacks = (
+                permissions
+                if isinstance(permissions, collections.abc.Sequence)
+                else [permissions]
+            )
+
+    def refuse(
+        self, request: HttpRequest, path_params: dict[str, Any]
+    ) -> HttpResponseBase | None:
+        """Run the checks in front of a view that is not an operation.
+
+        The response the request is refused with, or ``None`` if it may go on.
+        """
+        try:
+            return self._run_checks(
+                request, self.api.create_temporal_response(request), path_params
+            )
+        except Exception as exc:
+            # A check whose result was rejected.
+            return self._escaped_exception(request, exc)
+
+    def _run_checks(
+        self,
+        request: HttpRequest,
+        temporal_response: HttpResponse,
+        path_params: dict[str, Any],
+    ) -> HttpResponseBase | None:
+        "Runs security checks for each operation"
+        # NOTE: if you change anything in this function - do this also in AsyncOperation
+
+        # Set CSRF exempt status on request so auth handlers can check it
+        if self.csrf_exempt:
+            # _hattori_csrf_exempt is a special flag that tells auth handler to skip CSRF checks
+            request._hattori_csrf_exempt = True  # type: ignore
+
+        # auth:
+        if self.auth_callbacks:
+            error = self._run_authentication(request, temporal_response)
+            if error is not None:
+                return error
+
+        # permissions (run after auth so request.auth is available):
+        if self.permission_callbacks:
+            error = self._run_permissions(request, temporal_response, path_params)
+            if error is not None:
+                return error
+
+        return None
+
+    def _auth_outcome(
+        self,
+        request: HttpRequest,
+        result: Any,
+        temporal_response: HttpResponse,
+        callback: Callable[..., Any],
+    ) -> tuple[HttpResponseBase | None, bool]:
+        """Map an auth callback ``result`` to ``(response, handled)``.
+
+        ``handled`` True means stop looping: either a typed ``APIReturn`` or a
+        response, which short-circuits to that response, or a successful auth
+        whose value is stashed on ``request.auth``. ``handled`` False means this
+        callback declined (returned a falsy value) - try the next one.
+        Truthiness, not ``is not None``, so that ``return key == SECRET``
+        rejects a wrong key.
+        """
+        name = getattr(callback, "__name__", type(callback).__name__)
+        _reject_unrun_result(result, f"Auth {name}")
+        if isinstance(result, (APIReturn, HttpResponseBase)):
+            # Auth answered for itself - a typed error response, or a response
+            # outright, which is no principal - so short-circuit to it instead
+            # of calling the view.
+            return self._result_to_response(request, result, temporal_response), True
+        if result:
+            request.auth = result  # type: ignore
+            return None, True
+        return None, False
+
+    def _run_authentication(
+        self, request: HttpRequest, temporal_response: HttpResponse
+    ) -> HttpResponseBase | None:
+        for callback, _ in self.auth_callbacks_with_async:
+            try:
+                result = callback(request)
+                if inspect.isawaitable(result):
+                    result = async_to_sync(await_result)(result)
+            except Exception as exc:
+                return self._on_exception(request, exc)
+
+            outcome, handled = self._auth_outcome(
+                request, result, temporal_response, callback
+            )
+            if handled:
+                return outcome
+        return self._on_exception(request, AuthenticationError())
+
+    def _permission_outcome(
+        self,
+        request: HttpRequest,
+        result: Any,
+        temporal_response: HttpResponse,
+        permission: Any,
+    ) -> HttpResponseBase | None:
+        """Map a permission ``check`` result to a short-circuit response (or None).
+
+        ``True`` means pass; ``False`` or ``None`` is a ``403`` using the
+        permission's ``message``; an ``APIReturn`` or a response short-circuits
+        to that response. Anything else is no verdict - an uncalled method and
+        a ``(False, "reason")`` tuple are both truthy - so it is refused as a
+        misconfiguration rather than read as a pass.
+        """
+        owner = f"{type(permission).__name__}.check"
+        _reject_unrun_result(result, owner)
+        if isinstance(result, (APIReturn, HttpResponseBase)):
+            return self._result_to_response(request, result, temporal_response)
+        if result is True:
+            return None
+        if result is False or result is None:
+            return self._on_exception(
+                request, AuthorizationError(message=permission.message)
+            )
+        raise ConfigError(
+            f"{owner} returned {type(result).__name__}, which neither allows nor "
+            f"refuses the request: return True, False or None, or a response."
+        )
+
+    def _run_permissions(
+        self,
+        request: HttpRequest,
+        temporal_response: HttpResponse,
+        path_params: dict[str, Any],
+    ) -> HttpResponseBase | None:
+        for permission in self.permission_callbacks:
+            try:
+                kwargs = permission.select_path_kwargs(path_params)
+                result = permission.check(request, **kwargs)
+                if inspect.isawaitable(result):
+                    result = async_to_sync(await_result)(result)
+            except Exception as exc:
+                return self._on_exception(request, exc)
+
+            outcome = self._permission_outcome(
+                request, result, temporal_response, permission
+            )
+            if outcome is not None:
+                return outcome
+        return None
+
+    def _escaped_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
+        """Answer an exception that got out of the checks or of ``run``.
+
+        Either a rejected check result or a view decorator raised it, or the
+        handlers already left it unanswered and it goes on to Django.
+        """
+        if self.api.left_unanswered(request, exc):
+            raise exc
+        return self._on_exception(request, exc)
+
+    def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
+        response = self.api.on_exception(request, exc)
+        rollback_atomic_requests(request)
+        return response
+
+    def _result_to_response(
+        self, request: HttpRequest, result: Any, temporal_response: HttpResponse
+    ) -> HttpResponseBase:
+        """
+        The protocol for results:
+         - if HttpResponse - returns as is
+         - if APIReturn instance - code from type(result).code, body from result.value
+         - otherwise - bare value, dispatched as the declared 200 schema
+        """
+        if isinstance(result, HttpResponseBase):
+            return result
+
+        status: int
+        if isinstance(result, APIReturn):
+            status = type(result).code
+            if status >= 400:
+                # A returned error fails the request just as a raised one does.
+                rollback_atomic_requests(request)
+            result = result.value
+        else:
+            # Bare return value - dispatch as the declared success code (200).
+            if 200 not in self.response_models:
+                raise ConfigError(
+                    f"{self._label()} returned a bare value but no "
+                    f"200 response is declared in its return annotation. "
+                    f"Got: {type(result).__name__}"
+                )
+            status = 200
+
+        if status in self.response_models:
+            response_model = self.response_models[status]
+        else:
+            # Fall back to range matching: e.g., status 201 matches model for 200
+            base_status = (status // 100) * 100
+            if base_status in self.response_models:
+                response_model = self.response_models[base_status]
+            elif Ellipsis in self.response_models:
+                response_model = self.response_models[Ellipsis]
+            else:
+                raise ConfigError(
+                    f"Schema for status {status} is not set in response"
+                    f" {self.response_models.keys()}"
+                )
+
+        temporal_response.status_code = status
+
+        if response_model is None:
+            # Nothing is rendered. Unless the view wrote a body of its own to
+            # the response it was handed, there is none, and so no media type
+            # to name for it either.
+            if not temporal_response.content:
+                del temporal_response["Content-Type"]
+            return temporal_response
+
+        ctx = {"request": request, "response_status": status}
+
+        # Whatever the view returned is validated against the declared type and
+        # dumped through it, so only the fields that type declares go out. An
+        # instance of the declared model, or of a subclass, passes validation
+        # as is; it is never dumped by its own class.
+        validated_object = response_model.model_validate(
+            {"response": result}, context=ctx
+        )
+
+        result = self._dump_model(validated_object, ctx)["response"]
+        return self.api.create_response(
+            request, result, temporal_response=temporal_response
+        )
+
+    def _dump_model(
+        self, model: BaseModel, ctx: dict[str, Any], *, stream: bool = False
+    ) -> dict[str, Any]:
+        mode = (
+            "json"
+            if stream
+            else getattr(self.api.renderer, "serialization_mode", "python")
+        )
+        dumped: dict[str, Any] = dump_model(
+            model,
+            mode,
+            context=ctx,
+            by_alias=self.by_alias,
+            exclude_unset=self.exclude_unset,
+            exclude_defaults=self.exclude_defaults,
+            exclude_none=self.exclude_none,
+        )
+        return dumped
+
+    def _create_response_model(self, response_param: Any) -> type[Schema] | None:
+        if response_param is None:
+            return None
+        attrs = {"__annotations__": {"response": response_param}}
+        model: type[Schema] = type("HattoriResponseSchema", (Schema,), attrs)
+        # Responses are dumped by the declared type's pydantic serializer, which
+        # never calls model_dump. Refuse an override rather than ignore it.
+        overriding = _find_model_dump_override(model.__pydantic_core_schema__)
+        if overriding is not None:
+            raise ConfigError(
+                f"{self._label()} responds with "
+                f"{overriding.__name__}, which overrides model_dump. Responses "
+                f"are serialized without calling model_dump, so the override "
+                f"would be ignored. Use @model_serializer or Field(exclude=True) "
+                f"to shape the output instead."
+            )
+        return model
+
+
+class Operation(Guard):
     def __init__(
         self,
         path: str,
@@ -350,40 +710,32 @@ class Operation:
         self.path: str = path
         self.methods: list[str] = methods
         self.view_func: Callable = view_func
-        self.api: HattoriAPI = cast("HattoriAPI", None)
-        self.csrf_exempt: bool = getattr(view_func, "csrf_exempt", False)
         if url_name is not None:
             self.url_name = url_name
 
-        self.auth_param: (
-            collections.abc.Sequence[Callable] | Callable | object | None
-        ) = auth
-        self.auth_callbacks: collections.abc.Sequence[Callable] = []
-        self._set_auth(auth)
-
-        self.permissions_param: collections.abc.Sequence[Any] | Any | None = permissions
-        self.permission_callbacks: collections.abc.Sequence[Any] = []
-        self._set_permissions(permissions)
+        # Refused before the view is read: reading its return type settles the
+        # bodies of the errors it names.
+        validate_permissions(permissions)
 
         self.signature = ViewSignature(self.path, self.view_func)
         self.models: TModels = self.signature.models
 
-        self.stream_format: type[StreamFormat] | None = None
-        self.stream_item_model: type[Schema] | None = None
-        self.response_models: dict[Any, Any]
-
         # Parse response schema from return type annotation
         parsed = _parse_return_annotation(view_func)
+        self.stream_format: type[StreamFormat] | None = parsed.stream_format
+        self.stream_item_model: type[Schema] | None = None
         self._stream_status: int | None = parsed.stream_status
-        if parsed.stream_alias is not None:
-            self.stream_format = parsed.stream_alias.format_cls
 
-        # Response types declared purely by the return annotation, kept separate
-        # so response_models can be rebuilt whenever auth/permissions are attached
-        # after __init__ (e.g. inherited from a router or the API at bind time).
-        self._annotated_responses: dict[Any, Any] = dict(parsed.response_models)
-        self._annotated_descriptions: dict[int, list[str]] = parsed.descriptions
-        self._build_response_models()
+        super().__init__(
+            auth=auth,
+            permissions=permissions,
+            csrf_exempt=getattr(view_func, "csrf_exempt", False),
+            responses=parsed.responses,
+            by_alias=by_alias or False,
+            exclude_unset=exclude_unset or False,
+            exclude_defaults=exclude_defaults or False,
+            exclude_none=exclude_none or False,
+        )
 
         if need_to_fix_request_files(methods, self.models):
             raise ConfigError(
@@ -399,67 +751,20 @@ class Operation:
         self.include_in_schema = include_in_schema
         self.openapi_extra = openapi_extra
 
-        # Exporting models params
-        self.by_alias = by_alias or False
-        self.exclude_unset = exclude_unset or False
-        self.exclude_defaults = exclude_defaults or False
-        self.exclude_none = exclude_none or False
-
         if hasattr(view_func, "_hattori_contribute_to_operation"):
             # Allow 3rd party code to contribute to the operation behavior
             callbacks: list[Callable] = view_func._hattori_contribute_to_operation
             for callback in callbacks:
                 callback(self)
 
+    def _label(self) -> str:
+        return f"View {self.view_func.__name__}"
+
     def _build_response_models(self) -> None:
-        """(Re)build ``response_models`` from the return annotation plus any
-        auth/permission-declared responses currently attached to this operation.
-
-        Auth and permissions may be attached *after* ``__init__`` — inherited
-        from a router or the API when the operation is bound — so this folds
-        their typed ``APIReturn`` responses in again. Keeping this idempotent and
-        callable at bind time keeps both the OpenAPI spec and the runtime
-        short-circuit dispatch (:meth:`_result_to_response`) in sync with the
-        effective auth, no matter how it was supplied.
-        """
-        # Their APIReturn subclasses become valid response types for this
-        # operation both at runtime (short-circuit) and in the OpenAPI spec.
-        collected = dict(self._annotated_responses)
-        for auth_cb in self.auth_callbacks:
-            _merge_response_schemas(collected, declared_auth_responses(auth_cb))
-        for permission in self.permission_callbacks:
-            _merge_response_schemas(
-                collected, getattr(permission, "permission_responses", None) or {}
-            )
-
-        self.response_models = {}
-        for status_code, schema_type in collected.items():
-            if schema_type is type(None):
-                self.response_models[status_code] = None
-            else:
-                self.response_models[status_code] = self._create_response_model(
-                    schema_type
-                )
+        super()._build_response_models()
         if self.stream_format:
             # The stream's own response, wherever in the annotation it stands.
             self.stream_item_model = self.response_models[self._stream_status]
-
-        # What each response class says of itself, for the spec: the endpoint's
-        # own first, then its auth's and its permissions', without repeats.
-        described: dict[int, list[str]] = {}
-        declared = [self._annotated_descriptions]
-        declared += [declared_auth_descriptions(cb) for cb in self.auth_callbacks]
-        declared += [
-            getattr(permission, "permission_descriptions", None) or {}
-            for permission in self.permission_callbacks
-        ]
-        for descriptions in declared:
-            for code, found in descriptions.items():
-                known = described.setdefault(code, [])
-                known.extend(text for text in found if text not in known)
-        self.response_descriptions: dict[int, str] = {
-            code: "\n\n".join(found) for code, found in described.items()
-        }
 
     def clone(self) -> Operation:
         """
@@ -541,6 +846,8 @@ class Operation:
             return error
         try:
             values = self._get_values(request, kw, temporal_response)
+            if self.stream_format:
+                self._set_stream_status(temporal_response)
             result = self.view_func(request, **values)
             if self.stream_format:
                 return self._stream_response(request, result, temporal_response)
@@ -555,36 +862,6 @@ class Operation:
             msg = f"{exc.args[0]}: {msg}" if exc.args else msg
             exc.args = (msg,) + exc.args[1:]
 
-    def _on_exception(self, request: HttpRequest, exc: Exception) -> HttpResponse:
-        response = self.api.on_exception(request, exc)
-        rollback_atomic_requests(request)
-        return response
-
-    def _dump_model(
-        self, model: BaseModel, ctx: dict[str, Any], *, stream: bool = False
-    ) -> dict[str, Any]:
-        mode = (
-            "json"
-            if stream
-            else getattr(self.api.renderer, "serialization_mode", "python")
-        )
-        dump = model.model_dump
-        extra: dict[str, Any] = {}
-        if mode == "json":
-            if pydantic_version < [2, 11]:
-                # Older model_dump versions do not expose fallback.
-                dump = partial(model.__pydantic_serializer__.to_python, model)
-            extra["fallback"] = json_default
-        return dump(
-            mode=mode,
-            context=ctx,
-            by_alias=self.by_alias,
-            exclude_unset=self.exclude_unset,
-            exclude_defaults=self.exclude_defaults,
-            exclude_none=self.exclude_none,
-            **extra,
-        )
-
     def _copy_temporal_response(
         self, temporal_response: HttpResponse, response: StreamingHttpResponse
     ) -> None:
@@ -593,6 +870,26 @@ class Operation:
                 response[key] = value
         for cookie_name, cookie in temporal_response.cookies.items():
             response.cookies[cookie_name] = cookie
+
+    def _set_stream_status(self, temporal_response: HttpResponse) -> None:
+        """Start the response on the status the stream is declared under.
+
+        ``Created[JSONL[Item]]`` streams as a 201. Set before the view runs, so
+        that one which sets a status of its own still has the last word.
+        """
+        assert self._stream_status is not None
+        temporal_response.status_code = self._stream_status
+
+    def _unwrap_stream(self, result: Any) -> Any:
+        """``result`` without the response its stream is declared in.
+
+        A stream declared as ``Created[JSONL[Item]]`` may be returned as
+        ``Created(items())``. No other response shares the stream's status, so
+        one returned under it is the stream.
+        """
+        if isinstance(result, APIReturn) and type(result).code == self._stream_status:
+            return result.value
+        return result
 
     def _create_streaming_response(
         self, content: Any, temporal_response: HttpResponse
@@ -632,6 +929,7 @@ class Operation:
         """
         assert self.stream_format is not None
         fmt = self.stream_format
+        generator = self._unwrap_stream(generator)
         if isinstance(generator, (APIReturn, HttpResponseBase)):
             return self._result_to_response(request, generator, temporal_response)
 
@@ -664,236 +962,6 @@ class Operation:
         self._copy_temporal_response(temporal_response, response)
         return response
 
-    def _set_auth(
-        self, auth: collections.abc.Sequence[Callable] | Callable | object | None
-    ) -> None:
-        if auth is not None and auth is not NOT_SET:
-            self.auth_callbacks = (
-                auth
-                if isinstance(auth, collections.abc.Sequence)
-                else [cast("Callable[..., Any]", auth)]
-            )
-        self._index_auth_callbacks()
-
-    def _index_auth_callbacks(self) -> None:
-        """Precompute each auth callback's async-ness once, off the request path.
-
-        ``is_async_callable`` walks ``inspect`` internals and the async-ness of a
-        callback never changes, so pairing each callback with its flag here keeps
-        that work off the per-request authentication loop. Called from every place
-        that assigns ``auth_callbacks`` (``__init__`` and bind-time inheritance via
-        ``_set_auth``) so the cache can never go stale.
-        """
-        self.auth_callbacks_with_async: list[tuple[Callable, bool]] = [
-            (cb, is_async_callable(cb) or getattr(cb, "is_async", False))
-            for cb in self.auth_callbacks
-        ]
-
-    def _set_permissions(
-        self, permissions: collections.abc.Sequence[Any] | Any | None
-    ) -> None:
-        validate_permissions(permissions)
-        if permissions is not None and permissions is not NOT_SET:
-            self.permission_callbacks = (
-                permissions
-                if isinstance(permissions, collections.abc.Sequence)
-                else [permissions]
-            )
-
-    def _run_checks(
-        self,
-        request: HttpRequest,
-        temporal_response: HttpResponse,
-        path_params: dict[str, Any],
-    ) -> HttpResponseBase | None:
-        "Runs security checks for each operation"
-        # NOTE: if you change anything in this function - do this also in AsyncOperation
-
-        # Set CSRF exempt status on request so auth handlers can check it
-        if self.csrf_exempt:
-            # _hattori_csrf_exempt is a special flag that tells auth handler to skip CSRF checks
-            request._hattori_csrf_exempt = True  # type: ignore
-
-        # auth:
-        if self.auth_callbacks:
-            error = self._run_authentication(request, temporal_response)
-            if error is not None:
-                return error
-
-        # permissions (run after auth so request.auth is available):
-        if self.permission_callbacks:
-            error = self._run_permissions(request, temporal_response, path_params)
-            if error is not None:
-                return error
-
-        return None
-
-    def _auth_outcome(
-        self,
-        request: HttpRequest,
-        result: Any,
-        temporal_response: HttpResponse,
-        callback: Callable[..., Any],
-    ) -> tuple[HttpResponseBase | None, bool]:
-        """Map an auth callback ``result`` to ``(response, handled)``.
-
-        ``handled`` True means stop looping: either a typed ``APIReturn`` or a
-        response, which short-circuits to that response, or a successful auth
-        whose value is stashed on ``request.auth``. ``handled`` False means this
-        callback declined (returned a falsy value) - try the next one.
-        Truthiness, not ``is not None``, so that ``return key == SECRET``
-        rejects a wrong key.
-        """
-        name = getattr(callback, "__name__", type(callback).__name__)
-        _reject_unrun_result(result, f"Auth {name}")
-        if isinstance(result, (APIReturn, HttpResponseBase)):
-            # Auth answered for itself - a typed error response, or a response
-            # outright, which is no principal - so short-circuit to it instead
-            # of calling the view.
-            return self._result_to_response(request, result, temporal_response), True
-        if result:
-            request.auth = result  # type: ignore
-            return None, True
-        return None, False
-
-    def _run_authentication(
-        self, request: HttpRequest, temporal_response: HttpResponse
-    ) -> HttpResponseBase | None:
-        for callback, _ in self.auth_callbacks_with_async:
-            try:
-                result = callback(request)
-                if inspect.isawaitable(result):
-                    result = async_to_sync(_await_result)(result)
-            except Exception as exc:
-                return self._on_exception(request, exc)
-
-            outcome, handled = self._auth_outcome(
-                request, result, temporal_response, callback
-            )
-            if handled:
-                return outcome
-        return self._on_exception(request, AuthenticationError())
-
-    def _permission_outcome(
-        self,
-        request: HttpRequest,
-        result: Any,
-        temporal_response: HttpResponse,
-        permission: Any,
-    ) -> HttpResponseBase | None:
-        """Map a permission ``check`` result to a short-circuit response (or None).
-
-        ``True`` means pass; ``False`` or ``None`` is a ``403`` using the
-        permission's ``message``; an ``APIReturn`` or a response short-circuits
-        to that response. Anything else is no verdict - an uncalled method and
-        a ``(False, "reason")`` tuple are both truthy - so it is refused as a
-        misconfiguration rather than read as a pass.
-        """
-        owner = f"{type(permission).__name__}.check"
-        _reject_unrun_result(result, owner)
-        if isinstance(result, (APIReturn, HttpResponseBase)):
-            return self._result_to_response(request, result, temporal_response)
-        if result is True:
-            return None
-        if result is False or result is None:
-            message = getattr(permission, "message", "Forbidden")
-            return self._on_exception(request, AuthorizationError(message=message))
-        raise ConfigError(
-            f"{owner} returned {type(result).__name__}, which neither allows nor "
-            f"refuses the request: return True, False or None, or a response."
-        )
-
-    def _run_permissions(
-        self,
-        request: HttpRequest,
-        temporal_response: HttpResponse,
-        path_params: dict[str, Any],
-    ) -> HttpResponseBase | None:
-        for permission in self.permission_callbacks:
-            try:
-                kwargs = permission.select_path_kwargs(path_params)
-                result = permission.check(request, **kwargs)
-                if inspect.isawaitable(result):
-                    result = async_to_sync(_await_result)(result)
-            except Exception as exc:
-                return self._on_exception(request, exc)
-
-            outcome = self._permission_outcome(
-                request, result, temporal_response, permission
-            )
-            if outcome is not None:
-                return outcome
-        return None
-
-    def _result_to_response(
-        self, request: HttpRequest, result: Any, temporal_response: HttpResponse
-    ) -> HttpResponseBase:
-        """
-        The protocol for results:
-         - if HttpResponse - returns as is
-         - if APIReturn instance - code from type(result).code, body from result.value
-         - otherwise - bare value, dispatched as the declared 200 schema
-        """
-        if isinstance(result, HttpResponseBase):
-            return result
-
-        status: int
-        if isinstance(result, APIReturn):
-            status = type(result).code
-            if status >= 400:
-                # A returned error fails the request just as a raised one does.
-                rollback_atomic_requests(request)
-            result = result.value
-        else:
-            # Bare return value - dispatch as the declared success code (200).
-            if 200 not in self.response_models:
-                raise ConfigError(
-                    f"View {self.view_func.__name__} returned a bare value but no "
-                    f"200 response is declared in its return annotation. "
-                    f"Got: {type(result).__name__}"
-                )
-            status = 200
-
-        if status in self.response_models:
-            response_model = self.response_models[status]
-        else:
-            # Fall back to range matching: e.g., status 201 matches model for 200
-            base_status = (status // 100) * 100
-            if base_status in self.response_models:
-                response_model = self.response_models[base_status]
-            elif Ellipsis in self.response_models:
-                response_model = self.response_models[Ellipsis]
-            else:
-                raise ConfigError(
-                    f"Schema for status {status} is not set in response"
-                    f" {self.response_models.keys()}"
-                )
-
-        temporal_response.status_code = status
-
-        if response_model is None:
-            # Nothing is rendered. Unless the view wrote a body of its own to
-            # the response it was handed, there is none, and so no media type
-            # to name for it either.
-            if not temporal_response.content:
-                del temporal_response["Content-Type"]
-            return temporal_response
-
-        ctx = {"request": request, "response_status": status}
-
-        # Whatever the view returned is validated against the declared type and
-        # dumped through it, so only the fields that type declares go out. An
-        # instance of the declared model, or of a subclass, passes validation
-        # as is; it is never dumped by its own class.
-        validated_object = response_model.model_validate(
-            {"response": result}, context=ctx
-        )
-
-        result = self._dump_model(validated_object, ctx)["response"]
-        return self.api.create_response(
-            request, result, temporal_response=temporal_response
-        )
-
     def _get_values(
         self, request: HttpRequest, path_params: Any, temporal_response: HttpResponse
     ) -> dict[str, Any]:
@@ -916,24 +984,6 @@ class Operation:
             values[self.signature.response_arg] = temporal_response
         return values
 
-    def _create_response_model(self, response_param: Any) -> type[Schema] | None:
-        if response_param is None:
-            return None
-        attrs = {"__annotations__": {"response": response_param}}
-        model: type[Schema] = type("HattoriResponseSchema", (Schema,), attrs)
-        # Responses are dumped by the declared type's pydantic serializer, which
-        # never calls model_dump. Refuse an override rather than ignore it.
-        overriding = _find_model_dump_override(model.__pydantic_core_schema__)
-        if overriding is not None:
-            raise ConfigError(
-                f"View {self.view_func.__name__} responds with "
-                f"{overriding.__name__}, which overrides model_dump. Responses "
-                f"are serialized without calling model_dump, so the override "
-                f"would be ignored. Use @model_serializer or Field(exclude=True) "
-                f"to shape the output instead."
-            )
-        return model
-
 
 class AsyncOperation(Operation):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -948,6 +998,7 @@ class AsyncOperation(Operation):
         try:
             values = self._get_values(request, kw, temporal_response)
             if self.stream_format:
+                self._set_stream_status(temporal_response)
                 result = self.view_func(request, **values)
                 if inspect.isawaitable(result):
                     # No async generator but a coroutine: it returns the
@@ -982,6 +1033,7 @@ class AsyncOperation(Operation):
         """
         assert self.stream_format is not None
         fmt = self.stream_format
+        generator = self._unwrap_stream(generator)
         if isinstance(generator, (APIReturn, HttpResponseBase)):
             return self._result_to_response(request, generator, temporal_response)
 
@@ -1246,8 +1298,8 @@ class PathView:
             try:
                 response = await cast(AsyncOperation, operation).run(request, *a, **kw)
             except Exception as exc:
-                response = await sync_to_async(self._escaped_exception)(
-                    request, operation, exc
+                response = await sync_to_async(operation._escaped_exception)(
+                    request, exc
                 )
         return drop_stream_for_head(request, response)
 
@@ -1257,19 +1309,7 @@ class PathView:
         try:
             return operation.run(request, *a, **kw)
         except Exception as exc:
-            return self._escaped_exception(request, operation, exc)
-
-    def _escaped_exception(
-        self, request: HttpRequest, operation: Operation, exc: Exception
-    ) -> HttpResponse:
-        """Answer an exception that got out of ``operation.run``.
-
-        Either a view decorator raised it, or the handlers already left it
-        unanswered and it goes on to Django.
-        """
-        if exc is getattr(request, "_hattori_unanswered", None):
-            raise exc
-        return operation._on_exception(request, exc)
+            return operation._escaped_exception(request, exc)
 
     def _find_operation(self, request: HttpRequest) -> Operation | None:
         method = request.method or ""
