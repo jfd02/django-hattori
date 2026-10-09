@@ -640,9 +640,7 @@ class OpenAPISchema(dict):
             # A body that does not say it is JSON is refused before it is read.
             self._add_response_schema(result, 415, self._http_error_schema())
 
-        if operation.auth_callbacks:
-            # Every auth declining is answered with the framework's own 401,
-            # whatever typed responses the auth classes declare beside it.
+        if self._can_send_default_401(operation):
             self._add_response_schema(result, 401, self._http_error_schema())
 
         if self._can_send_default_403(operation, method):
@@ -699,6 +697,15 @@ class OpenAPISchema(dict):
             and not issubclass(model, _MultiPartBodyModel)
             for model in operation.models
         )
+
+    def _can_send_default_401(self, operation: Operation) -> bool:
+        """Whether the framework's own 401 can answer this operation.
+
+        It answers a request that every auth declined, whatever typed responses
+        the auth classes declare beside it. One auth that never declines rules
+        that out.
+        """
+        return bool(operation.auth_callbacks) and not operation.auth_never_declining
 
     def _can_send_default_403(self, operation: Operation, method: str) -> bool:
         """Whether the framework's own 403 can answer this operation.

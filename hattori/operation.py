@@ -46,7 +46,7 @@ from hattori.returns import (
     without_metadata,
 )
 from hattori.schema import Schema
-from hattori.security.base import declared_auth_responses
+from hattori.security.base import auth_can_decline, declared_auth_responses
 from hattori.security.permissions import validate_permissions
 from hattori.signature import ViewSignature
 from hattori.streaming import StreamFormat, _serialize_item
@@ -398,10 +398,16 @@ class Guard:
         that work off the per-request authentication loop. Called from every place
         that assigns ``auth_callbacks`` (``__init__`` and bind-time inheritance via
         ``_set_auth``) so the cache can never go stale.
+
+        Which of them say they never decline is read here too: the spec and the
+        check on what they return then go by the same answer.
         """
         self.auth_callbacks_with_async: list[tuple[Callable, bool]] = [
             (cb, is_async_callable(cb) or getattr(cb, "is_async", False))
             for cb in self.auth_callbacks
+        ]
+        self.auth_never_declining: list[Callable] = [
+            cb for cb in self.auth_callbacks if not auth_can_decline(cb)
         ]
 
     def _set_permissions(
@@ -472,7 +478,8 @@ class Guard:
         whose value is stashed on ``request.auth``. ``handled`` False means this
         callback declined (returned a falsy value) - try the next one.
         Truthiness, not ``is not None``, so that ``return key == SECRET``
-        rejects a wrong key.
+        rejects a wrong key. A callback that says it never declines is held to
+        it: a falsy result from it is a misconfiguration.
         """
         name = getattr(callback, "__name__", type(callback).__name__)
         _reject_unrun_result(result, f"Auth {name}")
@@ -484,6 +491,14 @@ class Guard:
         if result:
             request.auth = result  # type: ignore
             return None, True
+        if any(callback is never for never in self.auth_never_declining):
+            # Its promise is what keeps the default 401 out of the spec. The
+            # result is named by its type only: it may hold a credential.
+            raise ConfigError(
+                f"Auth {name} has can_decline=False but returned a falsy "
+                f"{type(result).__name__}. Return a truthy principal or a "
+                f"response, or set can_decline=True."
+            )
         return None, False
 
     def _run_authentication(
@@ -792,6 +807,7 @@ class Operation(Guard):
         cloned.auth_param = self.auth_param
         cloned.auth_callbacks = list(self.auth_callbacks)
         cloned.auth_callbacks_with_async = list(self.auth_callbacks_with_async)
+        cloned.auth_never_declining = list(self.auth_never_declining)
 
         # Copy permission settings
         cloned.permissions_param = self.permissions_param

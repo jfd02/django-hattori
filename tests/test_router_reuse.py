@@ -579,6 +579,7 @@ class TestCloneCompleteness:
             "auth_param",
             "auth_callbacks",
             "auth_callbacks_with_async",
+            "auth_never_declining",
             "permissions_param",
             "permission_callbacks",
             # Signature and models
