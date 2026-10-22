@@ -84,7 +84,8 @@ def test_replaced_schema_keeps_the_rest_of_the_generated_response():
 
     response = operation["responses"]["401"]
     assert response["description"] == "Unauthorized"
-    assert response["headers"] == {"X-Reason": {"schema": {"type": "string"}}}
+    assert response["headers"]["X-Reason"] == {"schema": {"type": "string"}}
+    assert response["headers"]["WWW-Authenticate"]["example"] == "Bearer"
     assert response["content"] == {JSON: {"schema": ITEM}}
 
 

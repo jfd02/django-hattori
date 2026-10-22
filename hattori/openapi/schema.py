@@ -20,7 +20,7 @@ from hattori.operation import Operation
 from hattori.params.models import TModels, _MultiPartBodyModel
 from hattori.schema import HattoriGenerateJsonSchema
 from hattori.security.apikey import APIKeyCookie
-from hattori.security.base import auth_declaration, auth_layers
+from hattori.security.base import auth_challenges, auth_declaration, auth_layers
 from hattori.utils import normalize_path
 
 if TYPE_CHECKING:
@@ -642,6 +642,16 @@ class OpenAPISchema(dict):
 
         if self._can_send_default_401(operation):
             self._add_response_schema(result, 401, self._http_error_schema())
+
+        challenge = auth_challenges(operation.auth_callbacks)
+        if 401 in result and challenge:
+            result[401]["headers"] = {
+                "WWW-Authenticate": {
+                    "description": "Authentication challenges accepted by this operation.",
+                    "schema": {"type": "string"},
+                    "example": challenge,
+                }
+            }
 
         if self._can_send_default_403(operation, method):
             self._add_response_schema(result, 403, self._http_error_schema())
