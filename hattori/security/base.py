@@ -1,7 +1,7 @@
 import functools
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 from django.http import HttpRequest
@@ -19,6 +19,7 @@ __all__ = [
     "AuthBase",
     "auth_attribute",
     "auth_can_decline",
+    "auth_challenges",
     "auth_declaration",
     "auth_layers",
     "declared_auth_responses",
@@ -66,6 +67,10 @@ class AuthBase(ABC):
     #: auth that declines by itself when the request carries no credentials, as
     #: ``HttpBearer`` and ``HttpBasicAuth`` do.
     can_decline: bool = True
+
+    #: HTTP authentication challenge to advertise on 401 responses. Cookie and
+    #: API-key auth have no standard challenge; custom schemes opt in explicitly.
+    www_authenticate: str | None = None
 
     def __init__(self) -> None:
         if not hasattr(self, "openapi_type"):
@@ -135,6 +140,25 @@ def auth_declaration(callback: Any, name: str) -> tuple[Any, Any]:
 def auth_attribute(callback: Any, name: str) -> Any:
     """``name`` as the outermost layer of ``callback`` that sets it has it."""
     return auth_declaration(callback, name)[1]
+
+
+def auth_challenges(callbacks: Sequence[Callable]) -> str | None:
+    challenges: dict[str, None] = {}
+    for callback in callbacks:
+        layer, value = auth_declaration(callback, "www_authenticate")
+        if value is None:
+            continue
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            owner = getattr(layer, "__qualname__", type(layer).__name__)
+            raise ConfigError(
+                f"{owner}.www_authenticate must be a nonempty header value or None."
+            )
+        challenges[value] = None
+    return ", ".join(challenges) or None
 
 
 def auth_can_decline(callback: Any) -> bool:

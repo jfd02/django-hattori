@@ -46,7 +46,11 @@ from hattori.returns import (
     without_metadata,
 )
 from hattori.schema import Schema
-from hattori.security.base import auth_can_decline, declared_auth_responses
+from hattori.security.base import (
+    auth_can_decline,
+    auth_challenges,
+    declared_auth_responses,
+)
 from hattori.security.permissions import validate_permissions
 from hattori.signature import ViewSignature
 from hattori.streaming import StreamFormat, _serialize_item
@@ -402,6 +406,7 @@ class Guard:
         Which of them say they never decline is read here too: the spec and the
         check on what they return then go by the same answer.
         """
+        self.auth_challenge = auth_challenges(self.auth_callbacks)
         self.auth_callbacks_with_async: list[tuple[Callable, bool]] = [
             (cb, is_async_callable(cb) or getattr(cb, "is_async", False))
             for cb in self.auth_callbacks
@@ -429,12 +434,22 @@ class Guard:
         The response the request is refused with, or ``None`` if it may go on.
         """
         try:
-            return self._run_checks(
+            response = self._run_checks(
                 request, self.api.create_temporal_response(request), path_params
             )
         except Exception as exc:
             # A check whose result was rejected.
-            return self._escaped_exception(request, exc)
+            response = self._escaped_exception(request, exc)
+        return self._with_auth_challenge(response) if response is not None else None
+
+    def _with_auth_challenge(self, response: HttpResponseBase) -> HttpResponseBase:
+        if (
+            response.status_code == 401
+            and self.auth_challenge
+            and not response.has_header("WWW-Authenticate")
+        ):
+            response["WWW-Authenticate"] = self.auth_challenge
+        return response
 
     def _run_checks(
         self,
@@ -806,6 +821,7 @@ class Operation(Guard):
         # Copy auth settings
         cloned.auth_param = self.auth_param
         cloned.auth_callbacks = list(self.auth_callbacks)
+        cloned.auth_challenge = self.auth_challenge
         cloned.auth_callbacks_with_async = list(self.auth_callbacks_with_async)
         cloned.auth_never_declining = list(self.auth_never_declining)
 
@@ -1298,6 +1314,8 @@ class PathView:
             response = self._undeclared_method(request)
         else:
             response = self._run(operation, request, *a, **kw)
+        if operation is not None:
+            response = operation._with_auth_challenge(response)
         return drop_stream_for_head(request, response)
 
     async def _async_view(
@@ -1317,6 +1335,8 @@ class PathView:
                 response = await sync_to_async(operation._escaped_exception)(
                     request, exc
                 )
+        if operation is not None:
+            response = operation._with_auth_challenge(response)
         return drop_stream_for_head(request, response)
 
     def _run(

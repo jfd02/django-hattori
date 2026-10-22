@@ -233,6 +233,33 @@ class SessionAuth(APIKeyCookie):
 
 The default `401` is then left out of the spec for the operations it guards, and the auth is held to its word: a falsy result from it is a `ConfigError`, not a declined request. It is not for `HttpBearer` or `HttpBasicAuth`, which decline by themselves when the header is missing. A plain function says it with an attribute, `by_session.can_decline = False`.
 
+### Authentication challenges
+
+On a `401` response, Hattori advertises the operation's configured HTTP authentication
+schemes in `WWW-Authenticate`: `Bearer` for `HttpBearer`, and `Basic realm="api"` for
+`HttpBasicAuth`. This covers returned errors and exception handlers, sync and async
+operations, and authentication guarding the documentation. An explicit response header
+always wins. Other status codes are left alone.
+
+Override `www_authenticate` on your auth class to set a realm or use a custom scheme:
+
+```python
+class BearerAuth(HttpBearer):
+    www_authenticate = 'Bearer realm="customers"'
+
+    def authenticate(self, request, token):
+        return customer_for_token(token)
+```
+
+Multiple configured challenges are combined, with duplicates removed. Plain functions
+can also declare a `www_authenticate` attribute; wrappers and partials inherit it unless
+they override it. Set it to `None` to leave the challenge to the application.
+
+Cookie and API-key authentication do not have a standard HTTP challenge, so Hattori
+invents none. Their applications must choose an appropriate authentication response.
+The framework does not infer a challenge from OpenAPI metadata. Configured challenges
+are also documented as a header on the operation's OpenAPI `401` response.
+
 ## Typing `request.auth`
 
 Successful authentication stashes its result on `request.auth`, but Django's `HttpRequest` doesn't declare that attribute — so annotating the parameter honestly makes every `request.auth` read a type error, and leaving it unannotated makes `request.auth` an untyped `Any`. `AuthedRequest[T]` is the annotation for it, parameterized on whatever your auth class returns:
