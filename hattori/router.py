@@ -42,7 +42,7 @@ class RouterMount:
     auth: Any = NOT_SET
     permissions: Any = NOT_SET
     tags: list[str] | None = None
-    inherited_decorators: list[tuple[Callable, DecoratorMode]] = field(
+    inherited_decorators: list[tuple[Callable[..., Any], DecoratorMode]] = field(
         default_factory=list
     )
     # Inherited auth/permissions/tags from parent routers (for nested inheritance)
@@ -262,7 +262,7 @@ class Router:
         self._routers: list[
             tuple[str, Router, Any, Any, list[str] | None, str | None]
         ] = []
-        self._decorators: list[tuple[Callable, DecoratorMode]] = []
+        self._decorators: list[tuple[Callable[..., Any], DecoratorMode]] = []
 
     def _freeze(self) -> None:
         """Mark router as frozen - no more modifications allowed."""
@@ -530,7 +530,7 @@ class Router:
         self,
         path: str,
         methods: list[str],
-        view_func: Callable,
+        view_func: Callable[..., Any],
         *,
         auth: Any = NOT_SET,
         permissions: Any = NOT_SET,
@@ -654,7 +654,7 @@ class Router:
 
     def add_decorator(
         self,
-        decorator: Callable,
+        decorator: Callable[..., Any],
         mode: DecoratorMode = "operation",
     ) -> None:
         """
@@ -673,7 +673,8 @@ class Router:
     def build_routers(
         self,
         prefix: str,
-        inherited_decorators: list[tuple[Callable, DecoratorMode]] | None = None,
+        inherited_decorators: list[tuple[Callable[..., Any], DecoratorMode]]
+        | None = None,
         inherited_auth: Any = NOT_SET,
         inherited_tags: list[str] | None = None,
         inherited_permissions: Any = NOT_SET,

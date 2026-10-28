@@ -192,7 +192,7 @@ def _response_arms(annotation: Any) -> Iterator[Any]:
         yield annotation
 
 
-def _parse_return_annotation(view_func: Callable) -> _ParsedAnnotation:
+def _parse_return_annotation(view_func: Callable[..., Any]) -> _ParsedAnnotation:
     """Read the responses declared by the function's return type annotation.
 
     Supports two arm forms (mixable in a Union):
@@ -291,8 +291,8 @@ class Guard:
         self,
         api: HattoriAPI | None = None,
         *,
-        auth: collections.abc.Sequence[Callable]
-        | Callable
+        auth: collections.abc.Sequence[Callable[..., Any]]
+        | Callable[..., Any]
         | NOT_SET_TYPE
         | None = NOT_SET,
         permissions: collections.abc.Sequence[Any]
@@ -311,9 +311,12 @@ class Guard:
         self.csrf_exempt: bool = csrf_exempt
 
         self.auth_param: (
-            collections.abc.Sequence[Callable] | Callable | object | None
+            collections.abc.Sequence[Callable[..., Any]]
+            | Callable[..., Any]
+            | object
+            | None
         ) = auth
-        self.auth_callbacks: collections.abc.Sequence[Callable] = []
+        self.auth_callbacks: collections.abc.Sequence[Callable[..., Any]] = []
         self._set_auth(auth)
 
         self.permissions_param: collections.abc.Sequence[Any] | Any | None = permissions
@@ -384,7 +387,11 @@ class Guard:
         }
 
     def _set_auth(
-        self, auth: collections.abc.Sequence[Callable] | Callable | object | None
+        self,
+        auth: collections.abc.Sequence[Callable[..., Any]]
+        | Callable[..., Any]
+        | object
+        | None,
     ) -> None:
         if auth is not None and auth is not NOT_SET:
             self.auth_callbacks = (
@@ -407,11 +414,11 @@ class Guard:
         check on what they return then go by the same answer.
         """
         self.auth_challenge = auth_challenges(self.auth_callbacks)
-        self.auth_callbacks_with_async: list[tuple[Callable, bool]] = [
+        self.auth_callbacks_with_async: list[tuple[Callable[..., Any], bool]] = [
             (cb, is_async_callable(cb) or getattr(cb, "is_async", False))
             for cb in self.auth_callbacks
         ]
-        self.auth_never_declining: list[Callable] = [
+        self.auth_never_declining: list[Callable[..., Any]] = [
             cb for cb in self.auth_callbacks if not auth_can_decline(cb)
         ]
 
@@ -713,10 +720,10 @@ class Operation(Guard):
         self,
         path: str,
         methods: list[str],
-        view_func: Callable,
+        view_func: Callable[..., Any],
         *,
-        auth: collections.abc.Sequence[Callable]
-        | Callable
+        auth: collections.abc.Sequence[Callable[..., Any]]
+        | Callable[..., Any]
         | NOT_SET_TYPE
         | None = NOT_SET,
         permissions: collections.abc.Sequence[Any]
@@ -739,7 +746,7 @@ class Operation(Guard):
         self.is_async = False
         self.path: str = path
         self.methods: list[str] = methods
-        self.view_func: Callable = view_func
+        self.view_func: Callable[..., Any] = view_func
         if url_name is not None:
             self.url_name = url_name
 
@@ -783,7 +790,9 @@ class Operation(Guard):
 
         if hasattr(view_func, "_hattori_contribute_to_operation"):
             # Allow 3rd party code to contribute to the operation behavior
-            callbacks: list[Callable] = view_func._hattori_contribute_to_operation
+            callbacks: list[Callable[..., Any]] = (
+                view_func._hattori_contribute_to_operation
+            )
             for callback in callbacks:
                 callback(self)
 
@@ -1179,10 +1188,10 @@ class PathView:
         self,
         path: str,
         methods: list[str],
-        view_func: Callable,
+        view_func: Callable[..., Any],
         *,
-        auth: collections.abc.Sequence[Callable]
-        | Callable
+        auth: collections.abc.Sequence[Callable[..., Any]]
+        | Callable[..., Any]
         | NOT_SET_TYPE
         | None = NOT_SET,
         permissions: collections.abc.Sequence[Any]
@@ -1263,7 +1272,7 @@ class PathView:
         }
         return cloned
 
-    def get_view(self) -> Callable:
+    def get_view(self) -> Callable[..., Any]:
         # Create a unique view function for this PathView
 
         if self.is_async:
@@ -1291,7 +1300,7 @@ class PathView:
 
             return self._mark_non_atomic(sync_view_wrapper)
 
-    def _mark_non_atomic(self, view: Callable) -> Callable:
+    def _mark_non_atomic(self, view: Callable[..., Any]) -> Callable[..., Any]:
         """Carry ``transaction.non_atomic_requests`` over to the URL callback.
 
         Django reads the marker off the callback it resolved, which is the

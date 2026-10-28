@@ -15,6 +15,8 @@ from hattori.responses import JsonResponse as HttpResponse
 from hattori.responses import json_dumps, json_loads
 from hattori.utils import close_unawaited
 
+type _RequestData = dict[str, Any] | str | bytes
+
 
 def build_absolute_uri(location: str | None = None) -> str:
     base = "http://testlocation/"
@@ -45,10 +47,10 @@ class HattoriClientBase:
         self,
         method: str,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
-    ) -> tuple[Callable, HttpRequest, dict]:
+    ) -> tuple[Callable[..., Any], HttpRequest, dict[str, Any]]:
         if json is not None:
             request_params["body"] = json_dumps(json)
             # What ``json=`` sends is JSON; an explicit content_type still wins.
@@ -82,8 +84,8 @@ class HattoriClientBase:
         return self._urls_cache
 
     def _resolve(
-        self, method: str, path: str, data: dict, request_params: Any
-    ) -> tuple[Callable, HttpRequest, dict]:
+        self, method: str, path: str, data: _RequestData, request_params: Any
+    ) -> tuple[Callable[..., Any], HttpRequest, dict[str, Any]]:
         url_path = path.split("?")[0].lstrip("/")
         for url in self.urls:
             match = url.resolve(url_path)
@@ -97,7 +99,7 @@ class HattoriClientBase:
         raise Exception(f'Cannot resolve "{path}"')
 
     def _build_request(
-        self, method: str, path: str, data: dict, request_params: Any
+        self, method: str, path: str, data: _RequestData, request_params: Any
     ) -> HttpRequest:
         query_data = None
         if method.upper() in {"GET", "HEAD"} and isinstance(data, dict):
@@ -112,7 +114,7 @@ class HattoriClientBase:
         return request
 
     @staticmethod
-    def _to_querydict(values: dict) -> QueryDict:
+    def _to_querydict(values: dict[str, Any]) -> QueryDict:
         """Build a QueryDict from a plain dict, expanding list values into the
         repeated-key form (``{"k": [1, 2]}`` -> ``k=1&k=2``)."""
         qd = QueryDict(mutable=True)
@@ -124,7 +126,9 @@ class HattoriClientBase:
                 qd[key] = value
         return qd
 
-    def _resolve_payload(self, data: dict, request_params: Any) -> tuple[Any, Any]:
+    def _resolve_payload(
+        self, data: _RequestData, request_params: Any
+    ) -> tuple[Any, Any]:
         """Map the form payload (``data``) to a (request.POST, body) pair.
 
         An explicit ``POST=`` or ``body=`` kwarg wins over ``data``; a string or
@@ -142,7 +146,7 @@ class HattoriClientBase:
                 post = self._to_querydict(data)
         return post, body
 
-    def _fold_query_params(self, path: str, *sources: dict | None) -> str:
+    def _fold_query_params(self, path: str, *sources: dict[str, Any] | None) -> str:
         """Return ``path`` with each of ``sources`` folded into its query
         string, so the real request parses GET for us.
 
@@ -221,14 +225,14 @@ class HattoriClientBase:
 
 class TestClient(HattoriClientBase):
     def get(
-        self, path: str, data: dict | None = None, **request_params: Any
+        self, path: str, data: _RequestData | None = None, **request_params: Any
     ) -> HattoriTestResponse:
         return self.request("GET", path, data, **request_params)
 
     def post(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -237,7 +241,7 @@ class TestClient(HattoriClientBase):
     def patch(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -246,7 +250,7 @@ class TestClient(HattoriClientBase):
     def put(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -255,7 +259,7 @@ class TestClient(HattoriClientBase):
     def delete(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -265,7 +269,7 @@ class TestClient(HattoriClientBase):
         self,
         method: str,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -275,7 +279,7 @@ class TestClient(HattoriClientBase):
         return self._call(func, request, kwargs)
 
     def _call(
-        self, func: Callable, request: HttpRequest, kwargs: dict
+        self, func: Callable[..., Any], request: HttpRequest, kwargs: dict[str, Any]
     ) -> HattoriTestResponse:
         response = func(request, **kwargs)
         if inspect.iscoroutine(response):
@@ -304,14 +308,14 @@ class TestClient(HattoriClientBase):
 
 class TestAsyncClient(HattoriClientBase):
     async def get(
-        self, path: str, data: dict | None = None, **request_params: Any
+        self, path: str, data: _RequestData | None = None, **request_params: Any
     ) -> HattoriTestResponse:
         return await self.request("GET", path, data, **request_params)
 
     async def post(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -320,7 +324,7 @@ class TestAsyncClient(HattoriClientBase):
     async def patch(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -329,7 +333,7 @@ class TestAsyncClient(HattoriClientBase):
     async def put(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -338,7 +342,7 @@ class TestAsyncClient(HattoriClientBase):
     async def delete(
         self,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -348,7 +352,7 @@ class TestAsyncClient(HattoriClientBase):
         self,
         method: str,
         path: str,
-        data: dict | None = None,
+        data: _RequestData | None = None,
         json: Any = None,
         **request_params: Any,
     ) -> HattoriTestResponse:
@@ -358,7 +362,7 @@ class TestAsyncClient(HattoriClientBase):
         return await self._call(func, request, kwargs)
 
     async def _call(
-        self, func: Callable, request: HttpRequest, kwargs: dict
+        self, func: Callable[..., Any], request: HttpRequest, kwargs: dict[str, Any]
     ) -> HattoriTestResponse:
         if inspect.iscoroutinefunction(func):
             return await _await_and_read(func(request, **kwargs))
