@@ -65,14 +65,14 @@ class HattoriAPI:
         docs: DocsBase | None = None,
         docs_url: str | None = "/docs",
         docs_decorator: Callable[[TCallable], TCallable] | None = None,
-        docs_auth: collections.abc.Sequence[Callable]
-        | Callable
+        docs_auth: collections.abc.Sequence[Callable[..., Any]]
+        | Callable[..., Any]
         | NOT_SET_TYPE
         | None = NOT_SET,
         servers: list[dict[str, Any]] | None = None,
         urls_namespace: str | None = None,
-        auth: collections.abc.Sequence[Callable]
-        | Callable
+        auth: collections.abc.Sequence[Callable[..., Any]]
+        | Callable[..., Any]
         | NOT_SET_TYPE
         | None = NOT_SET,
         permissions: collections.abc.Sequence[Any]
@@ -98,7 +98,7 @@ class HattoriAPI:
                 unset they are guarded like the API's own operations, by ``auth``
                 and ``permissions``; ``None`` makes them public.
             servers: List of target hosts used in openAPI spec.
-            auth (Callable | Sequence[Callable] | NOT_SET_TYPE | None): Authentication class
+            auth (Callable[..., Any] | Sequence[Callable[..., Any]] | NOT_SET_TYPE | None): Authentication class
             renderer: Default response renderer
         """
         self.title = title
@@ -119,14 +119,16 @@ class HattoriAPI:
         self._exception_handlers: dict[type[Exception], ExcHandler[Any]] = {}
         self.set_default_exception_handlers()
 
-        self.auth: collections.abc.Sequence[Callable] | NOT_SET_TYPE | None
+        self.auth: collections.abc.Sequence[Callable[..., Any]] | NOT_SET_TYPE | None
 
         if callable(auth):
             self.auth = [auth]
         else:
             self.auth = auth
 
-        self.docs_auth: collections.abc.Sequence[Callable] | NOT_SET_TYPE | None
+        self.docs_auth: (
+            collections.abc.Sequence[Callable[..., Any]] | NOT_SET_TYPE | None
+        )
         self.docs_auth = [docs_auth] if callable(docs_auth) else docs_auth
 
         validate_permissions(permissions)
@@ -432,7 +434,7 @@ class HattoriAPI:
 
     def add_decorator(
         self,
-        decorator: Callable,
+        decorator: Callable[..., Any],
         mode: DecoratorMode = "operation",
     ) -> None:
         """
@@ -607,7 +609,7 @@ class HattoriAPI:
             seen_names.add(pattern.name)
 
     def _validate_unique_operation_ids(self, bound_routers: list[BoundRouter]) -> None:
-        seen: dict[str, Callable] = {}
+        seen: dict[str, Callable[..., Any]] = {}
         for bound_router in bound_routers:
             for path_view in bound_router.path_operations.values():
                 for operation in path_view.operations:
