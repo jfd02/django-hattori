@@ -2,7 +2,7 @@
 
 from typing import Annotated, assert_type
 
-from django.http import HttpRequest
+from django.http import HttpRequest, QueryDict
 
 from hattori import (
     JSONL,
@@ -90,6 +90,12 @@ def sync_client_responses(client: TestClient) -> None:
     assert_type(client.patch("/"), HattoriTestResponse)
     assert_type(client.delete("/"), HattoriTestResponse)
     assert_type(client.request("GET", "/"), HattoriTestResponse)
+    assert_type(client.post("/", data="raw"), HattoriTestResponse)
+    assert_type(client.put("/", data=b"raw"), HattoriTestResponse)
+    assert_type(client.patch("/", data={"a": [1, 2]}), HattoriTestResponse)
+    assert_type(client.get("/", data=QueryDict("a=1&a=2")), HattoriTestResponse)
+    assert_type(client.get("/", data="raw"), HattoriTestResponse)
+    assert_type(client.get("/", data=b"raw"), HattoriTestResponse)
 
 
 async def async_client_responses(client: TestAsyncClient) -> None:
@@ -99,3 +105,9 @@ async def async_client_responses(client: TestAsyncClient) -> None:
     assert_type(await client.patch("/"), HattoriTestResponse)
     assert_type(await client.delete("/"), HattoriTestResponse)
     assert_type(await client.request("GET", "/"), HattoriTestResponse)
+    assert_type(await client.post("/", data="raw"), HattoriTestResponse)
+    assert_type(await client.put("/", data=b"raw"), HattoriTestResponse)
+    assert_type(await client.patch("/", data={"a": [1, 2]}), HattoriTestResponse)
+    assert_type(await client.get("/", data=QueryDict("a=1&a=2")), HattoriTestResponse)
+    assert_type(await client.get("/", data="raw"), HattoriTestResponse)
+    assert_type(await client.get("/", data=b"raw"), HattoriTestResponse)
