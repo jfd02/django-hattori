@@ -1022,34 +1022,28 @@ def flatten_properties(
     (used f.e. in GET params with multiple arguments and models)
     """
     if "anyOf" in prop_details:
-        variants = prop_details["anyOf"]
-        non_null = [variant for variant in variants if variant.get("type") != "null"]
-        if len(variants) == 2 and len(non_null) == 1:
-            variant = non_null[0]
-            definition = variant
-            if "$ref" in variant:
-                definition = definitions[variant["$ref"].rsplit("/", 1)[-1]]
-            if "properties" in definition:
-                # Runtime flattens nullable query models just like required
-                # models. Keep nullable scalar/enum/list schemas intact.
-                yield from flatten_properties(
-                    prop_name, definition, prop_required, definitions
-                )
-                return
-        yield prop_name, prop_details, prop_required
+        model = _query_model(prop_details, definitions)
+        if model is not None:
+            # Runtime flattens nullable query models just like required
+            # models. Keep nullable scalar/enum/list schemas intact.
+            yield from flatten_properties(prop_name, model, prop_required, definitions)
+        else:
+            yield prop_name, prop_details, prop_required
 
     elif "allOf" in prop_details:
+        # A field whose type is a named schema wraps it in
+        # ``allOf: [{$ref: ...}]`` when it has a default, via
+        # HattoriGenerateJsonSchema.default_schema, so ``default`` can sit
+        # alongside the ref.
         resolve_allOf(prop_details, definitions)
-        if len(prop_details["allOf"]) == 1 and "enum" in prop_details["allOf"][0]:
-            # is_required = "default" not in prop_details
-            yield prop_name, prop_details, prop_required
-        else:
-            # Nested model fields with a default value wrap in
-            # ``allOf: [{$ref: ...}]`` via HattoriGenerateJsonSchema.default_schema
-            # (so ``default`` can sit alongside the ref). After resolve_allOf
-            # inlines the referent, we project its properties out.
+        if any(_query_model(item, definitions) for item in prop_details["allOf"]):
+            # A nested model: project its properties out.
             for item in prop_details["allOf"]:
                 yield from flatten_properties("", item, True, definitions)
+        else:
+            # Anything else, such as an enum, a union or a constrained
+            # scalar, is this one parameter, default included.
+            yield prop_name, prop_details, prop_required
 
     elif "items" in prop_details and "$ref" in prop_details["items"]:
         def_name = prop_details["items"]["$ref"].rsplit("/", 1)[-1]
@@ -1074,6 +1068,20 @@ def flatten_properties(
             yield from flatten_properties(k, v, is_required, definitions)
     else:
         yield prop_name, prop_details, prop_required
+
+
+def _query_model(
+    schema: dict[str, Any], definitions: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The model whose fields a query schema stands for, nullable or not."""
+    variants = schema.get("anyOf")
+    if isinstance(variants, list) and len(variants) == 2:
+        non_null = [variant for variant in variants if variant.get("type") != "null"]
+        if len(non_null) == 1:
+            schema = non_null[0]
+    if "$ref" in schema:
+        schema = definitions[schema["$ref"].rsplit("/", 1)[-1]]
+    return schema if "properties" in schema else None
 
 
 def resolve_allOf(details: dict[str, Any], definitions: dict[str, Any]) -> None:

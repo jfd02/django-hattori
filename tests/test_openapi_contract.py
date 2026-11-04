@@ -6,6 +6,7 @@ from importlib import import_module
 from typing import Annotated, Literal
 
 import pytest
+from jsonschema import Draft202012Validator
 from pydantic import (
     ConfigDict,
     Field,
@@ -523,6 +524,77 @@ def test_nullable_query_model_documents_its_flattened_fields():
     response = TestClient(api).get("/query?value=0")
     assert response.json() == 0
     validate_response(document, "/api/query", response)
+
+
+def test_named_query_types_with_defaults_stay_one_optional_parameter():
+    type Role = Literal["top", "mid"]
+    type RoleOrAll = Literal["all"] | Role
+    type Short = Annotated[str, Field(max_length=3)]
+
+    api = HattoriAPI()
+
+    @api.get("/role")
+    def by_role(request, role: Query[RoleOrAll] = "all") -> str:
+        return role
+
+    @api.get("/name")
+    def by_name(request, name: Query[Short] = "abc") -> str:
+        return name
+
+    document = export_contract(api)
+    client = TestClient(api)
+    for name, default, valid, invalid in (
+        ("role", "all", "mid", "jungle"),
+        ("name", "abc", "xy", "long"),
+    ):
+        (parameter,) = document["paths"][f"/api/{name}"]["get"]["parameters"]
+        assert parameter["name"] == name
+        assert parameter["required"] is False
+        assert parameter["schema"]["default"] == default
+        schema = {**parameter["schema"], "components": document["components"]}
+        assert Draft202012Validator(schema).is_valid(valid)
+        assert not Draft202012Validator(schema).is_valid(invalid)
+        assert client.get(f"/{name}").json() == default
+        assert client.get(f"/{name}?{name}={valid}").json() == valid
+        assert client.get(f"/{name}?{name}={invalid}").status_code == 422
+
+
+def test_named_query_types_are_read_like_the_types_they_name():
+    type Tags = list[str]
+
+    class Filters(Schema):
+        value: int
+        tags: Tags = []
+
+    type NamedFilters = Filters
+    type MaybeFilters = Filters | None
+
+    api = HattoriAPI()
+
+    @api.get("/tags")
+    def by_tags(request, tags: Tags = Query([])) -> list[str]:
+        return tags
+
+    @api.get("/filters")
+    def by_filters(request, filters: NamedFilters = Query(...)) -> list[str]:
+        return [str(filters.value), *filters.tags]
+
+    @api.get("/maybe")
+    def by_maybe(request, filters: MaybeFilters = Query(None)) -> list[str]:
+        return [str(filters.value), *filters.tags] if filters else []
+
+    document = export_contract(api)
+    client = TestClient(api)
+    for path, names, query, expected in (
+        ("tags", ["tags"], "tags=a&tags=b", ["a", "b"]),
+        ("filters", ["value", "tags"], "value=1&tags=a&tags=b", ["1", "a", "b"]),
+        ("maybe", ["value", "tags"], "value=1&tags=a&tags=b", ["1", "a", "b"]),
+    ):
+        parameters = document["paths"][f"/api/{path}"]["get"]["parameters"]
+        assert [parameter["name"] for parameter in parameters] == names
+        response = client.get(f"/{path}?{query}")
+        assert response.json() == expected
+        validate_response(document, f"/api/{path}", response)
 
 
 @pytest.mark.parametrize("as_instance", [False, True])

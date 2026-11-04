@@ -164,3 +164,34 @@ def test_files_fix_middleware():
         @api.patch("/file1")
         def patch_with_file(request, file: UploadedFile) -> FileNameResponse:
             return {"name": file.name}
+
+
+def test_named_upload_types_are_read_as_files():
+    type Upload = UploadedFile
+    type Uploads = list[UploadedFile]
+
+    api = HattoriAPI()
+
+    @api.post("/one")
+    def one(request, file: Upload) -> FileResultResponse:
+        return {"result": [file.read().decode()]}
+
+    @api.post("/many")
+    def many(request, files: Uploads) -> FileResultResponse:
+        return {"result": [f.read().decode() for f in files]}
+
+    schema = api.get_openapi_schema(path_prefix="")
+    for path in ("/one", "/many"):
+        operation = schema["paths"][path]["post"]
+        assert operation["parameters"] == []
+        assert list(operation["requestBody"]["content"]) == ["multipart/form-data"]
+
+    client = TestClient(api)
+    file = SimpleUploadedFile("test.txt", b"data123")
+    response = client.post("/one", FILES={"file": file})
+    assert response.json() == {"result": ["data123"]}
+    files = [
+        SimpleUploadedFile(f"{i}.txt", data) for i, data in enumerate((b"a", b"b"))
+    ]
+    response = client.post("/many", FILES=MultiValueDict({"files": files}))
+    assert response.json() == {"result": ["a", "b"]}
