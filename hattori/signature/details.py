@@ -24,6 +24,7 @@ from hattori.params.models import (
     _MultiPartBody,
     is_comma_separated,
 )
+from hattori.returns import alias_value, is_alias
 from hattori.signature.utils import get_path_param_names, get_typed_signature
 from hattori.utils import is_optional_type
 
@@ -262,10 +263,10 @@ class ViewSignature:
             annotation = str
 
         is_collection = is_collection_type(annotation)
+        named = _unalias(annotation)
 
-        if annotation == UploadedFile or (
-            is_collection
-            and getattr(annotation, "__args__", (None,))[0] == UploadedFile
+        if named == UploadedFile or (
+            is_collection and getattr(named, "__args__", (None,))[0] == UploadedFile
         ):
             # People often forgot to mark UploadedFile as a File, so we better assign it automatically
             if default == self.signature.empty or default is None:
@@ -307,16 +308,25 @@ class ViewSignature:
         )
 
 
+def _unalias(annotation: Any) -> Any:
+    """What ``annotation`` names, through any ``type`` aliases it is written as."""
+    while is_alias(annotation):
+        annotation = alias_value(annotation)
+    return annotation
+
+
 def _unwrap_union_model(annotation: Any) -> Any:
     """If annotation is a Union containing a pydantic model, return that model class."""
+    annotation = _unalias(annotation)
     if get_origin(annotation) in UNION_TYPES:
         for arg in get_args(annotation):
             if arg is not type(None) and is_pydantic_model(arg):
-                return arg
+                return _unwrap_union_model(arg)
     return annotation
 
 
 def is_pydantic_model(cls: Any) -> bool:
+    cls = _unalias(cls)
     try:
         origin = get_origin(cls)
 
@@ -334,6 +344,7 @@ def is_pydantic_model(cls: Any) -> bool:
 
 
 def is_collection_type(annotation: Any) -> bool:
+    annotation = _unalias(annotation)
     origin = get_origin(annotation)
 
     if origin in UNION_TYPES:
