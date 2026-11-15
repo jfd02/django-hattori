@@ -95,7 +95,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"hattori/compatibility/datastructures.py" = ["C416"]
 "hattori/utils.py" = ["B004"]
 "tests/*" = ["C408", "B017"]
 
