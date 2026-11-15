@@ -1024,9 +1024,14 @@ def flatten_properties(
     if "anyOf" in prop_details:
         model = _query_model(prop_details, definitions)
         if model is not None:
-            # Runtime flattens nullable query models just like required
-            # models. Keep nullable scalar/enum/list schemas intact.
-            yield from flatten_properties(prop_name, model, prop_required, definitions)
+            # A nullable model is flattened like any other. Keep nullable
+            # scalar/enum/list schemas intact. One with a default is left out
+            # when none of its fields is sent, so then none of them is
+            # required.
+            for name, details, field_required in flatten_properties(
+                prop_name, model, prop_required, definitions
+            ):
+                yield name, details, field_required and prop_required
         else:
             yield prop_name, prop_details, prop_required
 

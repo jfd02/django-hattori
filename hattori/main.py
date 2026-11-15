@@ -144,8 +144,7 @@ class HattoriAPI:
         else:
             self.permissions = [permissions]
 
-        # Top-level router registrations (new architecture)
-        # Stores (prefix, router, auth, tags, url_name_prefix) for each add_router call
+        # Top-level registrations: (prefix, router, auth, permissions, tags, url_name_prefix).
         self._router_registrations: list[
             tuple[str, Router, Any, Any, list[str] | None, str | None]
         ] = []

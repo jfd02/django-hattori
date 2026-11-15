@@ -689,6 +689,12 @@ class Guard:
         dumped: dict[str, Any] = dump_model(
             model,
             mode,
+            # An instance passes validation as is, so a value it holds that
+            # never went through validation (model_construct, or assignment
+            # without validate_assignment) reaches the serializer unchecked.
+            # Pydantic would only warn and write it out whole, fields the
+            # declared type does not have included. Refuse it instead.
+            warnings="error",
             context=ctx,
             by_alias=self.by_alias,
             exclude_unset=self.exclude_unset,
@@ -819,7 +825,6 @@ class Operation(Guard):
         # Create instance without calling __init__ to avoid expensive processing
         cloned = object.__new__(self.__class__)
 
-        # Copy all essential attributes
         cloned.is_async = self.is_async
         cloned.path = self.path
         cloned.methods = list(self.methods)
@@ -827,18 +832,15 @@ class Operation(Guard):
         cloned.api = cast("HattoriAPI", None)  # Will be set during binding
         cloned.csrf_exempt = self.csrf_exempt
 
-        # Copy url_name if it exists
         if hasattr(self, "url_name"):
             cloned.url_name = self.url_name
 
-        # Copy auth settings
         cloned.auth_param = self.auth_param
         cloned.auth_callbacks = list(self.auth_callbacks)
         cloned.auth_challenge = self.auth_challenge
         cloned.auth_callbacks_with_async = list(self.auth_callbacks_with_async)
         cloned.auth_never_declining = list(self.auth_never_declining)
 
-        # Copy permission settings
         cloned.permissions_param = self.permissions_param
         cloned.permission_callbacks = list(self.permission_callbacks)
 
@@ -846,7 +848,6 @@ class Operation(Guard):
         cloned.signature = self.signature
         cloned.models = self.models
 
-        # Copy streaming attributes
         cloned.stream_format = self.stream_format
         cloned.stream_item_model = self.stream_item_model
         cloned._stream_status = self._stream_status
@@ -859,7 +860,6 @@ class Operation(Guard):
         cloned._annotated_descriptions = self._annotated_descriptions
         cloned.response_descriptions = dict(self.response_descriptions)
 
-        # Copy metadata
         cloned.operation_id = self.operation_id
         cloned.summary = self.summary
         cloned.description = self.description
@@ -868,7 +868,6 @@ class Operation(Guard):
         cloned.include_in_schema = self.include_in_schema
         cloned.openapi_extra = dict(self.openapi_extra) if self.openapi_extra else None
 
-        # Copy export model params
         cloned.by_alias = self.by_alias
         cloned.exclude_unset = self.exclude_unset
         cloned.exclude_defaults = self.exclude_defaults

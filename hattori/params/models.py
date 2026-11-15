@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
 from hattori.errors import HttpError
-from hattori.responses import json_dumps, json_loads
+from hattori.responses import json_loads
 
 if TYPE_CHECKING:
     from hattori import HattoriAPI  # pragma: no cover
@@ -64,8 +64,17 @@ class ParamModel(BaseModel, ABC):
             return data
 
         mapped_data: dict[str, Any] = {}
+        sent: set[tuple[str, ...]] = set()
         for key, path in flatten_map.items():
-            cls._map_data_path(mapped_data, data.get(key), path)
+            value = data.get(key)
+            if value is not None:
+                sent.update(path[:depth] for depth in range(1, len(path)))
+            cls._map_data_path(mapped_data, value, path)
+        # A nullable schema with a default, none of whose fields was sent,
+        # takes that default instead of being built from no data at all.
+        for path in getattr(cls, "__hattori_nullable_models__", ()):
+            if path not in sent:
+                _pop_path(mapped_data, path)
         return mapped_data
 
     @classmethod
@@ -77,6 +86,15 @@ class ParamModel(BaseModel, ABC):
             current = current.setdefault(key, {})
         if value is not None:
             current[path[-1]] = value
+
+
+def _pop_path(data: dict[str, Any], path: tuple[str, ...]) -> None:
+    *parents, last = path
+    for key in parents:
+        data = data.get(key)  # type: ignore[assignment]
+        if not isinstance(data, dict):
+            return
+    data.pop(last, None)
 
 
 def _parse_querydict(
@@ -216,28 +234,26 @@ class FileModel(ParamModel):
 
 
 class _MultiPartBodyModel(BodyModel):
-    __hattori_body_params__: dict[str, Any]
+    # Whether each body param's part is JSON, by its alias.
+    __hattori_body_params__: dict[str, bool]
 
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         results: dict[str, Any] = {}
-        for name, annotation in cls.__hattori_body_params__.items():
+        for name, is_json in cls.__hattori_body_params__.items():
             if name in request.POST:
                 data = request.POST[name]
-                if annotation is str:
-                    # A multipart form value for a `str` body param is a bare,
-                    # unquoted string. JSON-encode it so it round-trips through
-                    # BodyModel's JSON parser with every character preserved
-                    # (interior/edge quotes, newlines, unicode) instead of the
-                    # naive f'"{data}"' wrapping, which mangles or rejects them.
-                    body = json_dumps(data)
-                else:
-                    body = data.encode()
+                if not is_json:
+                    # A primitive (str, int, date, Enum, UUID, ...) is sent as
+                    # its plain text value, as the spec's default multipart
+                    # encoding has it, and validated as it is, like a Form field.
+                    results[name] = data
+                    continue
                 # A form field, read as JSON by declaration: the request's
                 # media type is the form's, so there is none to hold it to.
-                results[name] = cls._decode(body) if body else None
+                results[name] = cls._decode(data.encode()) if data else None
         return results
 
 

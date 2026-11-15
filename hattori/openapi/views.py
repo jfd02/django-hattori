@@ -16,7 +16,6 @@ from hattori.responses import JsonResponse
 from hattori.returns import DeclaredResponses
 
 if TYPE_CHECKING:
-    # if anyone knows a cleaner way to make mypy happy - welcome
     from hattori import HattoriAPI  # pragma: no cover
 
 
