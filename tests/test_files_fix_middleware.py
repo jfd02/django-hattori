@@ -14,7 +14,7 @@ from django.test import AsyncClient, Client, override_settings
 from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 from django.urls import path
 
-from hattori import File, HattoriAPI, Schema, UploadedFile
+from hattori import File, Form, HattoriAPI, Schema, UploadedFile
 from hattori.compatibility.files import FIX_MIDDLEWARE_PATH
 
 # The middleware stack the real Client runs through. The fix middleware must be
@@ -51,6 +51,10 @@ with override_settings(MIDDLEWARE=MIDDLEWARE):
     @sync_api.put("/upload")
     def put_upload(request, file: UploadedFile = File(...)) -> FileEcho:
         return _read(file)
+
+    @sync_api.api_operation(["PUT", "PATCH", "DELETE"], "/form")
+    def put_form(request, text: str = Form(...)) -> Msg:
+        return Msg(text=text)
 
     @sync_api.patch("/json")
     def patch_json(request, payload: Msg) -> Msg:
@@ -93,6 +97,17 @@ def test_sync_file_upload_populated_by_middleware(_wired, method):
     )
     assert resp.status_code == 200, resp.content
     assert resp.json() == {"name": "a.txt", "content": "data123"}
+
+
+@pytest.mark.parametrize("method", ["put", "patch", "delete"])
+def test_form_on_another_method_is_read_through_the_middleware(_wired, method):
+    resp = getattr(Client(), method)(
+        "/sync/form",
+        data="text=hello",
+        content_type="application/x-www-form-urlencoded",
+    )
+    assert resp.status_code == 200, resp.content
+    assert resp.json() == {"text": "hello"}
 
 
 def test_sync_json_body_skips_file_reparsing(_wired):

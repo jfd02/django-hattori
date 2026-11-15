@@ -538,6 +538,10 @@ class SessionKey(APIKeyCookie):
         return lookup_session(key)
 ```
 
+A form is parsed by Django for `POST` only. A `Form` or `File` parameter on `PUT`, `PATCH` or `DELETE` needs `hattori.compatibility.files.fix_request_files_middleware` in `MIDDLEWARE`, and a route that declares one without it is refused when it is declared, so the middleware has to be in the settings by then. `HATTORI_FIX_REQUEST_FILES_METHODS` names the methods this holds for.
+
+A list in the query is repeated, `?id=1&id=2`, or comma-separated with `Query(..., explode=False)`. A path, a header and a cookie each have one value, so a list in one of them is comma-separated: `X-Ids: 1,2`. Spaces around an item are dropped, and so is an item that is empty. A validator on such a list is handed the list, not the value as it came.
+
 ## Transactions
 
 A returned error fails the request as fully as a raised one. With Django's
