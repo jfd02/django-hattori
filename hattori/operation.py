@@ -688,6 +688,12 @@ class Guard:
         dumped: dict[str, Any] = dump_model(
             model,
             mode,
+            # An instance passes validation as is, so a value it holds that
+            # never went through validation (model_construct, or assignment
+            # without validate_assignment) reaches the serializer unchecked.
+            # Pydantic would only warn and write it out whole, fields the
+            # declared type does not have included. Refuse it instead.
+            warnings="error",
             context=ctx,
             by_alias=self.by_alias,
             exclude_unset=self.exclude_unset,

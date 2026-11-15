@@ -153,6 +153,14 @@ class ViewSignature:
             }:
                 flatten_map = self._args_flatten_map(args)
                 attrs["__hattori_flatten_map__"] = flatten_map
+                attrs["__hattori_nullable_models__"] = [
+                    path
+                    for arg in args
+                    if is_pydantic_model(arg.annotation)
+                    for path in _nullable_model_paths(
+                        arg.annotation, arg.source, (arg.alias,)
+                    )
+                ]
                 attrs["__hattori_flatten_map_reverse__"] = {
                     v: (k,) for k, v in flatten_map.items()
                 }
@@ -161,7 +169,7 @@ class ViewSignature:
                 assert attrs["__hattori_param_source__"] == "body"
                 if is_multipart_response_with_body:
                     attrs["__hattori_body_params__"] = {
-                        i.alias: i.annotation for i in args
+                        i.alias: is_multipart_json_part(i.annotation) for i in args
                     }
                 else:
                     # ::TODO:: this is still sus.  build some test cases
@@ -315,6 +323,30 @@ def _unalias(annotation: Any) -> Any:
     return annotation
 
 
+def _allows_none(annotation: Any) -> bool:
+    annotation = _unalias(annotation)
+    return get_origin(annotation) in UNION_TYPES and type(None) in get_args(annotation)
+
+
+def _nullable_model_paths(
+    annotation: Any, field: FieldInfo, path: tuple[str, ...]
+) -> Generator[tuple[str, ...]]:
+    """Where a schema that may be None and has a default sits among flattened params.
+
+    ``annotation`` is the schema a param or field of one is declared as,
+    ``field`` what it was declared with and ``path`` where its fields are
+    mapped to, the way ``_model_flatten_map`` maps them.
+    """
+    if _allows_none(annotation) and not field.is_required():
+        yield path
+    model = _unwrap_union_model(annotation)
+    for attr, sub_field in model.model_fields.items():
+        if is_pydantic_model(sub_field.annotation):
+            yield from _nullable_model_paths(
+                sub_field.annotation, sub_field, (*path, sub_field.alias or attr)
+            )
+
+
 def _unwrap_union_model(annotation: Any) -> Any:
     """If annotation is a Union containing a pydantic model, return that model class."""
     annotation = _unalias(annotation)
@@ -362,6 +394,37 @@ def is_collection_type(annotation: Any) -> bool:
         )
     else:
         return origin in collection_types  # TODO: I guess we should handle only list
+
+
+_JSON_PRIMITIVE_TYPES = {"string", "integer", "number", "boolean", "null"}
+
+
+def is_multipart_json_part(annotation: Any) -> bool:
+    """Whether a Body param sent beside File/Form params is a JSON part.
+
+    The spec documents it as a property of the multipart body, so it is read
+    the way OpenAPI's default multipart encoding reads that property:
+    primitives (str, int, date, Enum, Literal, UUID, ...) are plain text and
+    everything else (schemas, lists, dicts, TypedDict, Any, ...) is JSON.
+    """
+    try:
+        schema = pydantic.TypeAdapter(annotation).json_schema()
+    except Exception:  # no JSON schema to go by: read it as JSON
+        return True
+    return not _is_primitive_schema(schema, schema.get("$defs", {}))
+
+
+def _is_primitive_schema(schema: dict[str, Any], defs: dict[str, Any]) -> bool:
+    if "$ref" in schema:
+        return _is_primitive_schema(defs[schema["$ref"].rsplit("/", 1)[-1]], defs)
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema:
+            return all(_is_primitive_schema(s, defs) for s in schema[key])
+    if "type" not in schema:
+        # An untyped Literal[1, "a"] is primitive, {} (Any) is not.
+        return "enum" in schema or "const" in schema
+    types = schema["type"]
+    return set(types if isinstance(types, list) else [types]) <= _JSON_PRIMITIVE_TYPES
 
 
 def detect_collection_fields(

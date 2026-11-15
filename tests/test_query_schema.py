@@ -293,3 +293,183 @@ def test_nested_model_field_with_default_flattens_into_params():
     schema = temp_api.get_openapi_schema()
     params = schema["paths"]["/api/nested-default"]["get"]["parameters"]
     assert {p["name"] for p in params} == {"x", "y", "label"}
+
+
+class Required(Schema):
+    x: int
+
+
+class AllOptional(Schema):
+    a: int | None = None
+
+
+def test_nullable_schema_with_nothing_sent_takes_its_default():
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/required")
+    def required(request, f: Required | None = Query(None)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    @temp_api.get("/all-optional")
+    def all_optional(request, f: AllOptional | None = Query(None)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    @temp_api.get("/instance-default")
+    def instance_default(
+        request, f: AllOptional | None = Query(AllOptional(a=5))
+    ) -> dict:
+        return {"f": f and f.model_dump()}
+
+    @temp_api.get("/other-param")
+    def other_param(request, q: int = 0, f: Required | None = Query(None)) -> dict:
+        return {"q": q, "f": f and f.model_dump()}
+
+    client = TestClient(temp_api)
+
+    assert client.get("/required").json() == {"f": None}
+    assert client.get("/required?x=1").json() == {"f": {"x": 1}}
+    assert client.get("/all-optional").json() == {"f": None}
+    assert client.get("/all-optional?a=2").json() == {"f": {"a": 2}}
+    assert client.get("/instance-default").json() == {"f": {"a": 5}}
+    assert client.get("/instance-default?a=1").json() == {"f": {"a": 1}}
+    assert client.get("/other-param?q=3").json() == {"q": 3, "f": None}
+
+
+def test_nullable_schema_in_header_and_form_takes_its_default():
+    from hattori import Form, Header
+
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/header")
+    def header(request, f: Required | None = Header(None)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    @temp_api.post("/form")
+    def form(request, f: Required | None = Form(None)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    client = TestClient(temp_api)
+
+    assert client.get("/header").json() == {"f": None}
+    assert client.get("/header", headers={"x": "1"}).json() == {"f": {"x": 1}}
+    assert client.post("/form").json() == {"f": None}
+    assert client.post("/form", POST={"x": "1"}).json() == {"f": {"x": 1}}
+
+
+def test_schema_that_is_not_nullable_is_still_built_from_its_defaults():
+    class Inner(Schema):
+        y: int | None = None
+
+    class Outer(Schema):
+        i: Inner
+        z: int | None = None
+
+    class Strict(Schema):
+        s: Required
+
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/none-default")
+    def none_default(request, f: AllOptional = Query(None)) -> dict:
+        return f.model_dump()
+
+    @temp_api.get("/nested")
+    def nested(request, f: Outer = Query(...)) -> dict:
+        return f.model_dump()
+
+    @temp_api.get("/strict")
+    def strict(request, f: Strict = Query(...)) -> dict:
+        return f.model_dump()
+
+    client = TestClient(temp_api)
+
+    assert client.get("/none-default").json() == {"a": None}
+    assert client.get("/nested").json() == {"i": {"y": None}, "z": None}
+    assert client.get("/nested?z=1").json() == {"i": {"y": None}, "z": 1}
+    assert client.get("/strict").status_code == 422
+
+
+def test_nullable_schema_declared_required_is_built_from_no_data():
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/all-optional")
+    def all_optional(request, f: AllOptional | None = Query(...)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    client = TestClient(temp_api)
+
+    assert client.get("/all-optional").json() == {"f": {"a": None}}
+
+
+def test_nullable_schema_nested_in_a_schema_takes_its_default():
+    class Outer(Schema):
+        r: Required | None = None
+        z: int = 0
+
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/nested")
+    def nested(request, f: Outer | None = Query(None)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    client = TestClient(temp_api)
+
+    assert client.get("/nested").json() == {"f": None}
+    assert client.get("/nested?z=1").json() == {"f": {"r": None, "z": 1}}
+    assert client.get("/nested?x=2").json() == {"f": {"r": {"x": 2}, "z": 0}}
+
+
+type MaybeRequired = Required | None
+
+
+def test_nullable_schema_named_by_an_alias_takes_its_default():
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/alias")
+    def alias(request, f: MaybeRequired = Query(None)) -> dict:
+        return {"f": f and f.model_dump()}
+
+    client = TestClient(temp_api)
+
+    assert client.get("/alias").json() == {"f": None}
+    assert client.get("/alias?x=1").json() == {"f": {"x": 1}}
+
+
+def test_nullable_schema_fields_are_not_required_in_the_spec():
+    class Filters(Schema):
+        x: int
+        y: str | None = None
+
+    class Outer(Schema):
+        r: Required | None = None
+        z: int = 0
+
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/optional")
+    def optional(
+        request, f: Filters | None = Query(None), order: Range | None = None
+    ) -> None:
+        pass
+
+    @temp_api.get("/required")
+    def required(request, f: Filters = Query(...)) -> None:
+        pass
+
+    @temp_api.get("/declared-required")
+    def declared_required(request, f: Filters | None = Query(...)) -> None:
+        pass
+
+    @temp_api.get("/nested")
+    def nested(request, f: Outer = Query(...)) -> None:
+        pass
+
+    paths = temp_api.get_openapi_schema()["paths"]
+
+    def required_params(path):
+        return {p["name"]: p["required"] for p in paths[path]["get"]["parameters"]}
+
+    assert required_params("/api/optional") == {"x": False, "y": False, "order": False}
+    assert required_params("/api/required") == {"x": True, "y": False}
+    assert required_params("/api/declared-required") == {"x": True, "y": False}
+    assert required_params("/api/nested") == {"x": False, "z": False}

@@ -287,6 +287,15 @@ def test_auth(path, kwargs, expected_code, expected_body, settings):
         assert response.json() == expected_body
 
 
+def test_bearer_debug_log_does_not_include_credential(settings, caplog):
+    settings.DEBUG = True
+    with caplog.at_level("ERROR", logger="django"):
+        response = client.get("/bearer", headers={"Authorization": "Token s3cr3t"})
+    assert response.status_code == 401
+    assert "s3cr3t" not in caplog.text
+    assert "'Token'" in caplog.text
+
+
 def test_bearer_empty_token():
     """Bearer with trailing space only should return 401 without calling authenticate."""
     mock = Mock()
