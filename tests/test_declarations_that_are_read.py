@@ -150,6 +150,26 @@ def test_single_body_parameter_with_an_alias_that_is_no_name_is_read_as_before(
     assert TestClient(api).post("/count", json=sent).json() == 3
 
 
+def test_nullable_schema_nested_under_a_validation_alias_takes_its_default():
+    class Span(Schema):
+        low: int
+
+    class Filters(Schema):
+        span: Span | None = Field(None, validation_alias="range")
+        limit: int = 0
+
+    api = HattoriAPI()
+
+    @api.get("/list")
+    def listing(request, filters: Query[Filters]) -> dict:
+        return filters.model_dump()
+
+    client = TestClient(api)
+
+    assert client.get("/list?limit=1").json() == {"span": None, "limit": 1}
+    assert client.get("/list?low=2").json() == {"span": {"low": 2}, "limit": 0}
+
+
 def test_query_model_that_does_not_validate_by_alias_is_read_by_name():
     class Filters(Schema):
         model_config = ConfigDict(validate_by_name=True, validate_by_alias=False)

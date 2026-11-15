@@ -385,10 +385,13 @@ def _nullable_model_paths(
     if _allows_none(annotation) and not field.is_required():
         yield path
     model = _unwrap_union_model(annotation)
+    by_alias = _reads_by_alias(model)
     for attr, sub_field in model.model_fields.items():
         if is_pydantic_model(sub_field.annotation):
             yield from _nullable_model_paths(
-                sub_field.annotation, sub_field, (*path, sub_field.alias or attr)
+                sub_field.annotation,
+                sub_field,
+                (*path, _read_name(sub_field, attr, by_alias)),
             )
 
 
