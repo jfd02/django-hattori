@@ -64,8 +64,17 @@ class ParamModel(BaseModel, ABC):
             return data
 
         mapped_data: dict[str, Any] = {}
+        sent: set[tuple[str, ...]] = set()
         for key, path in flatten_map.items():
-            cls._map_data_path(mapped_data, data.get(key), path)
+            value = data.get(key)
+            if value is not None:
+                sent.update(path[:depth] for depth in range(1, len(path)))
+            cls._map_data_path(mapped_data, value, path)
+        # A nullable schema with a default, none of whose fields was sent,
+        # takes that default instead of being built from no data at all.
+        for path in getattr(cls, "__hattori_nullable_models__", ()):
+            if path not in sent:
+                _pop_path(mapped_data, path)
         return mapped_data
 
     @classmethod
@@ -77,6 +86,15 @@ class ParamModel(BaseModel, ABC):
             current = current.setdefault(key, {})
         if value is not None:
             current[path[-1]] = value
+
+
+def _pop_path(data: dict[str, Any], path: tuple[str, ...]) -> None:
+    *parents, last = path
+    for key in parents:
+        data = data.get(key)  # type: ignore[assignment]
+        if not isinstance(data, dict):
+            return
+    data.pop(last, None)
 
 
 def _parse_querydict(

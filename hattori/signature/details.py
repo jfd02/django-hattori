@@ -153,6 +153,14 @@ class ViewSignature:
             }:
                 flatten_map = self._args_flatten_map(args)
                 attrs["__hattori_flatten_map__"] = flatten_map
+                attrs["__hattori_nullable_models__"] = [
+                    path
+                    for arg in args
+                    if is_pydantic_model(arg.annotation)
+                    for path in _nullable_model_paths(
+                        arg.annotation, arg.source, (arg.alias,)
+                    )
+                ]
                 attrs["__hattori_flatten_map_reverse__"] = {
                     v: (k,) for k, v in flatten_map.items()
                 }
@@ -313,6 +321,30 @@ def _unalias(annotation: Any) -> Any:
     while is_alias(annotation):
         annotation = alias_value(annotation)
     return annotation
+
+
+def _allows_none(annotation: Any) -> bool:
+    annotation = _unalias(annotation)
+    return get_origin(annotation) in UNION_TYPES and type(None) in get_args(annotation)
+
+
+def _nullable_model_paths(
+    annotation: Any, field: FieldInfo, path: tuple[str, ...]
+) -> Generator[tuple[str, ...]]:
+    """Where a schema that may be None and has a default sits among flattened params.
+
+    ``annotation`` is the schema a param or field of one is declared as,
+    ``field`` what it was declared with and ``path`` where its fields are
+    mapped to, the way ``_model_flatten_map`` maps them.
+    """
+    if _allows_none(annotation) and not field.is_required():
+        yield path
+    model = _unwrap_union_model(annotation)
+    for attr, sub_field in model.model_fields.items():
+        if is_pydantic_model(sub_field.annotation):
+            yield from _nullable_model_paths(
+                sub_field.annotation, sub_field, (*path, sub_field.alias or attr)
+            )
 
 
 def _unwrap_union_model(annotation: Any) -> Any:
