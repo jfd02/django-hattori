@@ -169,7 +169,7 @@ class ViewSignature:
                 assert attrs["__hattori_param_source__"] == "body"
                 if is_multipart_response_with_body:
                     attrs["__hattori_body_params__"] = {
-                        i.alias: i.annotation for i in args
+                        i.alias: is_multipart_json_part(i.annotation) for i in args
                     }
                 else:
                     # ::TODO:: this is still sus.  build some test cases
@@ -394,6 +394,37 @@ def is_collection_type(annotation: Any) -> bool:
         )
     else:
         return origin in collection_types  # TODO: I guess we should handle only list
+
+
+_JSON_PRIMITIVE_TYPES = {"string", "integer", "number", "boolean", "null"}
+
+
+def is_multipart_json_part(annotation: Any) -> bool:
+    """Whether a Body param sent beside File/Form params is a JSON part.
+
+    The spec documents it as a property of the multipart body, so it is read
+    the way OpenAPI's default multipart encoding reads that property:
+    primitives (str, int, date, Enum, Literal, UUID, ...) are plain text and
+    everything else (schemas, lists, dicts, TypedDict, Any, ...) is JSON.
+    """
+    try:
+        schema = pydantic.TypeAdapter(annotation).json_schema()
+    except Exception:  # no JSON schema to go by: read it as JSON
+        return True
+    return not _is_primitive_schema(schema, schema.get("$defs", {}))
+
+
+def _is_primitive_schema(schema: dict[str, Any], defs: dict[str, Any]) -> bool:
+    if "$ref" in schema:
+        return _is_primitive_schema(defs[schema["$ref"].rsplit("/", 1)[-1]], defs)
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema:
+            return all(_is_primitive_schema(s, defs) for s in schema[key])
+    if "type" not in schema:
+        # An untyped Literal[1, "a"] is primitive, {} (Any) is not.
+        return "enum" in schema or "const" in schema
+    types = schema["type"]
+    return set(types if isinstance(types, list) else [types]) <= _JSON_PRIMITIVE_TYPES
 
 
 def detect_collection_fields(
