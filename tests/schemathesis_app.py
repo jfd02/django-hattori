@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from django.urls import path
 from pydantic import BeforeValidator, ConfigDict, Field
 
-from hattori import ApiError, File, Form, HattoriAPI, Query, Schema
+from hattori import ApiError, Body, File, Form, HattoriAPI, Header, Query, Schema
 from hattori.files import UploadedFile
 
 api = HattoriAPI(urls_namespace="schemathesis")
@@ -94,6 +94,30 @@ def error(request, fail: bool = Query(False)) -> str | BusinessError:
 @api.get("/async")
 async def async_view(request, value: str = Query("")) -> str:
     return value
+
+
+@api.post("/aliased-body")
+def aliased_body(request, payload: Payload = Body(..., alias="item")) -> Payload:
+    return payload
+
+
+class Labelled(Schema):
+    label: str = Field(validation_alias="tag", min_length=1, max_length=8)
+
+
+@api.get("/aliased-query")
+def aliased_query(request, labelled: Query[Labelled]) -> str:
+    return labelled.label
+
+
+@api.get("/header-list")
+def header_list(request, tags: list[str] = Header(...)) -> list[str]:
+    return tags
+
+
+@api.get("/nullable", exclude_none=True)
+def nullable(request) -> str | None:
+    return None
 
 
 urlpatterns = [path("api/", api.urls)]

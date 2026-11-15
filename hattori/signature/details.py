@@ -40,6 +40,24 @@ FuncParam = namedtuple(
 )
 
 
+def _read_name(field: FieldInfo, name: str, by_alias: bool = True) -> str:
+    """The name ``field`` is read from a request by.
+
+    Its validation alias, where it has a plain one, else its alias, else the
+    name it is declared under. A model that does not validate by alias
+    (``validate_by_alias=False``) reads every field by its name.
+    """
+    if not by_alias:
+        return name
+    alias = field.validation_alias
+    return alias if isinstance(alias, str) else field.alias or name
+
+
+def _reads_by_alias(model: Any) -> bool:
+    by_alias: bool = model.model_config.get("validate_by_alias", True)
+    return by_alias
+
+
 class ViewSignature:
     FLATTEN_PATH_SEP = (
         "\x1e"  # ASCII Record Separator.  IE: not generally used in query names
@@ -91,7 +109,9 @@ class ViewSignature:
             # inside decorators or other functions
             for p_name, p_type, p_source in view_func._hattori_contribute_args:
                 self.params.append(
-                    FuncParam(p_name, p_source.alias or p_name, p_source, p_type, False)
+                    FuncParam(
+                        p_name, _read_name(p_source, p_name), p_source, p_type, False
+                    )
                 )
 
         self.models: TModels = self._create_models()
@@ -172,9 +192,8 @@ class ViewSignature:
                         i.alias: is_multipart_json_part(i.annotation) for i in args
                     }
                 else:
-                    # ::TODO:: this is still sus.  build some test cases
                     attrs["__read_from_single_attr__"] = (
-                        args[0].name if len(args) == 1 else None
+                        self._single_body_key(args[0]) if len(args) == 1 else None
                     )
 
             # adding annotations
@@ -198,11 +217,33 @@ class ViewSignature:
                 if is_collection_type(field.annotation) and is_comma_separated(field)
             ]
 
+            source = attrs["__hattori_param_source__"]
+            if source == "cookie":
+                # A cookie has one value, so a list in it is comma-separated
+                # whatever explode says, and is documented so.
+                attrs["__hattori_csv_fields__"] = attrs["__hattori_collection_fields__"]
+            elif source in ("header", "path"):
+                # So do a header and a path, but the simple style OpenAPI gives
+                # them already says so, and form is not one either may take.
+                attrs["__hattori_csv_fields__"] = []
+
             base_cls = param_cls._model
             model_cls = type(cls_name, (base_cls,), attrs)
             # TODO: https://pydantic-docs.helpmanual.io/usage/models/#dynamic-model-creation - check if anything special in create_model method that I did not use
             result.append(model_cls)
         return result
+
+    @staticmethod
+    def _single_body_key(arg: FuncParam) -> str:
+        """The key a body that is one parameter is handed to pydantic under.
+
+        The body is that parameter's value, so the key names nothing a client
+        sends: it only has to be one pydantic reads the parameter by. That is
+        its validation alias where it has a plain one, and its own name
+        otherwise.
+        """
+        alias = arg.source.validation_alias
+        return alias if isinstance(alias, str) else arg.name
 
     def _args_flatten_map(self, args: list[FuncParam]) -> dict[str, tuple[str, ...]]:
         flatten_map = {}
@@ -230,8 +271,9 @@ class ViewSignature:
     def _model_flatten_map(self, model: TModel, prefix: str) -> Generator:
         model = _unwrap_union_model(model)
         field: FieldInfo
+        by_alias = _reads_by_alias(model)
         for attr, field in model.model_fields.items():
-            field_name = field.alias or attr
+            field_name = _read_name(field, attr, by_alias)
             name = f"{prefix}{self.FLATTEN_PATH_SEP}{field_name}"
             if is_pydantic_model(field.annotation):
                 yield from self._model_flatten_map(field.annotation, name)  # type: ignore
@@ -311,7 +353,11 @@ class ViewSignature:
             annotation = annotation | None
 
         return FuncParam(
-            name, param_source.alias or name, param_source, annotation, is_collection
+            name,
+            _read_name(param_source, name),
+            param_source,
+            annotation,
+            is_collection,
         )
 
 
@@ -339,10 +385,13 @@ def _nullable_model_paths(
     if _allows_none(annotation) and not field.is_required():
         yield path
     model = _unwrap_union_model(annotation)
+    by_alias = _reads_by_alias(model)
     for attr, sub_field in model.model_fields.items():
         if is_pydantic_model(sub_field.annotation):
             yield from _nullable_model_paths(
-                sub_field.annotation, sub_field, (*path, sub_field.alias or attr)
+                sub_field.annotation,
+                sub_field,
+                (*path, _read_name(sub_field, attr, by_alias)),
             )
 
 
@@ -454,14 +503,12 @@ def _flattened_fields(
             if hasattr(annotation_or_field, "annotation"):
                 annotation_or_field = annotation_or_field.annotation
             annotation_or_field = _unwrap_union_model(annotation_or_field)
+            by_alias = _reads_by_alias(annotation_or_field)
             annotation_or_field = next(
-                (
-                    a
-                    for a in annotation_or_field.model_fields.values()
-                    if a.alias == attr
-                ),
-                annotation_or_field.model_fields.get(attr),
-            )  # pragma: no cover
+                field
+                for name, field in annotation_or_field.model_fields.items()
+                if _read_name(field, name, by_alias) == attr
+            )
 
             annotation_or_field = getattr(
                 annotation_or_field, "outer_type_", annotation_or_field

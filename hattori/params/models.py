@@ -114,6 +114,20 @@ def _parse_querydict(
     return result
 
 
+def _split_lists(data: Any, list_fields: list[str]) -> dict[str, Any]:
+    """``data`` with each of ``list_fields`` split on its commas.
+
+    A list in a path, a header or a cookie is one comma-separated value, which
+    is how OpenAPI writes an array there.
+    """
+    result = dict(data)
+    for name in list_fields:
+        if isinstance(result.get(name), str):
+            items = (item.strip() for item in result[name].split(","))
+            result[name] = [item for item in items if item]
+    return result
+
+
 class QueryModel(ParamModel):
     @classmethod
     def get_request_data(
@@ -129,7 +143,8 @@ class PathModel(ParamModel):
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
-        return path_params
+        list_fields = getattr(cls, "__hattori_collection_fields__", [])
+        return _split_lists(path_params, list_fields)
 
 
 class HeaderModel(ParamModel):
@@ -144,7 +159,8 @@ class HeaderModel(ParamModel):
         for name in cls.__hattori_flatten_map__:
             if name in headers:
                 data[name] = headers[name]
-        return data
+        list_fields = getattr(cls, "__hattori_collection_fields__", [])
+        return _split_lists(data, list_fields)
 
 
 class CookieModel(ParamModel):
@@ -152,7 +168,8 @@ class CookieModel(ParamModel):
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
-        return request.COOKIES
+        list_fields = getattr(cls, "__hattori_collection_fields__", [])
+        return _split_lists(request.COOKIES, list_fields)
 
 
 def is_json_media_type(content_type: str) -> bool:

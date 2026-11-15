@@ -672,14 +672,15 @@ class Guard:
             {"response": result}, context=ctx
         )
 
-        result = self._dump_model(validated_object, ctx)["response"]
+        result = self._dump_model(validated_object, ctx)
         return self.api.create_response(
             request, result, temporal_response=temporal_response
         )
 
     def _dump_model(
         self, model: BaseModel, ctx: dict[str, Any], *, stream: bool = False
-    ) -> dict[str, Any]:
+    ) -> Any:
+        """What the declared type writes for a validated response."""
         mode = (
             "json"
             if stream
@@ -700,7 +701,9 @@ class Guard:
             exclude_defaults=self.exclude_defaults,
             exclude_none=self.exclude_none,
         )
-        return dumped
+        # The exclusions are for what the response holds. A response that is
+        # itself None is left out with them, and is still the response.
+        return dumped.get("response")
 
     def _create_response_model(self, response_param: Any) -> type[Schema] | None:
         if response_param is None:
@@ -782,7 +785,8 @@ class Operation(Guard):
 
         if need_to_fix_request_files(methods, self.models):
             raise ConfigError(
-                f"Router '{path}' has method(s) {methods}  that require fixing request.FILES. "
+                f"Router '{path}' has method(s) {methods} that read a form or a "
+                f"file, which Django parses for POST only. "
                 f"Please add '{FIX_MIDDLEWARE_PATH}' to settings.MIDDLEWARE"
             )
 
@@ -953,8 +957,7 @@ class Operation(Guard):
             {"response": item}, context=ctx
         )
 
-        result = self._dump_model(validated, ctx, stream=True)["response"]
-        return _serialize_item(result)
+        return _serialize_item(self._dump_model(validated, ctx, stream=True))
 
     def _stream_response(
         self,
