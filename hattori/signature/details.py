@@ -239,7 +239,6 @@ class ViewSignature:
                 yield field_name, name
 
     def _get_param_type(self, name: str, arg: inspect.Parameter) -> FuncParam:
-        # _EMPTY = self.signature.empty
         annotation = arg.annotation
         default = arg.default
 

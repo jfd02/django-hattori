@@ -11,7 +11,6 @@ from hattori.constants import NOT_SET
 from hattori.security.base import auth_attribute
 
 if TYPE_CHECKING:
-    # if anyone knows a cleaner way to make mypy happy - welcome
     from hattori import HattoriAPI  # pragma: no cover
 
 ABS_TPL_PATH = Path(__file__).parent.parent / "templates/hattori/"

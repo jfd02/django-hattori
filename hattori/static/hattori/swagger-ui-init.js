@@ -16,31 +16,4 @@ if (csrfSettings.apiCsrf && csrfSettings.csrfToken) {
     };
 };
 
-
-// {% if add_csrf %}
-// configObject.requestInterceptor = (req) => {
-//     req.headers['X-CSRFToken'] = "{{csrf_token}}";
-//     return req;
-// };
-// {% endif %}
-
 const ui = SwaggerUIBundle(configObject);
-
-
-
-// SwaggerUIBundle({
-//     url: swaggerUi.dataset.openapiUrl,
-//     dom_id: '#swagger-ui',
-//     presets: [
-//         SwaggerUIBundle.presets.apis,
-//         SwaggerUIBundle.SwaggerUIStandalonePreset
-//     ],
-//     layout: "BaseLayout",
-//     requestInterceptor: (req) => {
-//         if (swaggerUi.dataset.apiCsrf && swaggerUi.dataset.csrfToken) {
-//             req.headers['X-CSRFToken'] = swaggerUi.dataset.csrfToken
-//         }
-//         return req;
-//     },
-//     deepLinking: true
-// })
