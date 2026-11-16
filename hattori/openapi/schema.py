@@ -602,7 +602,7 @@ class OpenAPISchema(dict):
             description = operation.response_descriptions.get(
                 status
             ) or HTTP_STATUS_PHRASES.get(status, "Unknown Status Code")
-            details: dict[int, Any] = {status: {"description": description}}
+            details: dict[str, Any] = {"description": description}
             if model is not None:
                 ref_name_suffix = "_by_alias" if operation.by_alias else ""
                 schema = self._create_schema_from_model(
@@ -626,14 +626,14 @@ class OpenAPISchema(dict):
                     operation.stream_format is not None
                     and model is operation.stream_item_model
                 ):
-                    details[status]["content"] = (
-                        operation.stream_format.openapi_content_schema(schema)
+                    details["content"] = operation.stream_format.openapi_content_schema(
+                        schema
                     )
                 else:
-                    details[status]["content"] = {
+                    details["content"] = {
                         self.api.renderer.media_type: {"schema": schema}
                     }
-            result.update(details)
+            result[status] = details
 
         if self._can_fail_to_read_body(operation, method):
             # A body that cannot be read is answered before Pydantic validation.
