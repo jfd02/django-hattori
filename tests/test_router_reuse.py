@@ -748,20 +748,12 @@ class TestRouterAddRouterStringImport:
         parent.add_router("/test", child)
 
         assert len(parent._routers) == 1
-        (
-            _,
-            added_child,
-            mount_auth,
-            mount_permissions,
-            mount_tags,
-            mount_url_name_prefix,
-        ) = parent._routers[0]
-        assert isinstance(added_child, Router)
-        assert added_child is child
-        assert mount_auth is NOT_SET
-        assert mount_permissions is NOT_SET
-        assert mount_tags is None  # No tags specified in add_router
-        assert mount_url_name_prefix is None
+        registration = parent._routers[0]
+        assert registration.router is child
+        assert registration.auth is NOT_SET
+        assert registration.permissions is NOT_SET
+        assert registration.tags is None  # No tags specified in add_router
+        assert registration.url_name_prefix is None
 
 
 class TestBuildRoutersEdgeCases:

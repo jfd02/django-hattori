@@ -64,6 +64,14 @@ class RouterMount:
             self.permissions, self.template.permissions, self.inherited_permissions
         )
 
+    # Tags from the add_router call replace the inherited chain and the
+    # template's own tags. Otherwise they accumulate: inherited, then own.
+    @property
+    def effective_tags(self) -> list[str] | None:
+        if self.tags is not None:
+            return self.tags
+        return ((self.inherited_tags or []) + (self.template.tags or [])) or None
+
 
 def _first_set(*values: Any) -> Any:
     # Falsy values (None, []) are explicit settings; only NOT_SET is skipped.
@@ -71,6 +79,42 @@ def _first_set(*values: Any) -> Any:
         if value is not NOT_SET:
             return value
     return NOT_SET
+
+
+@dataclass(frozen=True)
+class _RouterRegistration:
+    """A router passed to add_router(), with the options given for that mount."""
+
+    prefix: str
+    router: Router
+    auth: Any = NOT_SET
+    permissions: Any = NOT_SET
+    tags: list[str] | None = None
+    url_name_prefix: str | None = None
+
+    def build_mounts(
+        self,
+        path: str,
+        inherited_decorators: list[tuple[Callable[..., Any], DecoratorMode]],
+        *,
+        inherited_auth: Any = NOT_SET,
+        inherited_tags: list[str] | None = None,
+        inherited_permissions: Any = NOT_SET,
+    ) -> list[RouterMount]:
+        mounts = self.router.build_routers(
+            path,
+            inherited_decorators,
+            inherited_auth,
+            inherited_tags,
+            inherited_permissions,
+            mount_auth=self.auth,
+            mount_permissions=self.permissions,
+            mount_tags=self.tags,
+        )
+        if self.url_name_prefix is not None:
+            for mount in mounts:
+                mount.url_name_prefix = self.url_name_prefix
+        return mounts
 
 
 @dataclass(frozen=True)
@@ -123,21 +167,7 @@ class BoundRouter:
         self.auth = mount.effective_auth
         self.permissions = mount.effective_permissions
 
-        # Tags handling (issue #794):
-        # - mount.tags (from add_router call) = explicit override, use as-is
-        # - Otherwise, accumulate: inherited tags + template's own tags
-        self.tags: list[str] | None
-        if mount.tags is not None:
-            # Explicit tags from add_router() call - use as override
-            self.tags = mount.tags
-        else:
-            # Accumulate inherited tags with template's own tags
-            accumulated_tags: list[str] = []
-            if mount.inherited_tags is not None:
-                accumulated_tags.extend(mount.inherited_tags)
-            if mount.template.tags is not None:
-                accumulated_tags.extend(mount.template.tags)
-            self.tags = accumulated_tags or None
+        self.tags = mount.effective_tags
 
         # Clone operations and apply decorators
         self.path_operations: dict[str, PathView] = {}
@@ -493,16 +523,14 @@ class Router(_HTTPMethodDecorators):
         self.exclude_none = exclude_none
 
         self.path_operations: dict[str, PathView] = {}
-        self._routers: list[
-            tuple[str, Router, Any, Any, list[str] | None, str | None]
-        ] = []
+        self._routers: list[_RouterRegistration] = []
         self._decorators: list[tuple[Callable[..., Any], DecoratorMode]] = []
 
     def _freeze(self) -> None:
         """Mark router as frozen - no more modifications allowed."""
         self._frozen = True
-        for _, child_router, *_ in self._routers:
-            child_router._freeze()
+        for registration in self._routers:
+            registration.router._freeze()
 
     def _check_not_frozen(self) -> None:
         """Raise error if attempting to modify a frozen router."""
@@ -661,7 +689,7 @@ class Router(_HTTPMethodDecorators):
             router = import_string(router)
             assert isinstance(router, Router)
 
-        existing_templates = {child_router for _, child_router, *_ in self._routers}
+        existing_templates = {registration.router for registration in self._routers}
         if router in existing_templates and url_name_prefix is None:
             raise ConfigError(
                 "Router is already mounted to this parent router. When mounting "
@@ -671,7 +699,16 @@ class Router(_HTTPMethodDecorators):
 
         # Store child router with its mount-time configuration.
         # These values belong to the mount, not the shared router template.
-        self._routers.append((prefix, router, auth, permissions, tags, url_name_prefix))
+        self._routers.append(
+            _RouterRegistration(
+                prefix=prefix,
+                router=router,
+                auth=auth,
+                permissions=permissions,
+                tags=tags,
+                url_name_prefix=url_name_prefix,
+            )
+        )
 
     def add_decorator(
         self,
@@ -702,6 +739,7 @@ class Router(_HTTPMethodDecorators):
         *,
         mount_auth: Any = NOT_SET,
         mount_permissions: Any = NOT_SET,
+        mount_tags: list[str] | None = None,
     ) -> list[RouterMount]:
         """
         Build mount configurations for this router and all child routers.
@@ -718,6 +756,7 @@ class Router(_HTTPMethodDecorators):
             mount_auth: Auth override from the add_router() call for this mount
             mount_permissions: Permissions override from the add_router() call
                 for this mount
+            mount_tags: Tags override from the add_router() call for this mount
 
         Returns:
             List of RouterMount configurations for this router and all descendants
@@ -731,6 +770,7 @@ class Router(_HTTPMethodDecorators):
             prefix=prefix,
             auth=mount_auth,
             permissions=mount_permissions,
+            tags=mount_tags,
             inherited_decorators=list(inherited_decorators),
             inherited_auth=inherited_auth,
             inherited_permissions=inherited_permissions,
@@ -740,42 +780,28 @@ class Router(_HTTPMethodDecorators):
         # Calculate values to pass to children
         child_decorators = inherited_decorators + self._decorators
 
-        # Children inherit this router's effective auth/permissions, so a
+        # Children inherit this router's effective auth/permissions/tags, so a
         # mount-level override reaches descendants just as it reaches this router.
+        # Children then add their own tags on top of the inherited ones.
         child_auth = mount.effective_auth
         child_permissions = mount.effective_permissions
-        # Tags accumulate (not override): a child inherits the full chain of its
-        # ancestors' tags plus this router's own. Passing only self.tags (or only
-        # inherited) drops ancestor tags beyond two levels of nesting.
-        child_tags = ((inherited_tags or []) + (self.tags or [])) or None
+        child_tags = mount.effective_tags
 
         # Build mounts for child routers
         child_mounts: list[RouterMount] = []
-        for (
-            child_prefix,
-            child_router,
-            child_mount_auth,
-            child_mount_permissions,
-            child_mount_tags,
-            child_url_name_prefix,
-        ) in self._routers:
-            child_path = normalize_path("/".join((prefix, child_prefix))).lstrip("/")
-            mounts = child_router.build_routers(
-                child_path,
-                child_decorators,
-                child_auth,
-                child_tags,
-                child_permissions,
-                mount_auth=child_mount_auth,
-                mount_permissions=child_mount_permissions,
+        for registration in self._routers:
+            child_path = normalize_path("/".join((prefix, registration.prefix))).lstrip(
+                "/"
             )
-            # Apply mount-level tags override to the first mount (the child router itself)
-            if mounts and child_mount_tags is not None:
-                mounts[0].tags = child_mount_tags
-            if child_url_name_prefix is not None:
-                for child_mount in mounts:
-                    child_mount.url_name_prefix = child_url_name_prefix
-            child_mounts.extend(mounts)
+            child_mounts.extend(
+                registration.build_mounts(
+                    child_path,
+                    child_decorators,
+                    inherited_auth=child_auth,
+                    inherited_tags=child_tags,
+                    inherited_permissions=child_permissions,
+                )
+            )
 
         return [mount, *child_mounts]
 
