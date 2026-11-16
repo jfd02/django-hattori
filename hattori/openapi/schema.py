@@ -442,11 +442,16 @@ class OpenAPISchema(dict):
 
                 result.append(param)
 
-        # Extract first: named examples may live on fields of shared query
-        # models, which must not retain the parameter-only map either.
+        # Extract first: a definition a parameter still references may declare
+        # named examples, and must not keep the parameter-only map either.
         strip_named_examples(schema)
-        if "$defs" in schema:
-            renames = self.add_schema_definitions(schema["$defs"])
+        # A query model's fields became parameters of their own, so register
+        # only what those parameters still reference, such as an enum.
+        definitions = referenced_definitions(
+            [parameter["schema"] for parameter in result], schema.get("$defs", {})
+        )
+        if definitions:
+            renames = self.add_schema_definitions(definitions)
             for parameter in result:
                 self.rename_schema_refs(parameter["schema"], renames)
 
@@ -1002,6 +1007,31 @@ def schema_nodes(schema: Any) -> Generator[dict[str, Any]]:
     ):
         child = schema.get(keyword)
         yield from schema_nodes(child)
+
+
+def referenced_definitions(
+    roots: list[Any], definitions: dict[str, Any]
+) -> dict[str, Any]:
+    """The definitions the roots reference, directly or through each other, in
+    their original order."""
+    prefix = REF_TEMPLATE.format(model="")
+    reached: set[str] = set()
+    pending = list(roots)
+    while pending:
+        for node in schema_nodes(pending.pop()):
+            refs = [
+                node.get("$ref"),
+                node.get("$dynamicRef"),
+                *node.get("discriminator", {}).get("mapping", {}).values(),
+            ]
+            for ref in refs:
+                if not isinstance(ref, str) or not ref.startswith(prefix):
+                    continue
+                name = ref.removeprefix(prefix)
+                if name in definitions and name not in reached:
+                    reached.add(name)
+                    pending.append(definitions[name])
+    return {name: schema for name, schema in definitions.items() if name in reached}
 
 
 def strip_named_examples(schema: dict[str, Any]) -> None:
