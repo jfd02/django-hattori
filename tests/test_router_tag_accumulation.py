@@ -43,3 +43,47 @@ def test_three_level_tag_accumulation():
     schema = api.get_openapi_schema()
     # Every ancestor tag must be present, in order.
     assert _tags(schema, "/leaf") == ["a", "b", "c"]
+
+
+def test_nested_mount_tags_reach_descendants():
+    api = HattoriAPI()
+    parent = Router(tags=["parent"])
+    child = Router(tags=["child"])
+    grandchild = Router(tags=["grandchild"])
+    child.add_router("/grandchild", grandchild)
+    parent.add_router("/child", child, tags=["mounted"])
+
+    @child.get("/own")
+    def own(request) -> None:  # noqa: ARG001
+        pass
+
+    @grandchild.get("/leaf")
+    def leaf(request) -> None:  # noqa: ARG001
+        pass
+
+    api.add_router("/parent", parent)
+    schema = api.get_openapi_schema()
+    # Mount tags replace the child's inherited and own tags...
+    assert _tags(schema, "/own") == ["mounted"]
+    # ...and descendants build on them, as with auth and permissions.
+    assert _tags(schema, "/leaf") == ["mounted", "grandchild"]
+
+
+def test_top_level_mount_tags_replace_router_tags_for_descendants():
+    api = HattoriAPI()
+    parent = Router(tags=["parent"])
+    child = Router(tags=["child"])
+    parent.add_router("/child", child)
+
+    @parent.get("/own")
+    def own(request) -> None:  # noqa: ARG001
+        pass
+
+    @child.get("/leaf")
+    def leaf(request) -> None:  # noqa: ARG001
+        pass
+
+    api.add_router("/parent", parent, tags=["mounted"])
+    schema = api.get_openapi_schema()
+    assert _tags(schema, "/own") == ["mounted"]
+    assert _tags(schema, "/leaf") == ["mounted", "child"]

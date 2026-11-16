@@ -38,6 +38,7 @@ from hattori.router import (
     RouterMount,
     _HTTPMethodDecorators,
     _OperationOptions,
+    _RouterRegistration,
 )
 from hattori.security.permissions import validate_permissions
 from hattori.types import TCallable
@@ -150,10 +151,7 @@ class HattoriAPI(_HTTPMethodDecorators):
         else:
             self.permissions = [permissions]
 
-        # Top-level registrations: (prefix, router, auth, permissions, tags, url_name_prefix).
-        self._router_registrations: list[
-            tuple[str, Router, Any, Any, list[str] | None, str | None]
-        ] = []
+        self._router_registrations: list[_RouterRegistration] = []
         self._bound_routers_cache: list[BoundRouter] | None = None
         self._openapi_schema: OpenAPISchema | None = None
         self._openapi_schema_lock = threading.Lock()
@@ -248,7 +246,8 @@ class HattoriAPI(_HTTPMethodDecorators):
             router: Router instance or import path string
             auth: Authentication override for this router
             permissions: Permissions override for this router
-            tags: Tags override for this router
+            tags: Tags for this router, replacing its own; nested routers
+                inherit them and add their own
             url_name_prefix: Prefix for URL names (required when mounting same router multiple times)
         """
         # Prevent adding routers after URLs have been generated
@@ -264,7 +263,9 @@ class HattoriAPI(_HTTPMethodDecorators):
             assert isinstance(router, Router)
 
         # Check for duplicate router template - require url_name_prefix
-        existing_templates = {reg[1] for reg in self._router_registrations}
+        existing_templates = {
+            registration.router for registration in self._router_registrations
+        }
         if router in existing_templates and url_name_prefix is None:
             raise ConfigError(
                 "Router is already mounted to this API. When mounting the same router "
@@ -273,14 +274,16 @@ class HattoriAPI(_HTTPMethodDecorators):
 
         # Store registration for later processing during URL generation
         # This allows child routers to be added after add_router() is called
-        self._router_registrations.append((
-            prefix,
-            router,
-            auth,
-            permissions,
-            tags,
-            url_name_prefix,
-        ))
+        self._router_registrations.append(
+            _RouterRegistration(
+                prefix=prefix,
+                router=router,
+                auth=auth,
+                permissions=permissions,
+                tags=tags,
+                url_name_prefix=url_name_prefix,
+            )
+        )
 
     @property
     def urls(self) -> tuple[list[URLResolver | URLPattern], str, str]:
@@ -304,45 +307,18 @@ class HattoriAPI(_HTTPMethodDecorators):
             # Build mounts from registrations (delayed to capture all child routers)
             all_mounts: list[RouterMount] = []
 
-            for (
-                prefix,
-                router,
-                auth,
-                permissions,
-                tags,
-                url_name_prefix,
-            ) in self._router_registrations:
+            for registration in self._router_registrations:
                 # Get API-level decorators from default router
                 api_decorators = (
                     self.default_router._decorators
-                    if router is not self.default_router
+                    if registration.router is not self.default_router
                     else []
                 )
 
                 # Build mount configurations (non-mutating)
-                # auth/permissions are this mount's overrides; they apply to the
-                # router and are inherited by its children. Tags are passed so
-                # they can be inherited by children.
-                mounts = router.build_routers(
-                    prefix,
-                    api_decorators,
-                    inherited_tags=tags,
-                    mount_auth=auth,
-                    mount_permissions=permissions,
+                all_mounts.extend(
+                    registration.build_mounts(registration.prefix, api_decorators)
                 )
-
-                # Apply the mount-level tags override to the first (parent) mount
-                # build_routers() always returns at least one mount (the router itself)
-                first_mount = mounts[0]
-                if tags is not None:
-                    first_mount.tags = tags
-
-                # Apply url_name_prefix to all mounts
-                if url_name_prefix is not None:
-                    for mount in mounts:
-                        mount.url_name_prefix = url_name_prefix
-
-                all_mounts.extend(mounts)
 
             # Create bound routers from mounts
             bound_routers = [BoundRouter(mount, self) for mount in all_mounts]
