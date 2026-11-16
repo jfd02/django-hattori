@@ -202,24 +202,38 @@ class BoundRouter:
 
     def urls_paths(self, prefix: str) -> collections.abc.Iterator[URLPattern]:
         """Generate URL patterns for this bound router."""
-        prefix = replace_path_param_notation(prefix)
-        for path, path_view in self.path_operations.items():
-            path = replace_path_param_notation(path)
-            route = "/".join([i for i in (prefix, path) if i])
-            route = normalize_path(route)
-            route = route.lstrip("/")
+        return _url_patterns(
+            prefix,
+            self.path_operations,
+            self.api,
+            self.template,
+            self.url_name_prefix,
+        )
 
-            for operation in path_view.operations:
-                url_name = getattr(operation, "url_name", "")
-                if not url_name:
-                    url_name = self.api.get_operation_url_name(
-                        operation, router=self.template
-                    )
-                    # Apply url_name_prefix if specified
-                    if self.url_name_prefix and url_name:
-                        url_name = f"{self.url_name_prefix}_{url_name}"
 
-                yield django_path(route, path_view.get_view(), name=url_name)
+def _url_patterns(
+    prefix: str,
+    path_operations: dict[str, PathView],
+    api: HattoriAPI | None,
+    router: Router,
+    url_name_prefix: str | None = None,
+) -> collections.abc.Iterator[URLPattern]:
+    # An operation without an explicit url_name is named by the API; without
+    # an API it is left unnamed.
+    prefix = replace_path_param_notation(prefix)
+    for path, path_view in path_operations.items():
+        route = "/".join([i for i in (prefix, replace_path_param_notation(path)) if i])
+        # to skip lot of checks we simply treat double slash as a mistake:
+        route = normalize_path(route).lstrip("/")
+
+        for operation in path_view.operations:
+            url_name = getattr(operation, "url_name", "")
+            if not url_name and api is not None:
+                url_name = api.get_operation_url_name(operation, router=router)
+                if url_name_prefix and url_name:
+                    url_name = f"{url_name_prefix}_{url_name}"
+
+            yield django_path(route, path_view.get_view(), name=url_name)
 
 
 class Router:
@@ -594,20 +608,7 @@ class Router:
         # Ensure decorators are applied before generating URLs
         self._apply_decorators_to_operations()
 
-        prefix = replace_path_param_notation(prefix)
-        for path, path_view in self.path_operations.items():
-            for operation in path_view.operations:
-                path = replace_path_param_notation(path)
-                route = "/".join([i for i in (prefix, path) if i])
-                # to skip lot of checks we simply treat double slash as a mistake:
-                route = normalize_path(route)
-                route = route.lstrip("/")
-
-                url_name = getattr(operation, "url_name", "")
-                if not url_name and api:
-                    url_name = api.get_operation_url_name(operation, router=self)
-
-                yield django_path(route, path_view.get_view(), name=url_name)
+        yield from _url_patterns(prefix, self.path_operations, api, self)
 
     def add_router(
         self,
