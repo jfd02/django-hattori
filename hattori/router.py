@@ -1,7 +1,7 @@
 import collections.abc
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -101,22 +101,8 @@ class _OperationOptions:
         return replace(self, permissions=permissions)
 
     def as_kwargs(self) -> dict[str, Any]:
-        return {
-            "auth": self.auth,
-            "permissions": self.permissions,
-            "operation_id": self.operation_id,
-            "summary": self.summary,
-            "description": self.description,
-            "tags": self.tags,
-            "deprecated": self.deprecated,
-            "by_alias": self.by_alias,
-            "exclude_unset": self.exclude_unset,
-            "exclude_defaults": self.exclude_defaults,
-            "exclude_none": self.exclude_none,
-            "url_name": self.url_name,
-            "include_in_schema": self.include_in_schema,
-            "openapi_extra": self.openapi_extra,
-        }
+        # Shallow on purpose: asdict() would deep-copy values such as auth objects.
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
 
 class BoundRouter:
