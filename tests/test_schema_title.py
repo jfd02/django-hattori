@@ -98,13 +98,30 @@ def test_title_can_be_a_class_keyword():
 
 def test_subclass_keeps_its_own_name():
     # Pydantic copies the parent's config, title included, into the subclass.
-    # The subclass is a different schema, so it must not compete for the name.
+    # The subclass is a different schema, so it must not compete for the name
+    # or carry it as its title.
     components = schema()["components"]["schemas"]
 
-    assert "Refund" in components
+    assert components["Refund"]["title"] == "Refund"
     assert components["Order"]["properties"]["refunds"]["items"] == {
         "$ref": REF.format("Refund")
     }
+    assert Refund.model_config.get("title") is None
+
+
+def test_subclass_can_declare_its_own_title():
+    class Payout(MoneySchema):
+        model_config = ConfigDict(title="Disbursement")
+
+        recipient: str
+
+    class Statement(Schema):
+        payout: Payout
+
+    defs = Statement.json_schema()["$defs"]
+
+    assert defs["Disbursement"]["title"] == "Disbursement"
+    assert MoneySchema.model_config["title"] == "Money"
 
 
 def test_json_schema_defs_use_the_title():

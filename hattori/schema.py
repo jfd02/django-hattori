@@ -154,11 +154,16 @@ def _rename_core_schema_ref(schema: Any, old_ref: str, name: str) -> None:
 class _SchemaMetaclass(ModelMetaclass):
     @no_type_check
     def __new__(cls, name, bases, namespace, **kwargs):
-        # Only a title the class declares itself names it: Pydantic copies
-        # `model_config` into every subclass, which is a different schema and
-        # must not take the same name. Read before Pydantic writes the merged
-        # config back into `namespace`.
+        # A title names only the class that declares it. Pydantic copies
+        # `model_config`, title included, into every subclass, which is a
+        # different schema, so a subclass that declares none goes back to its
+        # class name. Read before Pydantic writes the merged config back into
+        # `namespace`.
         titled = "title" in kwargs or "title" in namespace.get("model_config", {})
+        if not titled and any(
+            getattr(base, "model_config", {}).get("title") for base in bases
+        ):
+            kwargs["title"] = None
         model = super().__new__(cls, name, bases, namespace, **kwargs)
         if titled:
             _TITLED_SCHEMAS[get_type_ref(model)] = model
