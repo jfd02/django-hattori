@@ -315,6 +315,20 @@ urlpatterns = [
 
 Two APIs that share a namespace fail Django's system check (`hattori.E001`), and their docs and schema raise `ConfigError` rather than describe each other.
 
+## Naming a schema in the spec
+
+A schema's OpenAPI component is named after its class. To give it a different name, for example when the natural name is already taken by another class in your code, set a `title`:
+
+```python
+class MoneySchema(Schema):
+    model_config = ConfigDict(title="Money")
+
+    amount: str
+    currency: str
+```
+
+The component is then `Money`, and every reference to it uses that name. Only the class that sets the title is renamed: subclasses keep their own names. If another schema already has that name, the two are told apart the same way as two classes that share a name.
+
 ## Response types reference
 
 Hattori ships typed response classes for the common status codes. Use these directly in return annotations — no need to declare your own subclasses for them.

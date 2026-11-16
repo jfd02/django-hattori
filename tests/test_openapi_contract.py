@@ -646,6 +646,7 @@ def test_sets_and_bytes_use_pydantic_json_serialization():
         "test_validation_error_model",
         "test_http_errors",
         "test_body",
+        "test_schema_title",
     ],
 )
 def test_existing_api_contracts(module):
