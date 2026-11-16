@@ -21,11 +21,18 @@ from typing import (
     get_origin,
     no_type_check,
 )
+from weakref import WeakValueDictionary
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic._internal._core_utils import get_type_ref
 from pydantic._internal._model_construction import ModelMetaclass
-from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic.json_schema import (
+    CoreModeRef,
+    DefsRef,
+    GenerateJsonSchema,
+    JsonSchemaValue,
+)
 
 pydantic_version = list(map(int, pydantic.VERSION.split(".")[:2]))
 
@@ -47,7 +54,31 @@ def _sorted_schema(value: Any, parent_key: str | None) -> Any:
     return value
 
 
+# Schemas that declare their own `title`, keyed by the core ref Pydantic names
+# their definition from. Weak, so a class defined inside a function does not
+# outlive it and lend its title to a later class that reuses its id.
+_TITLED_SCHEMAS: WeakValueDictionary[str, type[BaseModel]] = WeakValueDictionary()
+
+
 class HattoriGenerateJsonSchema(GenerateJsonSchema):
+    def get_defs_ref(self, core_mode_ref: CoreModeRef) -> DefsRef:
+        # A schema that declares a title is defined under it, so its component
+        # is named what its `title` says rather than after the Python class.
+        # The title goes ahead of Pydantic's own choices, which stay as the
+        # fallbacks when two schemas want the same name.
+        defs_ref = super().get_defs_ref(core_mode_ref)
+        model = _TITLED_SCHEMAS.get(core_mode_ref[0])
+        title = model.model_config.get("title") if model is not None else None
+        if title:
+            choices = self._prioritized_defsref_choices[defs_ref]
+            # Pydantic's first two choices are the bare name and the name with
+            # the mode suffix (`-Input` or `-Output`) it adds when a schema
+            # differs between validation and serialization.
+            mode_suffix = choices[1].removeprefix(choices[0])
+            name = self.normalize_name(title)
+            choices[:0] = [DefsRef(name), DefsRef(name + mode_suffix)]
+        return defs_ref
+
     def sort(
         self, value: JsonSchemaValue, parent_key: str | None = None
     ) -> JsonSchemaValue:
@@ -123,7 +154,15 @@ def _rename_core_schema_ref(schema: Any, old_ref: str, name: str) -> None:
 class _SchemaMetaclass(ModelMetaclass):
     @no_type_check
     def __new__(cls, name, bases, namespace, **kwargs):
-        return super().__new__(cls, name, bases, namespace, **kwargs)
+        # Only a title the class declares itself names it: Pydantic copies
+        # `model_config` into every subclass, which is a different schema and
+        # must not take the same name. Read before Pydantic writes the merged
+        # config back into `namespace`.
+        titled = "title" in kwargs or "title" in namespace.get("model_config", {})
+        model = super().__new__(cls, name, bases, namespace, **kwargs)
+        if titled:
+            _TITLED_SCHEMAS[get_type_ref(model)] = model
+        return model
 
 
 class Schema(BaseModel, metaclass=_SchemaMetaclass):
