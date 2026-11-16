@@ -51,7 +51,7 @@ def test_enum_field_of_a_schema_keeps_its_own_description_and_example():
 
     assert parameters["segment"]["description"] == "Size of each period."
     assert parameters["segment"]["schema"]["examples"] == ["monthly"]
-    assert parameters["segment"]["schema"]["enum"] == ["daily", "monthly"]
+    assert parameters["segment"]["schema"]["$ref"] == "#/components/schemas/Segment"
     # A field that declares nothing still shows the enum's own description...
     assert parameters["other"]["description"] == "How results are grouped."
     assert "examples" not in parameters["other"]["schema"]

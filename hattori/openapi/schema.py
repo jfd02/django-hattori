@@ -1052,17 +1052,29 @@ def flatten_properties(
 
     elif "items" in prop_details and "$ref" in prop_details["items"]:
         def_name = prop_details["items"]["$ref"].rsplit("/", 1)[-1]
-        prop_details["items"].update(definitions[def_name])
-        del prop_details["items"]["$ref"]  # seems num data is there so ref not needed
+        if "enum" not in definitions[def_name]:
+            prop_details["items"].update(definitions[def_name])
+            del prop_details["items"]["$ref"]
         yield prop_name, prop_details, prop_required
 
     elif "$ref" in prop_details:
         def_name = prop_details["$ref"].split("/")[-1]
         definition = definitions[def_name]
+        if "enum" in definition:
+            # An enum keeps its reference, so clients share one type for it.
+            # What the field declares beside the reference describes this
+            # parameter; without that, the enum's own description does.
+            if "description" in definition and "description" not in prop_details:
+                prop_details = {
+                    **prop_details,
+                    "description": definition["description"],
+                }
+            yield prop_name, prop_details, prop_required
+            return
         siblings = {k: v for k, v in prop_details.items() if k != "$ref"}
         if siblings and "properties" not in definition:
-            # An enum (or other non-model) field: what the field declares beside
-            # the reference describes this parameter, not the shared definition.
+            # Another named non-model type, such as an alias: what the field
+            # declares beside the reference describes this parameter.
             definition = {**definition, **siblings}
         yield from flatten_properties(prop_name, definition, prop_required, definitions)
 
@@ -1091,11 +1103,13 @@ def _query_model(
 
 def resolve_allOf(details: dict[str, Any], definitions: dict[str, Any]) -> None:
     """
-    resolves all $ref's in 'allOf' section
+    resolves the $ref's in 'allOf' section, except those to enums
     """
     for item in details["allOf"]:
         if "$ref" in item:
             def_name = item["$ref"].rsplit("/", 1)[-1]
+            if "enum" in definitions[def_name]:
+                continue
             item.update(definitions[def_name])
             del item["$ref"]
 

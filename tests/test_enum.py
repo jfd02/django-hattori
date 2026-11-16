@@ -84,6 +84,11 @@ def new_enum_list(
     return {"q": q}
 
 
+@api.delete("/rooms/{room}")
+def delete_room(request, room: RoomEnum) -> RoomResponse:
+    return {"room": room}
+
+
 client = TestClient(api)
 
 
@@ -162,11 +167,7 @@ def test_schema():
         "in": "query",
         "name": "room",
         "required": True,
-        "schema": {
-            "title": "RoomEnum",
-            "enum": ["double", "twin", "single"],
-            "type": "string",
-        },
+        "schema": {"$ref": "#/components/schemas/RoomEnum"},
     }
 
     optional_operation = schema["paths"]["/api/optional"]["get"]
@@ -190,13 +191,14 @@ def test_schema():
         "schema": {
             "description": "description",
             "title": "Q",
-            "items": {
-                "enum": ["one", "two"],
-                "title": "QueryOnlyEnum",
-                "type": "string",
-            },
+            "items": {"$ref": "#/components/schemas/QueryOnlyEnum"},
             "type": "array",
         },
+    }
+    assert schema["components"]["schemas"]["QueryOnlyEnum"] == {
+        "enum": ["one", "two"],
+        "title": "QueryOnlyEnum",
+        "type": "string",
     }
 
 
@@ -214,3 +216,18 @@ def test_optional_get_schema():
     components = schema["components"]["schemas"]
     print(components)
     assert "ExtraEnum" in components
+
+
+def test_path_enum_references_its_schema():
+    schema = api.get_openapi_schema()
+
+    (room_param,) = schema["paths"]["/api/rooms/{room}"]["delete"]["parameters"]
+    assert room_param == {
+        "in": "path",
+        "name": "room",
+        "required": True,
+        "schema": {"$ref": "#/components/schemas/RoomEnum"},
+    }
+
+    assert client.delete("/rooms/twin").json() == {"room": "twin"}
+    assert client.delete("/rooms/suite").status_code == 422
