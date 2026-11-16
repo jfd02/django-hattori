@@ -159,7 +159,7 @@ def test_schema():
             "in": "query",
             "name": "range",
             "schema": {
-                "allOf": [{"enum": [20, 50, 200], "title": "Range", "type": "integer"}],
+                "allOf": [{"$ref": "#/components/schemas/Range"}],
                 "default": 20,
             },
             "required": False,
