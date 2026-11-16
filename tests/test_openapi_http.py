@@ -42,27 +42,43 @@ def api_schema(live_server):
 
 
 schema = schemathesis.pytest.from_fixture("api_schema")
-integer = TypeAdapter(int)
+
+# Schemathesis treats only the canonical wire spellings of these parameters as
+# valid: int("0") for an integer, and true/false/0/1 for a boolean. Pydantic's
+# lax mode also accepts int-like strings such as "+0.0", and boolean spellings
+# such as "F", "no" or "off".
+LAX_PARAMETERS = {
+    "/api/items/{item_id}": (ParameterLocation.PATH, "item_id", TypeAdapter(int)),
+    "/api/error": (ParameterLocation.QUERY, "fail", TypeAdapter(bool)),
+}
 
 
-def _coercible_integer_path(case):
-    # Schemathesis recognizes int("0") but not Pydantic's int-like strings
-    # such as "+0.0". Limit the exception to this unconstrained integer path,
-    # and only when no other request component was generated as invalid.
-    if case.path != "/api/items/{item_id}" or case.meta is None:
+def _lax_coercible_parameter(case):
+    # Limit the exception to these unconstrained parameters, and only when the
+    # parameter's own value is what was generated as invalid: no other request
+    # component is negative, and no other parameter shares its location.
+    lax = LAX_PARAMETERS.get(case.path)
+    if lax is None or case.meta is None:
         return False
+    location, name, adapter = lax
     negative_locations = {
-        location
-        for location, info in case.meta.components.items()
+        component
+        for component, info in case.meta.components.items()
         if info.mode.is_negative
     }
-    if negative_locations != {ParameterLocation.PATH}:
+    if negative_locations != {location}:
         return False
-    value = (case.path_parameters or {}).get("item_id")
+    if location is ParameterLocation.PATH:
+        parameters = case.path_parameters or {}
+    else:
+        parameters = case.query or {}
+    if set(parameters) != {name}:
+        return False
+    value = parameters[name]
     if not isinstance(value, str):
         return False
     try:
-        integer.validate_python(value)
+        adapter.validate_python(value)
     except ValidationError:
         return False
     return True
@@ -70,7 +86,7 @@ def _coercible_integer_path(case):
 
 @schema.parametrize()
 def test_openapi_http(case):
-    excluded = [negative_data_rejection] if _coercible_integer_path(case) else []
+    excluded = [negative_data_rejection] if _lax_coercible_parameter(case) else []
     case.call_and_validate(excluded_checks=excluded)
 
 
@@ -85,6 +101,18 @@ def test_integer_path_coercion(api_schema, value, status):
     assert response.status_code == status
     if status == 200:
         assert response.json() == 10
+    case.validate_response(response)
+
+
+@pytest.mark.parametrize(
+    ("value", "status"), [("F", 200), ("no", 200), ("OFF", 200), ("maybe", 422)]
+)
+def test_boolean_query_coercion(api_schema, value, status):
+    case = api_schema["/api/error"]["GET"].Case(query={"fail": value})
+    response = case.call()
+    assert response.status_code == status
+    if status == 200:
+        assert response.json() == "ok"
     case.validate_response(response)
 
 
