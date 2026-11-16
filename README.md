@@ -327,7 +327,7 @@ class MoneySchema(Schema):
     currency: str
 ```
 
-The component is then `Money`, and every reference to it uses that name. Only the class that sets the title is renamed: subclasses keep their own names. If another schema already has that name, the two are told apart the same way as two classes that share a name.
+The component is then `Money`, and every reference to it uses that name. Only the class that sets the title is renamed: a subclass keeps its own class name, as its component name and its title, unless it sets a title of its own. If another schema already has that name, the two are told apart the same way as two classes that share a name.
 
 ## Response types reference
 
