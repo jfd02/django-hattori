@@ -32,7 +32,13 @@ from hattori.openapi.urls import (
     shared_namespace_error,
 )
 from hattori.renderers import BaseRenderer, JSONRenderer
-from hattori.router import BoundRouter, Router, RouterMount, _OperationOptions
+from hattori.router import (
+    BoundRouter,
+    Router,
+    RouterMount,
+    _HTTPMethodDecorators,
+    _OperationOptions,
+)
 from hattori.security.permissions import validate_permissions
 from hattori.types import TCallable
 from hattori.utils import await_result, close_unawaited
@@ -50,7 +56,7 @@ type ExcHandler[E: Exception] = Callable[
 ]
 
 
-class HattoriAPI:
+class HattoriAPI(_HTTPMethodDecorators):
     """
     Hattori API
     """
@@ -155,7 +161,7 @@ class HattoriAPI:
         self.default_router = default_router or Router()
         self.add_router("", self.default_router)
 
-    def _default_api_operation(
+    def _api_operation_from_options(
         self, methods: list[str], path: str, options: _OperationOptions
     ) -> Callable[[TCallable], TCallable]:
         return self.default_router.api_operation(
@@ -165,226 +171,6 @@ class HattoriAPI:
             .with_default_auth(self.auth)
             .with_default_permissions(self.permissions)
             .as_kwargs(),
-        )
-
-    def get(
-        self,
-        path: str,
-        *,
-        auth: Any = NOT_SET,
-        permissions: Any = NOT_SET,
-        operation_id: str | None = None,
-        summary: str | None = None,
-        description: str | None = None,
-        tags: list[str] | None = None,
-        deprecated: bool | None = None,
-        by_alias: bool | None = None,
-        exclude_unset: bool | None = None,
-        exclude_defaults: bool | None = None,
-        exclude_none: bool | None = None,
-        url_name: str | None = None,
-        include_in_schema: bool = True,
-        openapi_extra: dict[str, Any] | None = None,
-    ) -> Callable[[TCallable], TCallable]:
-        """
-        `GET` operation. See <a href="../operations-parameters">operations
-        parameters</a> reference.
-        """
-        return self._default_api_operation(
-            ["GET"],
-            path,
-            _OperationOptions(
-                auth,
-                operation_id,
-                summary,
-                description,
-                tags,
-                deprecated,
-                by_alias,
-                exclude_unset,
-                exclude_defaults,
-                exclude_none,
-                url_name,
-                include_in_schema,
-                openapi_extra,
-                permissions=permissions,
-            ),
-        )
-
-    def post(
-        self,
-        path: str,
-        *,
-        auth: Any = NOT_SET,
-        permissions: Any = NOT_SET,
-        operation_id: str | None = None,
-        summary: str | None = None,
-        description: str | None = None,
-        tags: list[str] | None = None,
-        deprecated: bool | None = None,
-        by_alias: bool | None = None,
-        exclude_unset: bool | None = None,
-        exclude_defaults: bool | None = None,
-        exclude_none: bool | None = None,
-        url_name: str | None = None,
-        include_in_schema: bool = True,
-        openapi_extra: dict[str, Any] | None = None,
-    ) -> Callable[[TCallable], TCallable]:
-        """
-        `POST` operation. See <a href="../operations-parameters">operations
-        parameters</a> reference.
-        """
-        return self._default_api_operation(
-            ["POST"],
-            path,
-            _OperationOptions(
-                auth,
-                operation_id,
-                summary,
-                description,
-                tags,
-                deprecated,
-                by_alias,
-                exclude_unset,
-                exclude_defaults,
-                exclude_none,
-                url_name,
-                include_in_schema,
-                openapi_extra,
-                permissions=permissions,
-            ),
-        )
-
-    def delete(
-        self,
-        path: str,
-        *,
-        auth: Any = NOT_SET,
-        permissions: Any = NOT_SET,
-        operation_id: str | None = None,
-        summary: str | None = None,
-        description: str | None = None,
-        tags: list[str] | None = None,
-        deprecated: bool | None = None,
-        by_alias: bool | None = None,
-        exclude_unset: bool | None = None,
-        exclude_defaults: bool | None = None,
-        exclude_none: bool | None = None,
-        url_name: str | None = None,
-        include_in_schema: bool = True,
-        openapi_extra: dict[str, Any] | None = None,
-    ) -> Callable[[TCallable], TCallable]:
-        """
-        `DELETE` operation. See <a href="../operations-parameters">operations
-        parameters</a> reference.
-        """
-        return self._default_api_operation(
-            ["DELETE"],
-            path,
-            _OperationOptions(
-                auth,
-                operation_id,
-                summary,
-                description,
-                tags,
-                deprecated,
-                by_alias,
-                exclude_unset,
-                exclude_defaults,
-                exclude_none,
-                url_name,
-                include_in_schema,
-                openapi_extra,
-                permissions=permissions,
-            ),
-        )
-
-    def patch(
-        self,
-        path: str,
-        *,
-        auth: Any = NOT_SET,
-        permissions: Any = NOT_SET,
-        operation_id: str | None = None,
-        summary: str | None = None,
-        description: str | None = None,
-        tags: list[str] | None = None,
-        deprecated: bool | None = None,
-        by_alias: bool | None = None,
-        exclude_unset: bool | None = None,
-        exclude_defaults: bool | None = None,
-        exclude_none: bool | None = None,
-        url_name: str | None = None,
-        include_in_schema: bool = True,
-        openapi_extra: dict[str, Any] | None = None,
-    ) -> Callable[[TCallable], TCallable]:
-        """
-        `PATCH` operation. See <a href="../operations-parameters">operations
-        parameters</a> reference.
-        """
-        return self._default_api_operation(
-            ["PATCH"],
-            path,
-            _OperationOptions(
-                auth,
-                operation_id,
-                summary,
-                description,
-                tags,
-                deprecated,
-                by_alias,
-                exclude_unset,
-                exclude_defaults,
-                exclude_none,
-                url_name,
-                include_in_schema,
-                openapi_extra,
-                permissions=permissions,
-            ),
-        )
-
-    def put(
-        self,
-        path: str,
-        *,
-        auth: Any = NOT_SET,
-        permissions: Any = NOT_SET,
-        operation_id: str | None = None,
-        summary: str | None = None,
-        description: str | None = None,
-        tags: list[str] | None = None,
-        deprecated: bool | None = None,
-        by_alias: bool | None = None,
-        exclude_unset: bool | None = None,
-        exclude_defaults: bool | None = None,
-        exclude_none: bool | None = None,
-        url_name: str | None = None,
-        include_in_schema: bool = True,
-        openapi_extra: dict[str, Any] | None = None,
-    ) -> Callable[[TCallable], TCallable]:
-        """
-        `PUT` operation. See <a href="../operations-parameters">operations
-        parameters</a> reference.
-        """
-        return self._default_api_operation(
-            ["PUT"],
-            path,
-            _OperationOptions(
-                auth,
-                operation_id,
-                summary,
-                description,
-                tags,
-                deprecated,
-                by_alias,
-                exclude_unset,
-                exclude_defaults,
-                exclude_none,
-                url_name,
-                include_in_schema,
-                openapi_extra,
-                permissions=permissions,
-            ),
         )
 
     def api_operation(
@@ -407,7 +193,7 @@ class HattoriAPI:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Callable[[TCallable], TCallable]:
-        return self._default_api_operation(
+        return self._api_operation_from_options(
             methods,
             path,
             _OperationOptions(
