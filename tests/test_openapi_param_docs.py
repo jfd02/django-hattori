@@ -101,10 +101,8 @@ def test_named_examples_belong_only_on_the_parameter():
     assert parameters["limit"]["examples"] == {"one": {"value": 1}}
     for name in ("segment", "other", "limit"):
         assert "examples" not in parameters[name]["schema"]
-    # The reusable query model must also remain a valid JSON Schema.
-    assert (
-        "examples"
-        not in schema["components"]["schemas"]["Filters"]["properties"]["segment"]
-    )
+    # The query model is published only as its parameters, and the enum they
+    # share must remain a valid JSON Schema.
+    assert "Filters" not in schema["components"]["schemas"]
     assert "examples" not in schema["components"]["schemas"]["Segment"]
     assert api.get_openapi_schema() == schema

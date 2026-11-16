@@ -295,6 +295,49 @@ def test_nested_model_field_with_default_flattens_into_params():
     assert {p["name"] for p in params} == {"x", "y", "label"}
 
 
+def test_a_flattened_query_model_is_not_a_component():
+    components = api.get_openapi_schema()["components"]["schemas"]
+    assert "Filter" not in components
+    assert "Data" not in components
+    assert "Range" in components
+
+
+def test_only_definitions_a_parameter_names_become_components():
+    class Inner(Schema):
+        depth: int = 0
+
+    class Page(Schema):
+        limit: int = 10
+        inner: Inner = Inner()
+        ranges: list[Range] = []
+
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/pages")
+    def pages(request, page: Query[Page]) -> None:
+        return None
+
+    components = temp_api.get_openapi_schema()["components"]["schemas"]
+    assert "Page" not in components
+    assert "Inner" not in components
+    assert "Range" in components
+
+
+def test_a_query_model_also_returned_keeps_its_name():
+    temp_api = HattoriAPI()
+
+    @temp_api.get("/filter")
+    def read(request, filters: Query[Filter]) -> Filter:
+        return filters
+
+    schema = temp_api.get_openapi_schema()
+    response = schema["paths"]["/api/filter"]["get"]["responses"][200]
+    assert response["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/Filter"
+    }
+    assert "Filter_2" not in schema["components"]["schemas"]
+
+
 class Required(Schema):
     x: int
 
