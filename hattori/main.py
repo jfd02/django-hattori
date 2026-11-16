@@ -152,9 +152,6 @@ class HattoriAPI:
         self._openapi_schema: OpenAPISchema | None = None
         self._openapi_schema_lock = threading.Lock()
 
-        # Backward compat: keep _routers list populated
-        self._routers: list[tuple[str, Router]] = []
-
         self.default_router = default_router or Router()
         self.add_router("", self.default_router)
 
@@ -499,9 +496,6 @@ class HattoriAPI:
             url_name_prefix,
         ))
 
-        # Backward compat: keep _routers list updated (just the top-level router)
-        self._routers.append((prefix, router))
-
     @property
     def urls(self) -> tuple[list[URLResolver | URLPattern], str, str]:
         """
@@ -574,9 +568,6 @@ class HattoriAPI:
             # Freeze all templates after binding
             for mount in all_mounts:
                 mount.template._freeze()
-
-            # Update _routers for backward compat (include all nested routers)
-            self._routers = [(m.prefix, m.template) for m in all_mounts]
 
         return self._bound_routers_cache
 
