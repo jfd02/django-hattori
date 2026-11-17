@@ -248,3 +248,48 @@ class TestDuplicateStatusCodesCombined:
         def_names = set(defs.keys())
         assert "ErrorResponse_account_belongs_to_another" in def_names
         assert "ErrorResponse_likely_duplicate" in def_names
+
+
+class Envelope[S, V](Schema):
+    status: S
+    value: V
+
+
+class TestSpecializationsSharingLiterals:
+    """Two specializations that share their Literal values but differ in another
+    parameter share a name, not a definition: each still validates its own."""
+
+    def test_each_specialization_keeps_its_own_definition(self):
+        type IntEnvelope = Envelope[Literal["ok"], int]
+        type StrEnvelope = Envelope[Literal["ok"], str]
+
+        api = HattoriAPI()
+
+        @api.get("/envelope")
+        def envelope(request, as_int: bool) -> IntEnvelope | StrEnvelope:
+            if as_int:
+                return Envelope[Literal["ok"], int](status="ok", value=1)
+            return Envelope[Literal["ok"], str](status="ok", value="a")
+
+        client = TestClient(api)
+
+        assert client.get("/envelope?as_int=true").json() == {
+            "status": "ok",
+            "value": 1,
+        }
+        assert client.get("/envelope?as_int=false").json() == {
+            "status": "ok",
+            "value": "a",
+        }
+
+        schema = api.get_openapi_schema()
+        response = schema["paths"]["/api/envelope"]["get"]["responses"][200]
+        refs = [
+            arm["$ref"].rsplit("/", 1)[-1]
+            for arm in response["content"]["application/json"]["schema"]["anyOf"]
+        ]
+        components = schema["components"]["schemas"]
+        assert [components[ref]["properties"]["value"]["type"] for ref in refs] == [
+            "integer",
+            "string",
+        ]

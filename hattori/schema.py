@@ -193,8 +193,8 @@ class Schema(BaseModel, metaclass=_SchemaMetaclass):
         renames parameterized models to use the Literal values directly
         (e.g. ``ErrorResponse_not_found``).
 
-        Only renames when all type args are Literal values or enum members;
-        plain type args like ``str`` keep Pydantic's default naming.
+        Type args that are not Literal values or enum members, like ``str``,
+        add nothing to the name.
         """
         model = super().__class_getitem__(params)
         if not isinstance(model, type):
@@ -217,7 +217,12 @@ class Schema(BaseModel, metaclass=_SchemaMetaclass):
             model.__qualname__ = name
             old_ref = _find_model_ref(model.__pydantic_core_schema__, model)
             if old_ref is not None:
-                _rename_core_schema_ref(model.__pydantic_core_schema__, old_ref, name)
+                # The ref still tells every specialization apart, as Pydantic's
+                # own does by the id after its colon, which its schema names
+                # leave out: `Envelope[Literal["ok"], int]` and
+                # `Envelope[Literal["ok"], str]` share a name, not a definition.
+                ref = f"{name}:{id(model)}"
+                _rename_core_schema_ref(model.__pydantic_core_schema__, old_ref, ref)
 
         return model
 
