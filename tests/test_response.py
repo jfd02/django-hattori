@@ -61,6 +61,7 @@ def test_large_integer_response_through_http():
     response = TestClient(api).get(f"/integer?value={value}")
     assert response.status_code == 200
     assert json.loads(response.content) == [value]
+    assert response.json() == [value]
 
 
 def test_json_encoding_still_rejects_unsupported_objects():
