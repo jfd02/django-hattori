@@ -95,6 +95,7 @@ def test_primitive_part_is_read_as_plain_text(annotation, value, expected):
         (Literal[1, 2], "1", 1),
         (Literal[True], "true", True),
         (StrictInt, "42", 42),
+        (StrictInt, "18446744073709551617", 18446744073709551617),
         (StrictBool, "false", False),
         (Literal[1, "a"], "1", 1),
         (int | None, "null", None),

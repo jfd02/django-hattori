@@ -6,6 +6,7 @@ from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 
 import orjson
+import pydantic_core
 from django.http import HttpResponse
 from django.utils.duration import duration_iso_string
 from django.utils.functional import Promise
@@ -196,7 +197,33 @@ def _preserve_large_integers(data: Any) -> Any:
 
 
 def json_loads(data: Any) -> Any:
-    return orjson.loads(data)
+    """``data`` read as JSON, every integer in it whole.
+
+    orjson reads an integer beyond 64 bits as the nearest float, so
+    18446744073709551617 would arrive as 1.8446744073709552e19. A body that
+    may hold one is read by pydantic's parser instead, which keeps it whole.
+    """
+    raw = data.encode() if isinstance(data, str) else bytes(data)
+    if _may_hold_large_integer(raw):
+        return pydantic_core.from_json(raw, allow_inf_nan=False)
+    return orjson.loads(raw)
+
+
+# Each digit read as "0", a "." as itself and anything else as a space, so
+# that a number's integer part shows as a run of zeros after a space while
+# its fraction's digits follow a ".". 19 digits is the shortest an integer
+# beyond 64 bits can be written in: -9223372036854775809.
+_DIGIT_RUNS = bytes(
+    ord("0") if byte in b"0123456789" else byte if byte == ord(".") else ord(" ")
+    for byte in range(256)
+)
+_LARGE_INTEGER = b" " + b"0" * 19
+
+
+def _may_hold_large_integer(raw: bytes) -> bool:
+    # Digit runs in strings count too: reading such a body the slower way
+    # costs only time.
+    return _LARGE_INTEGER in b" " + raw.translate(_DIGIT_RUNS)
 
 
 class JsonResponse(HttpResponse):

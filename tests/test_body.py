@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 
 import pydantic
@@ -166,3 +167,94 @@ def test_body_custom_validation_error():
         assert set(entry["properties"]) == {"source", "message"}
     finally:
         set_validation_error_model(original)
+
+
+# An integer beyond 64 bits arrives whole, whatever it is read into.
+
+large_api = HattoriAPI()
+
+
+class Count(Schema):
+    n: int
+
+
+@large_api.post("/decimal")
+def large_decimal(request, value: Body[Decimal]) -> str:
+    return str(value)
+
+
+@large_api.post("/int")
+def large_int(request, value: Body[int]) -> str:
+    return str(value)
+
+
+@large_api.post("/schema")
+def large_schema(request, payload: list[Count]) -> list[str]:
+    return [str(count.n) for count in payload]
+
+
+large_client = TestClient(large_api)
+
+
+@pytest.mark.parametrize(
+    "value", [2**64 + 1, -(2**63) - 1, 2**64 - 1, -(2**63), 10**100]
+)
+@pytest.mark.parametrize("path", ["/decimal", "/int"])
+def test_large_integer_body(path, value):
+    response = large_client.post(path, json=value)
+    assert response.status_code == 200, response.content
+    assert response.json() == str(value)
+
+
+def test_large_integers_inside_a_body():
+    body = '[{"n": 1}, {"n": 18446744073709551617}, {"n": -12345678901234567890}]'
+    response = large_client.post("/schema", data=body, content_type="application/json")
+    assert response.status_code == 200, response.content
+    assert response.json() == ["1", "18446744073709551617", "-12345678901234567890"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[18446744073709551617, NaN]",
+        "[18446744073709551617, Infinity]",
+        "[18446744073709551617,]",
+        '["\\ud800", 18446744073709551617]',
+    ],
+)
+def test_body_with_large_integer_is_still_strict_json(body):
+    response = large_client.post("/schema", data=body, content_type="application/json")
+    assert response.status_code == 400, response.content
+
+
+@pytest.mark.parametrize(
+    "text,value",
+    [
+        ("0.0012345678901234567891", 0.0012345678901234567891),
+        ('{"id": "12345678901234567890"}', {"id": "12345678901234567890"}),
+        ("[1e5, 1844674407370955161]", [1e5, 1844674407370955161]),
+    ],
+)
+def test_json_loads_reads_long_digit_runs_as_written(text, value):
+    from hattori.responses import json_loads
+
+    assert json_loads(text) == value
+    assert json_loads(text.encode()) == value
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "A JSON number is read as a float before it is validated, so a Decimal "
+        "gets only the digits a float holds. To be handled."
+    ),
+)
+@pytest.mark.parametrize(
+    "value", ["1.0000000000000000000001", "3.14159265358979323846264338"]
+)
+def test_decimal_body_keeps_every_digit(value):
+    response = large_client.post(
+        "/decimal", data=value, content_type="application/json"
+    )
+    assert response.status_code == 200, response.content
+    assert response.json() == value
