@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 from typing import (
     Annotated,
     Any,
+    ParamSpec,
     TypeAliasType,
+    TypeVar,
+    TypeVarTuple,
     Union,
     get_args,
     get_origin,
@@ -104,8 +107,12 @@ def without_metadata(arm: Any) -> Any:
 
 def _substitute_typevars(tp: Any, mapping: dict) -> Any:
     """Recursively substitute TypeVars in a type according to the mapping."""
-    if tp in mapping:
-        return mapping[tp]
+    # Only a type parameter is looked up: anything else, such as Annotated
+    # metadata holding a dict, may not be hashable.
+    if isinstance(tp, TypeVar | ParamSpec | TypeVarTuple):
+        return mapping.get(tp, tp)
+    if isinstance(tp, list):  # the parameters of a Callable
+        return [_substitute_typevars(item, mapping) for item in tp]
     origin = get_origin(tp)
     args = get_args(tp)
     # Handle Pydantic models (get_args returns () but metadata has the args)
