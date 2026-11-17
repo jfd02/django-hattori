@@ -2,6 +2,7 @@ import inspect
 import warnings
 from collections import defaultdict, namedtuple
 from collections.abc import Callable, Generator
+from copy import copy
 from typing import Annotated, Any, get_args, get_origin
 
 import pydantic
@@ -293,6 +294,9 @@ class ViewSignature:
                 else:
                     annotation, default = Annotated[args[:-1]], args[-1]
                 if prev_default != self.signature.empty:
+                    # The Param belongs to the annotation, which other params
+                    # may be declared with too: each takes its own default.
+                    default = copy(default)
                     default.default = prev_default
 
         if annotation == self.signature.empty:
