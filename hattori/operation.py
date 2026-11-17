@@ -1,7 +1,7 @@
 import collections.abc
 import inspect
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -63,6 +63,32 @@ __all__ = ["Guard", "Operation", "PathView"]
 
 # Sentinel marking that a streamed generator produced no items at all.
 _NO_FIRST_ITEM = object()
+
+
+class _StreamContent:
+    """A stream's chunks, which close the iterator the view gave when closed.
+
+    Django closes a streaming response's content once the server is done with
+    it, whether the stream ran out, failed or was cut short, as it closes a
+    FileResponse's file. Closing only the chunks would leave the view's
+    iterator as it was: a generator suspended in its ``try`` or ``with``, an
+    iterator still holding its cursor or file.
+    """
+
+    def __init__(self, chunks: Generator[str], source: Any) -> None:
+        self._chunks = chunks
+        self._source = source
+
+    def __iter__(self) -> Iterator[str]:
+        return self._chunks
+
+    def close(self) -> None:
+        try:
+            self._chunks.close()
+        finally:
+            close = getattr(self._source, "close", None)
+            if close is not None:
+                close()
 
 
 def rollback_atomic_requests(request: HttpRequest) -> None:
@@ -994,14 +1020,16 @@ class Operation(Guard):
         # Built after priming so a status set before the first yield is reflected.
         ctx = {"request": request, "response_status": temporal_response.status_code}
 
-        def content_iter() -> Any:
+        def content_iter() -> Generator[str]:
             if first_item is _NO_FIRST_ITEM:
                 return
             yield fmt.format_chunk(self._validate_stream_item(first_item, request, ctx))
             for item in generator:
                 yield fmt.format_chunk(self._validate_stream_item(item, request, ctx))
 
-        response = self._create_streaming_response(content_iter(), temporal_response)
+        response = self._create_streaming_response(
+            _StreamContent(content_iter(), generator), temporal_response
+        )
         self._copy_temporal_response(temporal_response, response)
         return response
 
@@ -1094,11 +1122,23 @@ class AsyncOperation(Operation):
         ctx = {"request": request, "response_status": temporal_response.status_code}
 
         async def content_iter() -> Any:
-            if first_item is _NO_FIRST_ITEM:
-                return
-            yield fmt.format_chunk(self._validate_stream_item(first_item, request, ctx))
-            async for item in generator:
-                yield fmt.format_chunk(self._validate_stream_item(item, request, ctx))
+            # Django has no way to close an async stream's content, so the
+            # chunks close the view's iterator themselves: when the stream
+            # runs out or fails, or the chunks are closed for being cut short.
+            try:
+                if first_item is _NO_FIRST_ITEM:
+                    return
+                yield fmt.format_chunk(
+                    self._validate_stream_item(first_item, request, ctx)
+                )
+                async for item in generator:
+                    yield fmt.format_chunk(
+                        self._validate_stream_item(item, request, ctx)
+                    )
+            finally:
+                aclose = getattr(generator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
 
         response = self._create_streaming_response(content_iter(), temporal_response)
         self._copy_temporal_response(temporal_response, response)
