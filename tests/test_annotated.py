@@ -307,3 +307,24 @@ def test_openapi_schema():
             }
         },
     }
+
+
+def test_params_declared_with_one_annotation_keep_their_own_defaults():
+    Limit = Annotated[int, Query(ge=0)]
+
+    api = HattoriAPI()
+
+    @api.get("/range")
+    def by_range(request, low: Limit = 1, high: Limit = 10) -> list[int]:
+        return [low, high]
+
+    parameters = api.get_openapi_schema()["paths"]["/api/range"]["get"]["parameters"]
+    client = TestClient(api)
+
+    assert [(p["name"], p["schema"]["default"]) for p in parameters] == [
+        ("low", 1),
+        ("high", 10),
+    ]
+    assert client.get("/range").json() == [1, 10]
+    assert client.get("/range?high=5").json() == [1, 5]
+    assert client.get("/range?low=-1").status_code == 422
