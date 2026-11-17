@@ -234,27 +234,43 @@ class FileModel(ParamModel):
 
 
 class _MultiPartBodyModel(BodyModel):
-    # Whether each body param's part is JSON, by its alias.
-    __hattori_body_params__: dict[str, bool]
+    # How each body param's part is read ("json", "text" or "scalar"), by alias.
+    __hattori_body_params__: dict[str, str]
 
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
     ) -> dict[str, Any] | None:
         results: dict[str, Any] = {}
-        for name, is_json in cls.__hattori_body_params__.items():
+        for name, kind in cls.__hattori_body_params__.items():
             if name in request.POST:
                 data = request.POST[name]
-                if not is_json:
-                    # A primitive (str, int, date, Enum, UUID, ...) is sent as
-                    # its plain text value, as the spec's default multipart
-                    # encoding has it, and validated as it is, like a Form field.
+                if kind == "text":
+                    # A primitive that can be a string (str, date, Enum, UUID,
+                    # ...) is sent as its plain text value, as the spec's
+                    # default multipart encoding has it, and validated as it
+                    # is, like a Form field.
                     results[name] = data
-                    continue
-                # A form field, read as JSON by declaration: the request's
-                # media type is the form's, so there is none to hold it to.
-                results[name] = cls._decode(data.encode()) if data else None
+                elif kind == "scalar":
+                    results[name] = _read_scalar(data)
+                else:
+                    # A form field, read as JSON by declaration: the request's
+                    # media type is the form's, so there is none to hold it to.
+                    results[name] = cls._decode(data.encode()) if data else None
         return results
+
+
+def _read_scalar(text: str) -> Any:
+    """The number, boolean or null ``text`` spells, else ``text`` itself.
+
+    A primitive that cannot be a string (int, bool, Literal[1, 2], StrictInt,
+    ...) is sent as text too, but its validator would not take it as a string.
+    """
+    try:
+        value = json_loads(text)
+    except Exception:
+        return text
+    return value if value is None or isinstance(value, (bool, int, float)) else text
 
 
 class CommaSeparated:

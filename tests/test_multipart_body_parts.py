@@ -2,6 +2,8 @@
 
 It is read the way OpenAPI's default multipart encoding reads the property the
 spec documents it as: a primitive is its plain text value, anything else JSON.
+A primitive that cannot be a string takes the number, boolean or null its text
+spells, since its validator would not take that text as a string.
 """
 
 from dataclasses import dataclass
@@ -12,7 +14,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
-from pydantic import Field, HttpUrl, Json, RootModel
+from pydantic import Field, HttpUrl, Json, RootModel, StrictBool, StrictInt
 from pydantic_core import core_schema, to_jsonable_python
 
 from hattori import Body, File, HattoriAPI, Schema, UploadedFile
@@ -77,12 +79,45 @@ def post_part(annotation: Any, value: str):
         (Name, "bob", "bob"),
         (Nickname, "bob", "bob"),
         (Json[dict[str, int]], '{"a": 1}', {"a": 1}),
+        (int | str, "42", "42"),
+        (bool | str, "true", "true"),
     ],
 )
 def test_primitive_part_is_read_as_plain_text(annotation, value, expected):
     response = post_part(annotation, value)
     assert response.status_code == 200, response.content
     assert response.json() == {"data": expected}
+
+
+@pytest.mark.parametrize(
+    "annotation,value,expected",
+    [
+        (Literal[1, 2], "1", 1),
+        (Literal[True], "true", True),
+        (StrictInt, "42", 42),
+        (StrictBool, "false", False),
+        (Literal[1, "a"], "1", 1),
+        (int | None, "null", None),
+        (float, "1.5", 1.5),
+        (bool, "yes", True),
+    ],
+)
+def test_primitive_part_that_cannot_be_a_string_is_read_as_its_scalar(
+    annotation, value, expected
+):
+    response = post_part(annotation, value)
+    assert response.status_code == 200, response.content
+    assert response.json() == {"data": expected}
+
+
+@pytest.mark.parametrize(
+    "annotation,value",
+    [(Literal[1, 2], "3"), (StrictInt, "abc"), (StrictInt, '"42"')],
+)
+def test_scalar_part_that_does_not_match_is_rejected(annotation, value):
+    response = post_part(annotation, value)
+    assert response.status_code == 422, response.content
+    assert response.json()["detail"][0]["loc"] == ["body", "data"]
 
 
 @pytest.mark.parametrize(
