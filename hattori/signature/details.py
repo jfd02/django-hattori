@@ -312,7 +312,8 @@ class ViewSignature:
             annotation = str
 
         is_collection = is_collection_type(annotation)
-        named = _unalias(annotation)
+        # What an optional param holds when it is sent.
+        named = _without_none(annotation)
 
         if named == UploadedFile or (
             is_collection and getattr(named, "__args__", (None,))[0] == UploadedFile
@@ -365,6 +366,16 @@ def _unalias(annotation: Any) -> Any:
     """What ``annotation`` names, through any ``type`` aliases it is written as."""
     while is_alias(annotation):
         annotation = alias_value(annotation)
+    return annotation
+
+
+def _without_none(annotation: Any) -> Any:
+    """What ``annotation`` names, without the None of a ``T | None``."""
+    annotation = _unalias(annotation)
+    if get_origin(annotation) in UNION_TYPES:
+        arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+        if len(arms) == 1:
+            return _unalias(arms[0])
     return annotation
 
 
