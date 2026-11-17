@@ -25,7 +25,7 @@ from weakref import WeakValueDictionary
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic._internal._core_utils import get_type_ref
+from pydantic._internal._core_utils import CoreSchemaField, get_type_ref
 from pydantic._internal._model_construction import ModelMetaclass
 from pydantic.json_schema import (
     CoreModeRef,
@@ -78,6 +78,18 @@ class HattoriGenerateJsonSchema(GenerateJsonSchema):
             name = self.normalize_name(title)
             choices[:0] = [DefsRef(name), DefsRef(name + mode_suffix)]
         return defs_ref
+
+    def _get_alias_name(self, field: CoreSchemaField, name: str) -> str:
+        # A model that does not validate by alias (`validate_by_alias=False`)
+        # reads each field by its name, so that is the name it documents.
+        # Pydantic names it by its validation alias whatever the config says.
+        if (
+            self.mode == "validation"
+            and field["type"] != "computed-field"
+            and not self._config.validate_by_alias
+        ):
+            return name
+        return super()._get_alias_name(field, name)
 
     def sort(
         self, value: JsonSchemaValue, parent_key: str | None = None

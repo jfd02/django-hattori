@@ -184,8 +184,28 @@ def test_query_model_that_does_not_validate_by_alias_is_read_by_name():
 
     client = TestClient(api)
 
+    assert [p["name"] for p in _operation(api, "/list")["parameters"]] == ["limit"]
     assert client.get("/list?limit=3").json() == 3
     assert client.get("/list?max=3").status_code == 422
+
+
+def test_body_that_does_not_validate_by_alias_documents_its_field_names():
+    class Filters(Schema):
+        model_config = ConfigDict(validate_by_name=True, validate_by_alias=False)
+
+        limit: int = Field(validation_alias="max")
+
+    api = HattoriAPI()
+
+    @api.post("/list")
+    def listing(request, filters: Filters) -> int:
+        return filters.limit
+
+    schemas = api.get_openapi_schema()["components"]["schemas"]
+
+    assert schemas["Filters"]["properties"].keys() == {"limit"}
+    assert schemas["Filters"]["required"] == ["limit"]
+    assert TestClient(api).post("/list", json={"limit": 3}).json() == 3
 
 
 def test_two_parameters_read_by_one_name_are_refused():
