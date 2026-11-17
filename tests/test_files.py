@@ -195,3 +195,33 @@ def test_named_upload_types_are_read_as_files():
     ]
     response = client.post("/many", FILES=MultiValueDict({"files": files}))
     assert response.json() == {"result": ["a", "b"]}
+
+
+def test_optional_uploads_are_read_as_files():
+    api = HattoriAPI()
+
+    @api.post("/one")
+    def one(request, file: UploadedFile | None = None) -> FileResultResponse:
+        return {"result": [file.read().decode()] if file else []}
+
+    @api.post("/many")
+    def many(request, files: list[UploadedFile] | None = None) -> FileResultResponse:
+        return {"result": [f.read().decode() for f in files or []]}
+
+    schema = api.get_openapi_schema(path_prefix="")
+    for path in ("/one", "/many"):
+        operation = schema["paths"][path]["post"]
+        assert operation["parameters"] == []
+        assert list(operation["requestBody"]["content"]) == ["multipart/form-data"]
+        assert operation["requestBody"]["required"] is False
+
+    client = TestClient(api)
+    file = SimpleUploadedFile("test.txt", b"data123")
+    assert client.post("/one", FILES={"file": file}).json() == {"result": ["data123"]}
+    assert client.post("/one").json() == {"result": []}
+    files = [
+        SimpleUploadedFile(f"{i}.txt", data) for i, data in enumerate((b"a", b"b"))
+    ]
+    response = client.post("/many", FILES=MultiValueDict({"files": files}))
+    assert response.json() == {"result": ["a", "b"]}
+    assert client.post("/many").json() == {"result": []}
