@@ -260,3 +260,84 @@ def test_non_csv_query_has_no_explode():
     id_param = next(p for p in params if p["name"] == "id")
     assert "style" not in id_param
     assert "explode" not in id_param
+
+
+# A list stays a list when Annotated with its constraints: each of these is
+# sent as one value per item, not as a single one.
+
+constrained_router = Router()
+
+
+@constrained_router.get("/default")
+def constrained_default(
+    request, ids: Annotated[list[int], Field(min_length=1, max_length=2)] = Query(...)
+) -> list[int]:
+    return ids
+
+
+@constrained_router.get("/annotated")
+def constrained_annotated(
+    request,
+    ids: Annotated[list[int], Field(min_length=1), Query()],  # pyright: ignore[reportCallIssue]
+) -> list[int]:
+    return ids
+
+
+@constrained_router.get("/conlist")
+def constrained_conlist(
+    request, ids: conlist(int, min_length=1) = Query(...)
+) -> list[int]:
+    return ids
+
+
+@constrained_router.get("/optional")
+def constrained_optional(
+    request, ids: Annotated[list[int], Field(min_length=1)] | None = Query(None)
+) -> list[int] | None:
+    return ids
+
+
+class ConstrainedFilters(Schema):
+    ids: Annotated[list[int], Field(min_length=1)] | None = None
+
+
+@constrained_router.get("/schema")
+def constrained_schema(
+    request, filters: ConstrainedFilters = Query(...)
+) -> list[int] | None:
+    return filters.ids
+
+
+@constrained_router.post("/form")
+def constrained_form(
+    request, ids: Annotated[list[int], Field(min_length=1)] = Form(...)
+) -> list[int]:
+    return ids
+
+
+constrained_client = TestClient(constrained_router)
+
+
+@pytest.mark.parametrize(
+    "path", ["/default", "/annotated", "/conlist", "/optional", "/schema"]
+)
+def test_constrained_query_list(path):
+    response = constrained_client.get(f"{path}?ids=1&ids=2")
+    assert response.status_code == 200, response.content
+    assert response.json() == [1, 2]
+
+    response = constrained_client.get(f"{path}?ids=1")
+    assert response.status_code == 200, response.content
+    assert response.json() == [1]
+
+
+def test_constrained_form_list():
+    response = constrained_client.post("/form", data=QueryDict("ids=1&ids=2"))
+    assert response.status_code == 200, response.content
+    assert response.json() == [1, 2]
+
+
+def test_constrained_list_still_holds_its_constraints():
+    response = constrained_client.get("/default?ids=1&ids=2&ids=3")
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "too_long"
