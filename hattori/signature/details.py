@@ -440,6 +440,9 @@ def is_pydantic_model(cls: Any) -> bool:
 
 def is_collection_type(annotation: Any) -> bool:
     annotation = _unalias(annotation)
+    while get_origin(annotation) is Annotated:
+        # Constraints such as Field(min_length=1) leave a list a list.
+        annotation = _unalias(get_args(annotation)[0])
     origin = get_origin(annotation)
 
     if origin in UNION_TYPES:
