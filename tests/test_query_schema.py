@@ -474,6 +474,10 @@ def test_nullable_schema_named_by_an_alias_takes_its_default():
 
     client = TestClient(temp_api)
 
+    [parameter] = temp_api.get_openapi_schema()["paths"]["/api/alias"]["get"][
+        "parameters"
+    ]
+    assert (parameter["name"], parameter["required"]) == ("x", False)
     assert client.get("/alias").json() == {"f": None}
     assert client.get("/alias?x=1").json() == {"f": {"x": 1}}
 

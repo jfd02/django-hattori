@@ -1072,9 +1072,10 @@ def flatten_properties(
         # alongside the ref.
         resolve_allOf(prop_details, definitions)
         if any(_query_model(item, definitions) for item in prop_details["allOf"]):
-            # A nested model: project its properties out.
+            # A nested model: project its properties out. A nullable one, such
+            # as a named ``Model | None`` alias, keeps whether it is required.
             for item in prop_details["allOf"]:
-                yield from flatten_properties("", item, True, definitions)
+                yield from flatten_properties("", item, prop_required, definitions)
         else:
             # Anything else, such as an enum, a union or a constrained
             # scalar, is this one parameter, default included.
