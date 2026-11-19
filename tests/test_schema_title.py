@@ -4,7 +4,7 @@ Without one, a component is named after its Python class, which may not be the
 name the API should use.
 """
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, model_validator
 
 from hattori import Body, HattoriAPI, Schema
 from hattori.testing import TestClient
@@ -150,3 +150,44 @@ def test_response_matches_the_titled_component():
 
     assert response.json() == {"amount": "12.50"}
     validate_response(document, "/api/total", response)
+
+
+def test_title_names_a_schema_with_a_wrap_validator():
+    # A wrap validator moves the schema's ref onto the node around it.
+    class Checked(Schema, title="Verified"):
+        amount: int
+
+        @model_validator(mode="wrap")
+        @classmethod
+        def check(cls, data, handler):
+            return handler(data)
+
+    class Holder(Schema):
+        checked: Checked
+
+    assert set(Holder.json_schema()["$defs"]) == {"Verified"}
+
+
+def test_title_names_a_schema_built_after_its_forward_refs_resolve():
+    class Parcel(Schema, title="Package"):
+        contents: Item
+
+    class Item(Schema):
+        name: str
+
+    Parcel.model_rebuild()
+
+    class Shipment(Schema):
+        parcel: Parcel
+
+    assert set(Shipment.json_schema()["$defs"]) == {"Package", "Item"}
+
+
+def test_title_names_a_self_referencing_schema():
+    class Node(Schema, title="TreeNode"):
+        children: list[Node] = []
+
+    schema = Node.json_schema()
+
+    assert set(schema["$defs"]) == {"TreeNode"}
+    assert schema["$ref"] == "#/$defs/TreeNode"

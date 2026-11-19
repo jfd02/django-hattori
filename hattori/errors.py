@@ -344,13 +344,15 @@ def narrowed_error_body(error: type, error_code: str) -> type[ErrorBody]:
         for item in code_field.metadata
         if not isinstance(item, pydantic.Strict)
     ]
+    # The base's own field rides along, so a description declared on it is
+    # still there once the type is narrowed. A Literal of a runtime value is
+    # not a type mypy can check against `create_model`'s field types.
+    code_type: Any = Annotated[Literal[error_code], code_field]
     body: type[ErrorBody] = pydantic.create_model(
         error.__name__,
         __base__=base,
         __module__=error.__module__,
-        # The base's own field rides along, so a description declared on it is
-        # still there once the type is narrowed.
-        code=(Annotated[Literal[error_code], code_field], ...),
+        code=(code_type, ...),
     )
     # ApiError supplies code and message by their Python names. Accept names
     # on this generated model while retaining aliases and the base's validators.
