@@ -21,14 +21,13 @@ from typing import (
     get_origin,
     no_type_check,
 )
-from weakref import WeakValueDictionary
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic._internal._core_utils import CoreSchemaField, get_type_ref
+from pydantic._internal._core_utils import CoreSchemaField, CoreSchemaOrField
 from pydantic._internal._model_construction import ModelMetaclass
 from pydantic.json_schema import (
-    CoreModeRef,
+    CoreRef,
     DefsRef,
     GenerateJsonSchema,
     JsonSchemaValue,
@@ -54,30 +53,48 @@ def _sorted_schema(value: Any, parent_key: str | None) -> Any:
     return value
 
 
-# Schemas that declare their own `title`, keyed by the core ref Pydantic names
-# their definition from. Weak, so a class defined inside a function does not
-# outlive it and lend its title to a later class that reuses its id.
-_TITLED_SCHEMAS: WeakValueDictionary[str, type[BaseModel]] = WeakValueDictionary()
+# Node types a model validator wraps a model's own node in. The model's ref
+# moves out onto the outermost of them.
+_MODEL_VALIDATOR_NODES = frozenset({
+    "function-before",
+    "function-after",
+    "function-wrap",
+})
+
+
+def _declared_title(schema: Any) -> str | None:
+    """Return the title the `Schema` a core schema node defines declares."""
+    while schema["type"] in _MODEL_VALIDATOR_NODES:
+        schema = schema["schema"]
+    if schema["type"] != "model" or not isinstance(schema["cls"], _SchemaMetaclass):
+        return None
+    title: str | None = schema["cls"].model_config.get("title")
+    return title
 
 
 class HattoriGenerateJsonSchema(GenerateJsonSchema):
-    def get_defs_ref(self, core_mode_ref: CoreModeRef) -> DefsRef:
+    def generate_inner(self, schema: CoreSchemaOrField) -> JsonSchemaValue:
         # A schema that declares a title is defined under it, so its component
         # is named what its `title` says rather than after the Python class.
+        if "ref" in schema and (title := _declared_title(schema)):
+            self._name_by_title(CoreRef(schema["ref"]), title)  # type: ignore[typeddict-item]
+        return super().generate_inner(schema)
+
+    def _name_by_title(self, core_ref: CoreRef, title: str) -> None:
         # The title goes ahead of Pydantic's own choices, which stay as the
-        # fallbacks when two schemas want the same name.
-        defs_ref = super().get_defs_ref(core_mode_ref)
-        model = _TITLED_SCHEMAS.get(core_mode_ref[0])
-        title = model.model_config.get("title") if model is not None else None
-        if title:
-            choices = self._prioritized_defsref_choices[defs_ref]
-            # Pydantic's first two choices are the bare name and the name with
-            # the mode suffix (`-Input` or `-Output`) it adds when a schema
-            # differs between validation and serialization.
-            mode_suffix = choices[1].removeprefix(choices[0])
-            name = self.normalize_name(title)
-            choices[:0] = [DefsRef(name), DefsRef(name + mode_suffix)]
-        return defs_ref
+        # fallbacks when two schemas want the same name. Pydantic picks among
+        # the choices only once the whole document is generated, so adding to
+        # them holds even for a ref it handed out before reaching its node.
+        defs_ref, _ = self.get_cache_defs_ref_schema(core_ref)
+        choices = self._prioritized_defsref_choices[defs_ref]
+        name = DefsRef(self.normalize_name(title))
+        if choices[0] == name:
+            return
+        # Pydantic's first two choices are the bare name and the name with the
+        # mode suffix (`-Input` or `-Output`) it adds when a schema differs
+        # between validation and serialization.
+        mode_suffix = choices[1].removeprefix(choices[0])
+        choices[:0] = [name, DefsRef(name + mode_suffix)]
 
     def _get_alias_name(self, field: CoreSchemaField, name: str) -> str:
         # A model that does not validate by alias (`validate_by_alias=False`)
@@ -176,10 +193,7 @@ class _SchemaMetaclass(ModelMetaclass):
             getattr(base, "model_config", {}).get("title") for base in bases
         ):
             kwargs["title"] = None
-        model = super().__new__(cls, name, bases, namespace, **kwargs)
-        if titled:
-            _TITLED_SCHEMAS[get_type_ref(model)] = model
-        return model
+        return super().__new__(cls, name, bases, namespace, **kwargs)
 
 
 class Schema(BaseModel, metaclass=_SchemaMetaclass):
