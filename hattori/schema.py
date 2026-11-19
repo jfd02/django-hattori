@@ -80,6 +80,14 @@ class HattoriGenerateJsonSchema(GenerateJsonSchema):
             self._name_by_title(CoreRef(schema["ref"]), title)  # type: ignore[typeddict-item]
         return super().generate_inner(schema)
 
+    def get_decimal_pattern(self, schema: Any) -> str | None:
+        # Pydantic 2.14 stopped documenting which strings a decimal accepts.
+        # Keep the pattern, which reflects `max_digits` and `decimal_places`,
+        # so the spec still states the limits the API validates. Earlier
+        # Pydantic versions add the pattern themselves and never call this.
+        pattern: str = self.build_decimal_pattern(schema)
+        return pattern
+
     def _name_by_title(self, core_ref: CoreRef, title: str) -> None:
         # The title goes ahead of Pydantic's own choices, which stay as the
         # fallbacks when two schemas want the same name. Pydantic picks among
