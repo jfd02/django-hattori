@@ -2,7 +2,6 @@ import inspect
 import warnings
 from collections import defaultdict, namedtuple
 from collections.abc import Callable, Generator
-from copy import copy
 from typing import Annotated, Any, get_args, get_origin
 
 import pydantic
@@ -286,18 +285,18 @@ class ViewSignature:
         default = arg.default
 
         if get_origin(annotation) is Annotated:
-            args = get_args(annotation)
-            if isinstance(args[-1], Param):
+            # Nested Annotated flattens, so Annotated[Query[T], Field(...)]
+            # puts the Param before the Field: it need not come last.
+            base, *metadata = get_args(annotation)
+            params = [i for i, item in enumerate(metadata) if isinstance(item, Param)]
+            if params:
                 prev_default = default
-                if len(args) == 2:
-                    annotation, default = args
-                else:
-                    annotation, default = Annotated[args[:-1]], args[-1]
+                default = metadata.pop(params[-1])
+                annotation = Annotated[(base, *metadata)] if metadata else base
                 if prev_default != self.signature.empty:
                     # The Param belongs to the annotation, which other params
                     # may be declared with too: each takes its own default.
-                    default = copy(default)
-                    default.default = prev_default
+                    default = default.with_default(prev_default)
 
         if annotation == self.signature.empty:
             if default == self.signature.empty:

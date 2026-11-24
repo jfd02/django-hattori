@@ -310,6 +310,25 @@ class Param(FieldInfo):  # type: ignore[misc]
         # param_type: Any = None,
         **extra: Any,
     ):
+        # What it was declared with, to declare it again by ``with_default``.
+        self._declared: dict[str, Any] = dict(
+            alias=alias,
+            title=title,
+            description=description,
+            gt=gt,
+            ge=ge,
+            lt=lt,
+            le=le,
+            min_length=min_length,
+            max_length=max_length,
+            example=example,
+            examples=examples,
+            deprecated=deprecated,
+            include_in_schema=include_in_schema,
+            pattern=pattern,
+            explode=explode,
+            **extra,
+        )
         self.deprecated = deprecated
         self.explode = explode
         # self.param_name: str = None
@@ -346,6 +365,16 @@ class Param(FieldInfo):  # type: ignore[misc]
         )
         if not explode:
             self.metadata.append(CommaSeparated())
+
+    def with_default(self, default: Any) -> Param:
+        """This param declared again, with ``default`` as its default.
+
+        Declared, not copied and set: pydantic merges a param with the rest of
+        an ``Annotated`` by the attributes it was declared with, so a default
+        set afterwards would be lost.
+        """
+        declared = {k: v for k, v in self._declared.items() if k != "default_factory"}
+        return type(self)(default, **declared)
 
     @classmethod
     def _param_source(cls) -> str:
