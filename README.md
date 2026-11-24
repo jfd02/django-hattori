@@ -173,6 +173,8 @@ def signup(request, data: SignupIn) -> UserRegistered:
 
 This applies equally to endpoints and to auth, whether `auth=` is given an auth class or a plain function annotated the same way. Exceptions like `AuthenticationError` are framework-internal — hattori raises them when every auth callback declines — not public API. A callback declines by returning `None` or any other falsy value, so `return key == SECRET` rejects a wrong key; a truthy result authenticates and becomes `request.auth`.
 
+The annotation is held to its word at runtime: returning a response it doesn't declare (a `201` from an endpoint that declares only `200`, or a `404` from one that declares only `400`) raises a `ConfigError` instead of being answered with the schema of a neighbouring code.
+
 ### What you get for free
 
 - **Input validation** — `SignupIn` validates and type-casts the request body

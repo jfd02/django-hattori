@@ -296,8 +296,8 @@ def test_docs_answer_with_the_typed_response_of_the_auth():
         assert response.json() == {"code": "bad_key", "message": "Unknown key"}
 
 
-def test_docs_answer_with_a_bodyless_response_the_auth_does_not_declare():
-    def auth(request):
+def test_docs_answer_with_a_bodyless_response_the_auth_declares():
+    def auth(request) -> NoContent:
         return NoContent()
 
     client = TestClient(HattoriAPI(docs_auth=auth))
@@ -305,6 +305,18 @@ def test_docs_answer_with_a_bodyless_response_the_auth_does_not_declare():
         response = client.get(url)
         assert response.status_code == 204
         assert response.content == b""
+        assert not response.has_header("Content-Type")
+
+
+def test_docs_refuse_a_response_the_auth_does_not_declare():
+    # The page's own 200 does not stand in for a 204 the auth never declared.
+    def auth(request):
+        return NoContent()
+
+    client = TestClient(HattoriAPI(docs_auth=auth))
+    for url in DOCS_URLS:
+        with pytest.raises(ConfigError, match=r"NoContent \(204\)"):
+            client.get(url)
 
 
 def test_docs_run_async_auth():

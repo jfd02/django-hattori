@@ -652,6 +652,14 @@ class Guard:
             if status >= 400:
                 # A returned error fails the request just as a raised one does.
                 rollback_atomic_requests(request)
+            # The return annotation is the contract: a status it does not
+            # declare is not answered with the schema of a neighbouring one.
+            if status not in self.response_models:
+                raise ConfigError(
+                    f"{self._label()} returned {type(result).__name__} "
+                    f"({status}), which is not declared in its return "
+                    f"annotation. Declared: {sorted(self.response_models)}"
+                )
             result = result.value
         else:
             # Bare return value - dispatch as the declared success code (200).
@@ -663,21 +671,7 @@ class Guard:
                 )
             status = 200
 
-        if status in self.response_models:
-            response_model = self.response_models[status]
-        else:
-            # Fall back to range matching: e.g., status 201 matches model for 200
-            base_status = (status // 100) * 100
-            if base_status in self.response_models:
-                response_model = self.response_models[base_status]
-            elif Ellipsis in self.response_models:
-                response_model = self.response_models[Ellipsis]
-            else:
-                raise ConfigError(
-                    f"Schema for status {status} is not set in response"
-                    f" {self.response_models.keys()}"
-                )
-
+        response_model = self.response_models[status]
         temporal_response.status_code = status
 
         if response_model is None:

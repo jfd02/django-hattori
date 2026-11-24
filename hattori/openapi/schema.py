@@ -595,9 +595,6 @@ class OpenAPISchema(dict):
 
         result = {}
         for status, model in operation.response_models.items():
-            if status == Ellipsis:
-                continue  # it's not yet clear what it means if user wants to output any other code
-
             # What the response classes say of themselves, else the status phrase.
             description = operation.response_descriptions.get(
                 status

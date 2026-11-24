@@ -189,6 +189,49 @@ def test_bare_value_without_200_declared_raises():
         c.get("/x")
 
 
+def test_undeclared_success_code_is_not_answered_as_the_declared_200():
+    bad_api = HattoriAPI()
+
+    class Created(APIReturn[UserOut]):
+        code = 201
+
+    @bad_api.get("/x")
+    def view(request) -> UserOut:
+        return Created(UserOut(id=1, name="john"))  # type: ignore[return-value]
+
+    c = TestClient(bad_api)
+    with pytest.raises(ConfigError, match=r"returned Created \(201\), which is not"):
+        c.get("/x")
+
+
+def test_undeclared_error_is_not_answered_with_a_declared_error_of_its_class():
+    bad_api = HattoriAPI()
+
+    class BadInput(AppError):
+        code = 400
+        error_code = "bad_input"
+
+    @bad_api.get("/x")
+    def view(request) -> UserOut | BadInput:
+        return UserNotFound()  # type: ignore[return-value]
+
+    c = TestClient(bad_api)
+    with pytest.raises(ConfigError, match=r"UserNotFound \(404\).*\[200, 400\]"):
+        c.get("/x")
+
+
+def test_undeclared_code_raises_in_an_async_view_too():
+    bad_api = HattoriAPI()
+
+    @bad_api.get("/x")
+    async def view(request) -> UserOut:
+        return UserNotFound()  # type: ignore[return-value]
+
+    c = TestClient(bad_api)
+    with pytest.raises(ConfigError, match=r"UserNotFound \(404\)"):
+        c.get("/x")
+
+
 def test_validation_runs_on_bare_return():
     bad_api = HattoriAPI()
 
