@@ -28,3 +28,13 @@ def test_file_registration_check_uses_current_settings():
             assert not need_to_fix_request_files(["PATCH"], [FileModel])
             assert need_to_fix_request_files(["PUT"], [FileModel])
         assert need_to_fix_request_files(["PATCH"], [FileModel])
+
+
+def test_methods_named_in_lowercase_are_read_in_capitals():
+    with override_settings(
+        MIDDLEWARE=[], HATTORI_FIX_REQUEST_FILES_METHODS={"put", "Patch"}
+    ):
+        assert settings.FIX_REQUEST_FILES_METHODS == {"PUT", "PATCH"}
+        assert need_to_fix_request_files(["PUT"], [FileModel])
+        assert need_to_fix_request_files(["PATCH"], [FileModel])
+        assert not need_to_fix_request_files(["DELETE"], [FileModel])
