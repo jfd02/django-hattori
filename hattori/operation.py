@@ -1253,6 +1253,9 @@ class PathView:
         include_in_schema: bool = True,
         openapi_extra: dict[str, Any] | None = None,
     ) -> Operation:
+        # Django names a request's method in capitals, whatever case it is
+        # declared in here.
+        methods = list(dict.fromkeys(method.upper() for method in methods))
         duplicate_methods = set(methods) & self._method_map.keys()
         if duplicate_methods:
             raise ConfigError(
