@@ -40,7 +40,7 @@ class ParamModel(BaseModel, ABC):
     @abstractmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         pass  # pragma: no cover
 
     @classmethod
@@ -51,9 +51,6 @@ class ParamModel(BaseModel, ABC):
         path_params: dict[str, Any],
     ) -> TModel:
         data = cls.get_request_data(request, api, path_params)
-        if data is None:
-            return cls()
-
         data = cls._map_data_paths(data)
         return cls.model_validate(data, context={"request": request})
 
@@ -132,7 +129,7 @@ class QueryModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         csv_fields = getattr(cls, "__hattori_csv_fields__", None)
         return _parse_querydict(request.GET, list_fields, csv_fields)
@@ -142,7 +139,7 @@ class PathModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _split_lists(path_params, list_fields)
 
@@ -153,7 +150,7 @@ class HeaderModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         data = {}
         headers = request.headers
         for name in cls.__hattori_flatten_map__:
@@ -167,7 +164,7 @@ class CookieModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _split_lists(request.COOKIES, list_fields)
 
@@ -185,7 +182,7 @@ class BodyModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if request.body:
             # A browser sends a form across sites as text/plain, as form data
             # or as nothing at all, cookies included, without asking first. A
@@ -197,7 +194,9 @@ class BodyModel(ParamModel):
                 )
             return cls._decode(request.body)
 
-        return None
+        # No body sends none of the params, which is not the same as a JSON
+        # null: that is a value, which a body of several params cannot be.
+        return {}
 
     @classmethod
     def _decode(cls, body: bytes | str) -> dict[str, Any]:
@@ -219,7 +218,7 @@ class FormModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _parse_querydict(request.POST, list_fields)
 
@@ -228,7 +227,7 @@ class FileModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _parse_querydict(request.FILES, list_fields)
 
@@ -240,7 +239,7 @@ class _MultiPartBodyModel(BodyModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         results: dict[str, Any] = {}
         for name, kind in cls.__hattori_body_params__.items():
             if name in request.POST:
