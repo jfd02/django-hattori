@@ -391,6 +391,8 @@ class OpenAPISchema(dict):
     def _extract_parameters(self, model: Any) -> list[dict[str, Any]]:
         result = []
         csv_fields = set(getattr(model, "__hattori_csv_fields__", []))
+        flatten_map = getattr(model, "__hattori_flatten_map__", {})
+        defaulted = set(getattr(model, "__hattori_defaulted_models__", ()))
 
         schema = model.model_json_schema(
             ref_template=REF_TEMPLATE,
@@ -410,6 +412,12 @@ class OpenAPISchema(dict):
             ):
                 if not p_schema.get("include_in_schema", True):
                     continue
+
+                path = flatten_map.get(p_name, ())
+                if any(path[:depth] in defaulted for depth in range(1, len(path))):
+                    # It sits in a schema that takes its default when none of
+                    # its fields is sent, so none of them has to be.
+                    p_required = False
 
                 param = {
                     "in": model.__hattori_param_source__,
@@ -1052,13 +1060,8 @@ def flatten_properties(
         model = _query_model(prop_details, definitions)
         if model is not None:
             # A nullable model is flattened like any other. Keep nullable
-            # scalar/enum/list schemas intact. One with a default is left out
-            # when none of its fields is sent, so then none of them is
-            # required.
-            for name, details, field_required in flatten_properties(
-                prop_name, model, prop_required, definitions
-            ):
-                yield name, details, field_required and prop_required
+            # scalar/enum/list schemas intact.
+            yield from flatten_properties(prop_name, model, prop_required, definitions)
         else:
             yield prop_name, prop_details, prop_required
 

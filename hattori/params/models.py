@@ -67,9 +67,9 @@ class ParamModel(BaseModel, ABC):
             if value is not None:
                 sent.update(path[:depth] for depth in range(1, len(path)))
             cls._map_data_path(mapped_data, value, path)
-        # A nullable schema with a default, none of whose fields was sent,
-        # takes that default instead of being built from no data at all.
-        for path in getattr(cls, "__hattori_nullable_models__", ()):
+        # A schema with a default, none of whose fields was sent, takes that
+        # default instead of being built from no data at all.
+        for path in getattr(cls, "__hattori_defaulted_models__", ()):
             if path not in sent:
                 _pop_path(mapped_data, path)
         return mapped_data
