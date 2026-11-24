@@ -2,7 +2,6 @@ import inspect
 import warnings
 from collections import defaultdict, namedtuple
 from collections.abc import Callable, Generator
-from copy import copy
 from typing import Annotated, Any, get_args, get_origin
 
 import pydantic
@@ -174,11 +173,11 @@ class ViewSignature:
             }:
                 flatten_map = self._args_flatten_map(args)
                 attrs["__hattori_flatten_map__"] = flatten_map
-                attrs["__hattori_nullable_models__"] = [
+                attrs["__hattori_defaulted_models__"] = [
                     path
                     for arg in args
                     if is_pydantic_model(arg.annotation)
-                    for path in _nullable_model_paths(
+                    for path in _defaulted_model_paths(
                         arg.annotation, arg.source, (arg.alias,)
                     )
                 ]
@@ -286,18 +285,18 @@ class ViewSignature:
         default = arg.default
 
         if get_origin(annotation) is Annotated:
-            args = get_args(annotation)
-            if isinstance(args[-1], Param):
+            # Nested Annotated flattens, so Annotated[Query[T], Field(...)]
+            # puts the Param before the Field: it need not come last.
+            base, *metadata = get_args(annotation)
+            params = [i for i, item in enumerate(metadata) if isinstance(item, Param)]
+            if params:
                 prev_default = default
-                if len(args) == 2:
-                    annotation, default = args
-                else:
-                    annotation, default = Annotated[args[:-1]], args[-1]
+                default = metadata.pop(params[-1])
+                annotation = Annotated[(base, *metadata)] if metadata else base
                 if prev_default != self.signature.empty:
                     # The Param belongs to the annotation, which other params
                     # may be declared with too: each takes its own default.
-                    default = copy(default)
-                    default.default = prev_default
+                    default = default.with_default(prev_default)
 
         if annotation == self.signature.empty:
             if default == self.signature.empty:
@@ -388,22 +387,29 @@ def _allows_none(annotation: Any) -> bool:
     return get_origin(annotation) in UNION_TYPES and type(None) in get_args(annotation)
 
 
-def _nullable_model_paths(
+def _defaulted_model_paths(
     annotation: Any, field: FieldInfo, path: tuple[str, ...]
 ) -> Generator[tuple[str, ...]]:
-    """Where a schema that may be None and has a default sits among flattened params.
+    """Where a schema that takes its default when none of its fields is sent
+    sits among flattened params.
+
+    That is one with a default it can take: any default if it may be None, and
+    one other than None if it may not, since that one is built from its
+    fields' defaults instead.
 
     ``annotation`` is the schema a param or field of one is declared as,
     ``field`` what it was declared with and ``path`` where its fields are
     mapped to, the way ``_model_flatten_map`` maps them.
     """
-    if _allows_none(annotation) and not field.is_required():
+    if not field.is_required() and (
+        _allows_none(annotation) or field.default is not None
+    ):
         yield path
     model = _unwrap_union_model(annotation)
     by_alias = _reads_by_alias(model)
     for attr, sub_field in model.model_fields.items():
         if is_pydantic_model(sub_field.annotation):
-            yield from _nullable_model_paths(
+            yield from _defaulted_model_paths(
                 sub_field.annotation,
                 sub_field,
                 (*path, _read_name(sub_field, attr, by_alias)),

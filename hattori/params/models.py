@@ -40,7 +40,7 @@ class ParamModel(BaseModel, ABC):
     @abstractmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         pass  # pragma: no cover
 
     @classmethod
@@ -51,9 +51,6 @@ class ParamModel(BaseModel, ABC):
         path_params: dict[str, Any],
     ) -> TModel:
         data = cls.get_request_data(request, api, path_params)
-        if data is None:
-            return cls()
-
         data = cls._map_data_paths(data)
         return cls.model_validate(data, context={"request": request})
 
@@ -70,9 +67,9 @@ class ParamModel(BaseModel, ABC):
             if value is not None:
                 sent.update(path[:depth] for depth in range(1, len(path)))
             cls._map_data_path(mapped_data, value, path)
-        # A nullable schema with a default, none of whose fields was sent,
-        # takes that default instead of being built from no data at all.
-        for path in getattr(cls, "__hattori_nullable_models__", ()):
+        # A schema with a default, none of whose fields was sent, takes that
+        # default instead of being built from no data at all.
+        for path in getattr(cls, "__hattori_defaulted_models__", ()):
             if path not in sent:
                 _pop_path(mapped_data, path)
         return mapped_data
@@ -132,7 +129,7 @@ class QueryModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         csv_fields = getattr(cls, "__hattori_csv_fields__", None)
         return _parse_querydict(request.GET, list_fields, csv_fields)
@@ -142,7 +139,7 @@ class PathModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _split_lists(path_params, list_fields)
 
@@ -153,7 +150,7 @@ class HeaderModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         data = {}
         headers = request.headers
         for name in cls.__hattori_flatten_map__:
@@ -167,7 +164,7 @@ class CookieModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _split_lists(request.COOKIES, list_fields)
 
@@ -185,7 +182,7 @@ class BodyModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if request.body:
             # A browser sends a form across sites as text/plain, as form data
             # or as nothing at all, cookies included, without asking first. A
@@ -197,7 +194,9 @@ class BodyModel(ParamModel):
                 )
             return cls._decode(request.body)
 
-        return None
+        # No body sends none of the params, which is not the same as a JSON
+        # null: that is a value, which a body of several params cannot be.
+        return {}
 
     @classmethod
     def _decode(cls, body: bytes | str) -> dict[str, Any]:
@@ -219,7 +218,7 @@ class FormModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _parse_querydict(request.POST, list_fields)
 
@@ -228,7 +227,7 @@ class FileModel(ParamModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         list_fields = getattr(cls, "__hattori_collection_fields__", [])
         return _parse_querydict(request.FILES, list_fields)
 
@@ -240,7 +239,7 @@ class _MultiPartBodyModel(BodyModel):
     @classmethod
     def get_request_data(
         cls, request: HttpRequest, api: HattoriAPI, path_params: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         results: dict[str, Any] = {}
         for name, kind in cls.__hattori_body_params__.items():
             if name in request.POST:
@@ -311,6 +310,25 @@ class Param(FieldInfo):  # type: ignore[misc]
         # param_type: Any = None,
         **extra: Any,
     ):
+        # What it was declared with, to declare it again by ``with_default``.
+        self._declared: dict[str, Any] = dict(
+            alias=alias,
+            title=title,
+            description=description,
+            gt=gt,
+            ge=ge,
+            lt=lt,
+            le=le,
+            min_length=min_length,
+            max_length=max_length,
+            example=example,
+            examples=examples,
+            deprecated=deprecated,
+            include_in_schema=include_in_schema,
+            pattern=pattern,
+            explode=explode,
+            **extra,
+        )
         self.deprecated = deprecated
         self.explode = explode
         # self.param_name: str = None
@@ -347,6 +365,16 @@ class Param(FieldInfo):  # type: ignore[misc]
         )
         if not explode:
             self.metadata.append(CommaSeparated())
+
+    def with_default(self, default: Any) -> Param:
+        """This param declared again, with ``default`` as its default.
+
+        Declared, not copied and set: pydantic merges a param with the rest of
+        an ``Annotated`` by the attributes it was declared with, so a default
+        set afterwards would be lost.
+        """
+        declared = {k: v for k, v in self._declared.items() if k != "default_factory"}
+        return type(self)(default, **declared)
 
     @classmethod
     def _param_source(cls) -> str:
