@@ -3,7 +3,7 @@ from typing import Any
 from django.conf import settings as django_settings
 from django.core.signals import setting_changed
 from django.dispatch import receiver
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Settings(BaseModel):
@@ -12,6 +12,12 @@ class Settings(BaseModel):
     FIX_REQUEST_FILES_METHODS: set[str] = Field(
         {"PUT", "PATCH", "DELETE"}, alias="HATTORI_FIX_REQUEST_FILES_METHODS"
     )
+
+    @field_validator("FIX_REQUEST_FILES_METHODS")
+    @classmethod
+    def _capitalize_methods(cls, methods: set[str]) -> set[str]:
+        # Compared with request.method, which Django gives in capitals.
+        return {method.upper() for method in methods}
 
 
 settings = Settings.model_validate(django_settings)

@@ -110,6 +110,17 @@ def test_form_on_another_method_is_read_through_the_middleware(_wired, method):
     assert resp.json() == {"text": "hello"}
 
 
+def test_middleware_reads_a_file_for_a_method_the_setting_names_in_lowercase(_wired):
+    with override_settings(HATTORI_FIX_REQUEST_FILES_METHODS={"patch"}):
+        resp = Client().patch(
+            "/sync/upload",
+            data=_multipart(file=SimpleUploadedFile("a.txt", b"data")),
+            content_type=MULTIPART_CONTENT,
+        )
+    assert resp.status_code == 200, resp.content
+    assert resp.json() == {"name": "a.txt", "content": "data"}
+
+
 def test_sync_json_body_skips_file_reparsing(_wired):
     # content_type is application/json, so _should_fix() is False and the
     # middleware leaves the request untouched.
